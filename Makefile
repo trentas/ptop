@@ -19,17 +19,21 @@ else
   GNU_TRIPLE := $(shell gcc -print-multiarch 2>/dev/null)
 endif
 
-BPF_C  := internal/bpf/programs/syscalls.bpf.c
-BPF_O  := $(BPF_C:.c=.o)
+# Lista de programas eBPF a compilar. Adicionar novos .bpf.c aqui.
+BPF_SRCS := \
+	internal/bpf/programs/syscalls.bpf.c \
+	internal/bpf/programs/cpu.bpf.c
+
+BPF_OBJS := $(BPF_SRCS:.c=.o)
 
 CLANG  ?= clang
 
-# Regra implícita: .bpf.c → .bpf.o via clang -target bpf.
+# Regra padrão: .bpf.c → .bpf.o via clang -target bpf.
 # `-target bpf`: emite bytecode BPF em vez de nativo
 # `-O2 -g`: otimização + dwarf info (verificador BPF aproveita os DWARF)
 # `-D__TARGET_ARCH_*`: define usado por bpf_tracing.h pra pt_regs offsets
 # `-I/usr/include/$GNU_TRIPLE`: necessário pra encontrar `asm/types.h` etc.
-$(BPF_O): $(BPF_C)
+%.bpf.o: %.bpf.c
 	$(CLANG) -O2 -g -target bpf \
 		-D__TARGET_ARCH_$(BPF_ARCH) \
 		-I/usr/include \
@@ -37,7 +41,7 @@ $(BPF_O): $(BPF_C)
 		-c $< -o $@
 
 # `make gen` produz todos os .o de programs/. Roda só em Linux com libbpf-dev.
-gen: $(BPF_O)
+gen: $(BPF_OBJS)
 
 # ─── builds ──────────────────────────────────────────────────────────────────
 
@@ -73,7 +77,7 @@ test-all: test
 
 vet:
 	go vet ./...
-	@if [ -f $(BPF_O) ]; then \
+	@if ls $(BPF_OBJS) >/dev/null 2>&1; then \
 		go vet -tags=ebpf ./...; \
 	else \
 		echo "(go vet -tags=ebpf pulado: rode 'make gen' primeiro)"; \
