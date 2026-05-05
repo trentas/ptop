@@ -200,4 +200,26 @@ make clean           # rm -rf bin/
 make lint            # golangci-lint (precisa instalar)
 ```
 
+### Ambiente Linux para testar eBPF (Mac Apple Silicon)
+
+`lima.yaml` na raiz do repo provisiona Ubuntu 24.04 ARM64 com Go 1.22 +
+clang + libbpf-dev + bpftool já instalados, com o `~` do Mac montado
+read-write dentro do VM. Edita no Mac, roda dentro do VM.
+
+```bash
+brew install lima
+limactl start --name=xray-dev ./lima.yaml
+
+# entra no VM
+limactl shell xray-dev
+cd /Users/<você>/src/github.com/trentas/xray
+make test
+sudo ./bin/xray --pid 1 --no-ebpf
+
+# limpa quando terminar
+limactl stop xray-dev && limactl delete xray-dev
+```
+
+Em Macs Intel, troque `vmType: vz` por `vmType: qemu` no `lima.yaml`.
+
 Ver [CLAUDE.md](CLAUDE.md) para guia de implementação e contratos dos collectors.
