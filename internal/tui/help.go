@@ -8,7 +8,11 @@ import (
 
 // renderHelpOverlay desenha um modal centralizado com todos os keybindings.
 // Recebe as dimensões totais do content area; lipgloss.Place centraliza o card.
-func renderHelpOverlay(w, h int) string {
+//
+// O model é passado pra que possamos mostrar status dos collectors em runtime
+// (real vs mock) — issue #19 acceptance: "Tecla ou flag pra ver o status de
+// cada collector em runtime".
+func renderHelpOverlayWithStatus(m Model, w, h int) string {
 	sectionTitle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
 	keyStyle := lipgloss.NewStyle().Foreground(ColorTeal).Bold(true)
 	descStyle := lipgloss.NewStyle().Foreground(ColorText)
@@ -19,6 +23,16 @@ func renderHelpOverlay(w, h int) string {
 	}
 	dimRow := func(key, desc string) string {
 		return keyStyle.Render(padRight(key, 14)) + " " + dimDesc.Render(desc)
+	}
+
+	statusReal := lipgloss.NewStyle().Foreground(ColorGreen).Render("● real")
+	statusMock := lipgloss.NewStyle().Foreground(ColorAmber).Render("○ mock")
+	statusRow := func(name string, isMock bool) string {
+		s := statusReal
+		if isMock {
+			s = statusMock
+		}
+		return keyStyle.Render(padRight(name, 14)) + " " + s
 	}
 
 	lines := []string{
@@ -43,6 +57,14 @@ func renderHelpOverlay(w, h int) string {
 		row("s", "Snapshot one-shot (xray-snapshot-<ts>.json)"),
 		row("e", "Toggle export contínuo (xray-export-<ts>.jsonl)"),
 		dimRow("--export", "Flag CLI: export desde o launch + snapshot final ao sair"),
+		"",
+		sectionTitle.Render("Collectors"),
+		statusRow("cpu", m.usingMockCPU),
+		statusRow("memory", m.usingMockMem),
+		statusRow("threads", m.usingMockThreads),
+		statusRow("io-wait", m.usingMockIOWait),
+		statusRow("io-throughput", m.usingMockIOThrough),
+		statusRow("fds", m.usingMockFDs),
 	}
 
 	body := strings.Join(lines, "\n")

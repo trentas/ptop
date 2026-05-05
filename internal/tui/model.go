@@ -397,7 +397,7 @@ func (m Model) View() string {
 
 	// Help overlay tem prioridade sobre o conteúdo da view
 	if m.showHelp {
-		overlay := renderHelpOverlay(contentW, contentH)
+		overlay := renderHelpOverlayWithStatus(m, contentW, contentH)
 		return header + "\n" + tabbar + "\n" + overlay + "\n" + statusbar
 	}
 
