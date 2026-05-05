@@ -20,11 +20,20 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      - name: go vet
+      - name: go vet (default)
         run: go vet ./...
 
-      - name: go test (race detector)
+      - name: go vet (ebpf tag)
+        run: go vet -tags=ebpf ./...
+
+      - name: go test -race (default)
         run: go test -race -count=1 ./...
 
-      - name: go build
+      - name: go test -race (ebpf tag)
+        run: go test -race -count=1 -tags=ebpf ./...
+
+      - name: go build (default — TUI + /proc)
         run: go build -o /tmp/xray ./cmd/xray
+
+      - name: go build (ebpf tag)
+        run: go build -tags=ebpf -o /tmp/xray-ebpf ./cmd/xray
