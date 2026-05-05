@@ -40,22 +40,40 @@ func renderStatusBar(m Model) string {
 	left := strings.Join(longParts, lblStyle.Render("  ·  "))
 
 	rightParts := []string{}
-	if m.Paused {
-		rightParts = append(rightParts, lipgloss.NewStyle().
-			Foreground(ColorAmber).
+	// Toast tem prioridade — substitui o info da direita por 2s
+	if m.toast != "" {
+		toastStyle := lipgloss.NewStyle().
+			Foreground(ColorTeal).
 			Background(barBg).
-			Bold(true).
-			Render("⏸ PAUSED"))
+			Bold(true)
+		// Se toast começa com ⚠, troca pra cor de aviso
+		if strings.HasPrefix(m.toast, "⚠") {
+			toastStyle = toastStyle.Foreground(ColorAmber)
+		}
+		rightParts = append(rightParts, toastStyle.Render(m.toast))
+	} else {
+		if m.Paused {
+			rightParts = append(rightParts, lipgloss.NewStyle().
+				Foreground(ColorAmber).
+				Background(barBg).
+				Bold(true).
+				Render("⏸ PAUSED"))
+		}
+		if m.cfg.NoEBPF {
+			rightParts = append(rightParts, lipgloss.NewStyle().
+				Foreground(ColorOrange).
+				Background(barBg).
+				Render("[--no-ebpf]"))
+		}
+		if m.exportFile != nil {
+			rightParts = append(rightParts, lipgloss.NewStyle().
+				Foreground(ColorTeal).
+				Background(barBg).
+				Render("● REC"))
+		}
+		rightParts = append(rightParts, lblStyle.Render("eBPF kernel 6.8 · sampling 100Hz · overhead <0.5%"))
 	}
-	if m.cfg.NoEBPF {
-		rightParts = append(rightParts, lipgloss.NewStyle().
-			Foreground(ColorOrange).
-			Background(barBg).
-			Render("[--no-ebpf]"))
-	}
-	rightFull := append([]string{}, rightParts...)
-	rightFull = append(rightFull, lblStyle.Render("eBPF kernel 6.8 · sampling 100Hz · overhead <0.5%"))
-	right := strings.Join(rightFull, lblStyle.Render("  "))
+	right := strings.Join(rightParts, lblStyle.Render("  "))
 
 	// degrada progressivamente: drop info → keybindings curtos → drop right inteiro
 	if lipgloss.Width(left)+lipgloss.Width(right)+3 > m.Width {

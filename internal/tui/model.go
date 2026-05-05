@@ -70,6 +70,12 @@ type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
 type FDEventMsg collector.FDEvent
 
+// exportTickMsg dispara periodicamente quando export contínuo está ON.
+type exportTickMsg time.Time
+
+// clearToastMsg apaga o toast/status temporário do statusbar após N segundos.
+type clearToastMsg struct{}
+
 // ─── Model ───────────────────────────────────────────────────────────────────
 
 type Model struct {
@@ -101,6 +107,14 @@ type Model struct {
 	Paused    bool
 	Width     int
 	Height    int
+
+	// Toast: mensagem temporária no statusbar (ex: "snapshot salvo em /tmp/xxx").
+	// Vazio quando não há toast ativo. clearToastMsg apaga após 2s.
+	toast string
+
+	// Export contínuo (tecla 'e' ou flag --export):
+	// quando exportFile != nil, exportTickMsg agenda a próxima escrita JSONL.
+	exportFile *os.File
 
 	// Collectors
 	fdCollector      *collector.FDCollector
@@ -188,6 +202,17 @@ func NewModel(cfg Config) Model {
 		}
 	}
 
+	// --export: abre o arquivo JSONL desde já. Se falhar, apenas avisa
+	// (não bloqueia o launch — usuário ainda usa a TUI normalmente).
+	if cfg.Export {
+		if f, err := openExportFile(); err == nil {
+			m.exportFile = f
+			m.toast = fmt.Sprintf("✓ export: %s", f.Name())
+		} else {
+			fmt.Fprintf(os.Stderr, "aviso: --export falhou: %v\n", err)
+		}
+	}
+
 	return m
 }
 
@@ -212,6 +237,12 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.ioThroughputCollector != nil {
 		cmds = append(cmds, waitForIOThroughput(m.ioThroughputCollector))
+	}
+	if m.exportFile != nil {
+		cmds = append(cmds, exportTick())
+	}
+	if m.toast != "" {
+		cmds = append(cmds, clearToastAfter(toastTTL))
 	}
 	return tea.Batch(cmds...)
 }
@@ -281,6 +312,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.IOStats.IOWaitPct = collector.IOWaitSample(v).Pct
 		m.usingMockIOWait = false
 		return m, waitForIOWait(m.iowaitCollector)
+
+	case clearToastMsg:
+		m.toast = ""
+		return m, nil
+
+	case exportTickMsg:
+		// Export contínuo: escreve uma linha JSONL por tick. Se a escrita falhar,
+		// fecha o arquivo e mostra toast de erro — não trava a TUI.
+		if m.exportFile != nil {
+			if err := writeSnapshotLine(m.exportFile, m); err != nil {
+				_ = m.exportFile.Close()
+				m.exportFile = nil
+				m.toast = fmt.Sprintf("⚠ export: %v", err)
+				return m, clearToastAfter(toastTTL)
+			}
+			return m, exportTick()
+		}
+		return m, nil
 
 	case IOThroughputMsg:
 		s := collector.IOThroughputSample(v)
@@ -804,6 +853,30 @@ func tick(fps int) tea.Cmd {
 	}
 	d := time.Second / time.Duration(fps)
 	return tea.Tick(d, func(t time.Time) tea.Msg { return TickMsg(t) })
+}
+
+// exportInterval define quão frequentemente o export contínuo grava uma
+// linha JSONL. simInterval (700ms) seria muito barulhento — 2s é um
+// compromise entre granularidade e tamanho do arquivo gerado.
+const exportInterval = 2 * time.Second
+
+func exportTick() tea.Cmd {
+	return tea.Tick(exportInterval, func(t time.Time) tea.Msg { return exportTickMsg(t) })
+}
+
+// toastTTL é quanto tempo a mensagem temporária no statusbar fica visível.
+const toastTTL = 2 * time.Second
+
+func clearToastAfter(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return clearToastMsg{} })
+}
+
+// Close libera recursos abertos pelo model — atualmente o arquivo de export.
+// main.go chama isso após p.Run() retornar pra garantir flush.
+func (m Model) Close() {
+	if m.exportFile != nil {
+		_ = m.exportFile.Close()
+	}
 }
 
 // waitForFD bloqueia até receber uma mensagem do FD collector e a entrega ao Update.

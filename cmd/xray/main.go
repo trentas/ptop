@@ -38,8 +38,21 @@ func main() {
 	m := tui.NewModel(cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())
 
-	if _, err := p.Run(); err != nil {
+	finalModel, err := p.Run()
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "erro fatal: %v\n", err)
 		os.Exit(1)
+	}
+
+	// Cleanup + snapshot final no modo --export
+	if fm, ok := finalModel.(tui.Model); ok {
+		fm.Close()
+		if cfg.Export {
+			if path, err := tui.SaveSnapshot(fm); err == nil {
+				fmt.Fprintf(os.Stderr, "snapshot final salvo: %s\n", path)
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: snapshot final falhou: %v\n", err)
+			}
+		}
 	}
 }
