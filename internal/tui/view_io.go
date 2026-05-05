@@ -234,7 +234,7 @@ func renderIOStats(s collector.IOStats, w int) string {
 		if gap < 1 {
 			gap = 1
 		}
-		lines = append(lines, left+strings.Repeat(" ", gap)+right)
+		lines = append(lines, left+panelGap(gap)+right)
 	}
 	return strings.Join(lines, "\n")
 }

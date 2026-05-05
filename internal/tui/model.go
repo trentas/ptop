@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -174,7 +175,7 @@ type Model struct {
 func NewModel(cfg Config) Model {
 	m := Model{
 		cfg:              cfg,
-		ProcessName:      "api-server",
+		ProcessName:      detectProcessName(cfg.PID),
 		Runtime:          "Go 1.22",
 		State:            "RUNNING",
 		StartedAt:        time.Now(),
@@ -1056,5 +1057,23 @@ func clamp(v, lo, hi float64) float64 {
 		return hi
 	}
 	return v
+}
+
+// detectProcessName lê /proc/<pid>/comm pra obter o nome curto do processo
+// (kernel TASK_COMM_LEN = 16 chars). Em macOS/Windows, fallback pra "(?)" —
+// indica claramente que estamos em modo simulado.
+func detectProcessName(pid int) string {
+	if pid <= 0 {
+		return "(?)"
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+	if err != nil {
+		return "(?)"
+	}
+	name := strings.TrimSpace(string(data))
+	if name == "" {
+		return "(?)"
+	}
+	return name
 }
 
