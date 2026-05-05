@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   test:
-    name: vet · test · build
+    name: vet · test · build (default + ebpf)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,20 +20,40 @@ jobs:
           go-version: '1.22'
           cache: true
 
+      # ─── Default lane (sem eBPF) ──────────────────────────────────────────
+      # Roda primeiro porque cobre o caminho macOS/dev. Falhas aqui afetam
+      # qualquer contributor sem libbpf-dev.
+
       - name: go vet (default)
         run: go vet ./...
-
-      - name: go vet (ebpf tag)
-        run: go vet -tags=ebpf ./...
 
       - name: go test -race (default)
         run: go test -race -count=1 ./...
 
-      - name: go test -race (ebpf tag)
-        run: go test -race -count=1 -tags=ebpf ./...
-
       - name: go build (default — TUI + /proc)
         run: go build -o /tmp/xray ./cmd/xray
+
+      # ─── eBPF lane ────────────────────────────────────────────────────────
+      # Requer libbpf headers + clang pra compilar os .bpf.c.
+      # cilium/ebpf é pure-Go, não precisa de libbpf.so em runtime.
+
+      - name: install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libbpf-dev \
+            linux-tools-common \
+            linux-tools-generic
+
+      - name: make gen (compile .bpf.c → .bpf.o)
+        run: make gen
+
+      - name: go vet (ebpf tag)
+        run: go vet -tags=ebpf ./...
+
+      - name: go test -race (ebpf tag)
+        run: go test -race -count=1 -tags=ebpf ./...
 
       - name: go build (ebpf tag)
         run: go build -tags=ebpf -o /tmp/xray-ebpf ./cmd/xray
