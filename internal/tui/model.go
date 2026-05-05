@@ -77,6 +77,7 @@ type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
 type FDEventMsg collector.FDEvent
+type SyscallsMsg map[string]uint64
 
 // exportTickMsg dispara periodicamente quando export contínuo está ON.
 type exportTickMsg time.Time
@@ -136,22 +137,24 @@ type Model struct {
 	showHelp bool
 
 	// Collectors
-	fdCollector      *collector.FDCollector
-	cpuCollector     *collector.CPUCollector
-	threadsCollector *collector.ThreadsCollector
-	memCollector     *collector.MemCollector
-	iowaitCollector     *collector.IOWaitCollector
+	fdCollector           *collector.FDCollector
+	cpuCollector          *collector.CPUCollector
+	threadsCollector      *collector.ThreadsCollector
+	memCollector          *collector.MemCollector
+	iowaitCollector       *collector.IOWaitCollector
 	ioThroughputCollector *collector.IOThroughputCollector
+	syscallsEBPF          *collector.SyscallsEBPFCollector
 
 	// Simulação
-	rng                 *rand.Rand
-	tickN               int
-	usingMockFDs        bool
-	usingMockCPU        bool
-	usingMockThreads    bool
-	usingMockMem        bool
-	usingMockIOWait     bool
-	usingMockIOThrough  bool
+	rng                  *rand.Rand
+	tickN                int
+	usingMockFDs         bool
+	usingMockCPU         bool
+	usingMockThreads     bool
+	usingMockMem         bool
+	usingMockIOWait      bool
+	usingMockIOThrough   bool
+	usingMockSyscalls    bool
 	lastSimAt           time.Time
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
@@ -185,6 +188,7 @@ func NewModel(cfg Config) Model {
 		usingMockMem:     true,
 		usingMockIOWait:    true,
 		usingMockIOThrough: true,
+		usingMockSyscalls:  true,
 	}
 
 	m.seedMockData()
@@ -218,6 +222,16 @@ func NewModel(cfg Config) Model {
 		if c := collector.NewIOThroughputCollector(); c.Start(cfg.PID) == nil {
 			m.ioThroughputCollector = c
 			m.usingMockIOThrough = false
+		}
+		// Coletor eBPF: só funciona em build com -tags=ebpf, kernel >= 5.8
+		// e CAP_BPF/CAP_PERFMON. Em qualquer outra config, Start falha
+		// silenciosamente e mantemos usingMockSyscalls=true.
+		if !cfg.NoEBPF {
+			c := collector.NewSyscallsEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				m.syscallsEBPF = c
+				m.usingMockSyscalls = false
+			}
 		}
 	}
 
@@ -256,6 +270,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.ioThroughputCollector != nil {
 		cmds = append(cmds, waitForIOThroughput(m.ioThroughputCollector))
+	}
+	if m.syscallsEBPF != nil {
+		cmds = append(cmds, waitForSyscalls(m.syscallsEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -349,6 +366,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, exportTick()
 		}
 		return m, nil
+
+	case SyscallsMsg:
+		// Snapshot completo do map syscall_count vindo do tracer eBPF.
+		// Sobrescrevemos o counts inteiro: o tracer mantém o cumulativo per-pid.
+		m.SyscallCounts = map[string]uint64(v)
+		m.usingMockSyscalls = false
+		return m, waitForSyscalls(m.syscallsEBPF)
 
 	case IOThroughputMsg:
 		s := collector.IOThroughputSample(v)
@@ -657,10 +681,12 @@ func (m *Model) tick() {
 		m.CPUHistory = appendCapped(m.CPUHistory, cpu, 60)
 	}
 
-	// Syscalls — sem collector real ainda (issue #9 trará via eBPF)
-	for i := 0; i < 3; i++ {
-		k := simSyscalls[r.Intn(len(simSyscalls))]
-		m.SyscallCounts[k] += uint64(r.Intn(20))
+	// Syscalls — só simula se o eBPF tracer não está rodando.
+	if m.usingMockSyscalls {
+		for i := 0; i < 3; i++ {
+			k := simSyscalls[r.Intn(len(simSyscalls))]
+			m.SyscallCounts[k] += uint64(r.Intn(20))
+		}
 	}
 
 	// Memory — só simula se collector real não está rodando
@@ -992,6 +1018,23 @@ func waitForIOThroughput(c *collector.IOThroughputCollector) tea.Cmd {
 		v := <-c.Subscribe()
 		if s, ok := v.(collector.IOThroughputSample); ok {
 			return IOThroughputMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForSyscalls(c *collector.SyscallsEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
+		if m, ok := v.(map[string]uint64); ok {
+			return SyscallsMsg(m)
 		}
 		return TickMsg(time.Now())
 	}

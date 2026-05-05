@@ -59,6 +59,7 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		dimRow("--export", "Flag CLI: export desde o launch + snapshot final ao sair"),
 		"",
 		sectionTitle.Render("Collectors"),
+		statusRow("syscalls", m.usingMockSyscalls),
 		statusRow("cpu", m.usingMockCPU),
 		statusRow("memory", m.usingMockMem),
 		statusRow("threads", m.usingMockThreads),

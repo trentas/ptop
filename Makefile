@@ -1,22 +1,51 @@
-.PHONY: build build-ebpf run gen clean dev test vet lint
+.PHONY: build build-ebpf run gen clean dev test test-all vet lint
 
 BINARY := xray
 PKG    := ./cmd/xray
 
-# Compila programas eBPF (.c → .o) e embute no binário via go:generate.
-# Linux only — no-op em macOS.
-gen:
-	go generate ./internal/bpf/...
+# ─── eBPF compilation ────────────────────────────────────────────────────────
 
-# Default build: sem eBPF, roda em qualquer OS (TUI + /proc collectors).
-# Útil pra desenvolvimento, demo do TUI e CI cross-platform.
+# Detecta arch pra setar __TARGET_ARCH_<...> no clang e o GNU multiarch
+# triple, que aponta pros headers `asm/` instalados pelo libc6-dev em
+# Debian/Ubuntu (ex: /usr/include/x86_64-linux-gnu/asm/types.h).
+BPF_ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
+
+ifeq ($(BPF_ARCH),x86)
+  GNU_TRIPLE := x86_64-linux-gnu
+else ifeq ($(BPF_ARCH),arm64)
+  GNU_TRIPLE := aarch64-linux-gnu
+else
+  # Fallback: tenta gcc -print-multiarch (cobre Debian/Ubuntu em qualquer arch)
+  GNU_TRIPLE := $(shell gcc -print-multiarch 2>/dev/null)
+endif
+
+BPF_C  := internal/bpf/programs/syscalls.bpf.c
+BPF_O  := $(BPF_C:.c=.o)
+
+CLANG  ?= clang
+
+# Regra implícita: .bpf.c → .bpf.o via clang -target bpf.
+# `-target bpf`: emite bytecode BPF em vez de nativo
+# `-O2 -g`: otimização + dwarf info (verificador BPF aproveita os DWARF)
+# `-D__TARGET_ARCH_*`: define usado por bpf_tracing.h pra pt_regs offsets
+# `-I/usr/include/$GNU_TRIPLE`: necessário pra encontrar `asm/types.h` etc.
+$(BPF_O): $(BPF_C)
+	$(CLANG) -O2 -g -target bpf \
+		-D__TARGET_ARCH_$(BPF_ARCH) \
+		-I/usr/include \
+		$(if $(GNU_TRIPLE),-I/usr/include/$(GNU_TRIPLE),) \
+		-c $< -o $@
+
+# `make gen` produz todos os .o de programs/. Roda só em Linux com libbpf-dev.
+gen: $(BPF_O)
+
+# ─── builds ──────────────────────────────────────────────────────────────────
+
+# Default build: SEM eBPF, qualquer OS (TUI + /proc collectors).
 build:
 	go build -o bin/$(BINARY) $(PKG)
 
-# Build completo com eBPF habilitado. Requer:
-#   - Linux com kernel headers
-#   - libbpf-dev instalado
-#   - clang + bpftool pra gen dos .o
+# Build completo com eBPF embarcado. Pré-requisito: `make gen` (auto via dep).
 build-ebpf: gen
 	go build -tags=ebpf -o bin/$(BINARY) $(PKG)
 
@@ -28,21 +57,31 @@ run: build-ebpf
 dev: build
 	./bin/$(BINARY) --pid $(PID) --no-ebpf
 
+# ─── test / lint ─────────────────────────────────────────────────────────────
+
 test:
 	go test -race ./...
 
-# Roda os testes nos dois modos de build pra pegar regressão
-# nos stubs vs implementação real.
+# Roda testes nos dois modos. Ebpf lane só faz sentido em Linux (dependência
+# do .bpf.o); pula com aviso em outros OSes.
 test-all: test
-	go test -race -tags=ebpf ./... 2>/dev/null || echo "(eBPF tests só rodam em Linux com libbpf — ok pular em macOS)"
+	@if [ "$$(uname)" = "Linux" ]; then \
+		$(MAKE) gen && go test -race -tags=ebpf ./...; \
+	else \
+		echo "(eBPF tests só rodam em Linux com libbpf-dev — pulando)"; \
+	fi
 
 vet:
 	go vet ./...
-	go vet -tags=ebpf ./...
+	@if [ -f $(BPF_O) ]; then \
+		go vet -tags=ebpf ./...; \
+	else \
+		echo "(go vet -tags=ebpf pulado: rode 'make gen' primeiro)"; \
+	fi
 
 clean:
 	rm -rf bin/
-	find . -name "*.o" -delete
+	find . -name "*.bpf.o" -delete
 
 lint:
 	golangci-lint run ./...

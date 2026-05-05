@@ -1,6 +1,7 @@
 # Build output
 /bin/
 *.o
+*.bpf.o
 
 # Test artifacts
 /tmp/
