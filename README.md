@@ -88,8 +88,31 @@ sudo ./bin/xray --pid 1234 --export
 | `p`, `Space` | Pausar / retomar simulação |
 | `/` | Filtrar (cicla tipos na F6) |
 | `q`, `Ctrl+C` | Sair |
-| `s` | Snapshot JSON (planejado #15) |
-| `e` | Toggle export contínuo (planejado #15) |
+| `?` | Help overlay (status dos collectors com source eBPF/proc/mock) |
+| `s` | Snapshot JSON one-shot |
+| `e` | Toggle export contínuo (JSONL) |
+
+### Verificando se eBPF carregou
+
+O help overlay (`?`) mostra cada collector com sua origem: `cpu ● real via eBPF`, `cpu ● real via /proc`, ou `cpu ○ mock`.
+
+Se um collector eBPF falhou ao iniciar, o erro aparece em **stderr** antes da TUI subir:
+
+```
+$ sudo ./bin/xray --pid 1234
+aviso: eBPF cpu collector indisponível: perf_event_open: operation not permitted
+```
+
+Comum: `operation not permitted` = falta `CAP_BPF` + `CAP_PERFMON` ou kernel com `unprivileged_bpf_disabled=1`.
+
+Verificação extra do kernel-side (Linux):
+
+```bash
+# Lista programas eBPF carregados pelo kernel
+sudo bpftool prog list | grep -E 'tracepoint|perf_event' | tail
+```
+
+Quando xray está rodando com eBPF ativo, deve aparecer `handle_sys_enter` / `handle_sys_exit` (#9) e `handle_perf_event` (#10).
 
 ---
 
