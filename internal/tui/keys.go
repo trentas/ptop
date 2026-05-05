@@ -2,17 +2,37 @@ package tui
 
 import (
 	"fmt"
+	"unicode"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fdFilters define a ordem de ciclagem ao apertar '/' na FD view.
+// fdFilters define a ordem de ciclagem ao apertar '/' na FD view (modo legado
+// quando o filtro substring está vazio — `/` apertar de novo entra em input mode).
 var fdFilters = []string{"all", "file", "socket", "pipe", "epoll", "timer"}
 
 // handleKey processa entrada do teclado.
-// Retorna o model atualizado (cópia mutada) e qualquer Cmd subsequente.
+//
+// Ordem de prioridade:
+//  1. Help overlay aberto: qualquer tecla fecha
+//  2. Input mode (filtro) ativo: forwarding pra inputBuf, com Enter/Esc/Backspace especiais
+//  3. Comandos globais (F1-F7, q, p, etc)
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
-	switch msg.String() {
+	key := msg.String()
+
+	// 1. Help overlay
+	if m.showHelp {
+		m.showHelp = false
+		return m, nil
+	}
+
+	// 2. Input mode (filtro substring)
+	if m.inputMode == InputModeFilter {
+		return m.handleFilterInput(msg, key)
+	}
+
+	// 3. Comandos globais
+	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
 
@@ -39,10 +59,22 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	case "shift+tab", "left", "h":
 		m.ActiveTab = (m.ActiveTab - 1 + TabCount) % TabCount
 
+	case "?":
+		m.showHelp = true
+		return m, nil
+
+	case "esc":
+		// Esc fora de input/help limpa filtro ativo (se houver)
+		if m.filter != "" {
+			m.filter = ""
+		}
+		return m, nil
+
 	case "/":
-		// Cicla o filtro do FD view. Implementação simplificada — substituir
-		// por input field quando o módulo de input estiver pronto.
-		if m.ActiveTab == TabFD {
+		// Em F6, se o filtro substring está vazio, primeiro `/` cicla os tipos
+		// (comportamento legado pra ergonomia rápida). Quando há filtro ativo
+		// ou em outras views, abre input mode.
+		if m.ActiveTab == TabFD && m.filter == "" {
 			for i, f := range fdFilters {
 				if f == m.FDFilter {
 					m.FDFilter = fdFilters[(i+1)%len(fdFilters)]
@@ -50,10 +82,14 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				}
 			}
 			m.FDFilter = fdFilters[0]
+			return m, nil
 		}
+		// Entra em modo de input com o valor atual pré-preenchido
+		m.inputMode = InputModeFilter
+		m.inputBuf = m.filter
+		return m, nil
 
 	case "s":
-		// One-shot snapshot: grava xray-snapshot-<timestamp>.json em cwd.
 		path, err := SaveSnapshot(m)
 		if err != nil {
 			m.toast = fmtToast("⚠ snapshot: %v", err)
@@ -63,7 +99,6 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, clearToastAfter(toastTTL)
 
 	case "e":
-		// Toggle export contínuo: liga/desliga o JSONL.
 		if m.exportFile != nil {
 			_ = m.exportFile.Close()
 			m.exportFile = nil
@@ -77,14 +112,58 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		}
 		m.exportFile = f
 		m.toast = fmtToast("✓ export: %s", f.Name())
-		// Dispara o primeiro tick + clear-toast em paralelo
 		return m, tea.Batch(exportTick(), clearToastAfter(toastTTL))
 	}
 	return m, nil
 }
 
-// fmtToast é um wrapper de fmt.Sprintf isolado pra deixar a chamada legível
-// no switch acima.
+// handleFilterInput processa teclas em modo de input. Enter confirma, Esc
+// cancela mantendo o filtro anterior, Backspace apaga, runas printáveis são
+// concatenadas.
+func (m Model) handleFilterInput(msg tea.KeyMsg, key string) (Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		m.filter = m.inputBuf
+		m.inputMode = InputModeNone
+		m.inputBuf = ""
+		return m, nil
+
+	case tea.KeyEsc, tea.KeyCtrlC:
+		// Cancela: fecha input sem alterar o filtro vigente
+		m.inputMode = InputModeNone
+		m.inputBuf = ""
+		return m, nil
+
+	case tea.KeyBackspace:
+		if len(m.inputBuf) > 0 {
+			r := []rune(m.inputBuf)
+			m.inputBuf = string(r[:len(r)-1])
+		}
+		return m, nil
+
+	case tea.KeyCtrlU:
+		m.inputBuf = ""
+		return m, nil
+
+	case tea.KeyRunes:
+		// Concatena os runas do evento — geralmente 1 rune por keystroke,
+		// mas paste pode entregar vários de uma vez
+		m.inputBuf += string(msg.Runes)
+		return m, nil
+
+	case tea.KeySpace:
+		m.inputBuf += " "
+		return m, nil
+	}
+
+	// Fallback: alguns terminais entregam printáveis como string única
+	if len(key) == 1 && unicode.IsPrint(rune(key[0])) {
+		m.inputBuf += key
+	}
+	return m, nil
+}
+
+// fmtToast wrapper de fmt.Sprintf — deixa o switch acima legível.
 func fmtToast(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...)
 }

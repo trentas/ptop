@@ -38,6 +38,14 @@ const (
 	TabCount
 )
 
+// InputMode descreve qual input modal está ativo (se algum).
+type InputMode int
+
+const (
+	InputModeNone InputMode = iota
+	InputModeFilter
+)
+
 var tabNames = []string{
 	"F1 Overview",
 	"F2 Syscalls",
@@ -115,6 +123,17 @@ type Model struct {
 	// Export contínuo (tecla 'e' ou flag --export):
 	// quando exportFile != nil, exportTickMsg agenda a próxima escrita JSONL.
 	exportFile *os.File
+
+	// Filter: substring aplicada às listas das views (FD/threads/syscalls).
+	// inputMode é InputModeFilter quando o usuário está digitando — inputBuf
+	// é o que está sendo composto. Após Enter, vira filter; após Esc, descartado.
+	filter    string
+	inputMode InputMode
+	inputBuf  string
+
+	// showHelp: quando true, View() renderiza overlay com keybindings sobre
+	// o conteúdo. Fechado por qualquer tecla (incluindo `?` e `esc`).
+	showHelp bool
 
 	// Collectors
 	fdCollector      *collector.FDCollector
@@ -360,7 +379,14 @@ func (m Model) View() string {
 
 	header := renderHeader(m)
 	tabbar := renderTabBar(m)
-	statusbar := renderStatusBar(m)
+
+	// Statusbar é substituído pelo input box quando inputMode == filter
+	var statusbar string
+	if m.inputMode == InputModeFilter {
+		statusbar = renderFilterInput(m, m.Width)
+	} else {
+		statusbar = renderStatusBar(m)
+	}
 
 	chromeH := lipgloss.Height(header) + lipgloss.Height(tabbar) + lipgloss.Height(statusbar)
 	contentH := m.Height - chromeH
@@ -368,6 +394,12 @@ func (m Model) View() string {
 		contentH = 4
 	}
 	contentW := m.Width
+
+	// Help overlay tem prioridade sobre o conteúdo da view
+	if m.showHelp {
+		overlay := renderHelpOverlay(contentW, contentH)
+		return header + "\n" + tabbar + "\n" + overlay + "\n" + statusbar
+	}
 
 	var content string
 	switch m.ActiveTab {
