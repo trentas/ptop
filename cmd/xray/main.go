@@ -6,6 +6,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/trentas/xray/internal/bpf"
 	"github.com/trentas/xray/internal/tui"
 )
 
@@ -22,10 +23,14 @@ func main() {
 		os.Exit(1)
 	}
 
-	if !*noEBPF && os.Geteuid() != 0 {
-		fmt.Fprintln(os.Stderr, "erro: eBPF requer root ou CAP_BPF")
-		fmt.Fprintln(os.Stderr, "dica: use --no-ebpf para modo degradado sem root, ou execute com sudo")
-		os.Exit(1)
+	if !*noEBPF {
+		caps := bpf.GetCapStatus()
+		if diag := caps.Diagnose(); diag != "" {
+			fmt.Fprintln(os.Stderr, "erro: eBPF não disponível")
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprint(os.Stderr, diag)
+			os.Exit(1)
+		}
 	}
 
 	cfg := tui.Config{
