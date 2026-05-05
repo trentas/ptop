@@ -356,7 +356,7 @@ func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWri
 		MutedStyle.Render("fsyncs ") + colorByThreshold(io.Fsyncs, 20).Render(fmt.Sprintf("%d", io.Fsyncs)),
 		MutedStyle.Render("io-wait ") + colorByPctThreshold(io.IOWaitPct, 15).Render(fmt.Sprintf("%.1f%%", io.IOWaitPct)),
 	}
-	bottom := strings.Join(stats, "  ")
+	bottom := strings.Join(stats, panelSp2)
 
 	return header + "\n" + bottom
 }
@@ -525,7 +525,7 @@ func renderMemMini(s collector.MemStats, w int) string {
 		if gap < 1 {
 			gap = 1
 		}
-		lines = append(lines, left+strings.Repeat(" ", gap)+right)
+		lines = append(lines, left+panelGap(gap)+right)
 	}
 	return strings.Join(lines, "\n")
 }
