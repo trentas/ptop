@@ -5,9 +5,19 @@ PKG    := ./cmd/xray
 
 # ─── eBPF compilation ────────────────────────────────────────────────────────
 
-# Detecta arch pra setar __TARGET_ARCH_<...> no clang.
-# Linux uname -m: "x86_64" → "x86", "aarch64" → "arm64".
+# Detecta arch pra setar __TARGET_ARCH_<...> no clang e o GNU multiarch
+# triple, que aponta pros headers `asm/` instalados pelo libc6-dev em
+# Debian/Ubuntu (ex: /usr/include/x86_64-linux-gnu/asm/types.h).
 BPF_ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
+
+ifeq ($(BPF_ARCH),x86)
+  GNU_TRIPLE := x86_64-linux-gnu
+else ifeq ($(BPF_ARCH),arm64)
+  GNU_TRIPLE := aarch64-linux-gnu
+else
+  # Fallback: tenta gcc -print-multiarch (cobre Debian/Ubuntu em qualquer arch)
+  GNU_TRIPLE := $(shell gcc -print-multiarch 2>/dev/null)
+endif
 
 BPF_C  := internal/bpf/programs/syscalls.bpf.c
 BPF_O  := $(BPF_C:.c=.o)
@@ -18,10 +28,12 @@ CLANG  ?= clang
 # `-target bpf`: emite bytecode BPF em vez de nativo
 # `-O2 -g`: otimização + dwarf info (verificador BPF aproveita os DWARF)
 # `-D__TARGET_ARCH_*`: define usado por bpf_tracing.h pra pt_regs offsets
+# `-I/usr/include/$GNU_TRIPLE`: necessário pra encontrar `asm/types.h` etc.
 $(BPF_O): $(BPF_C)
 	$(CLANG) -O2 -g -target bpf \
 		-D__TARGET_ARCH_$(BPF_ARCH) \
 		-I/usr/include \
+		$(if $(GNU_TRIPLE),-I/usr/include/$(GNU_TRIPLE),) \
 		-c $< -o $@
 
 # `make gen` produz todos os .o de programs/. Roda só em Linux com libbpf-dev.
