@@ -10,16 +10,31 @@ import (
 	"github.com/trentas/xray/internal/tui"
 )
 
+// Variáveis injetadas via -ldflags no build de release (goreleaser).
+// Em dev (`go build`/`go run`), ficam com "dev"/"none"/"unknown".
+var (
+	version   = "dev"
+	commit    = "none"
+	buildDate = "unknown"
+)
+
 func main() {
-	pid     := flag.Int("pid", 0, "PID do processo a inspecionar (obrigatório)")
-	fps     := flag.Int("fps", 5, "Taxa de atualização da TUI (frames por segundo)")
+	pid := flag.Int("pid", 0, "PID do processo a inspecionar (obrigatório)")
+	fps := flag.Int("fps", 5, "Taxa de atualização da TUI (frames por segundo)")
 	noEBPF := flag.Bool("no-ebpf", false, "Modo degradado: usa apenas /proc, sem eBPF (útil para desenvolvimento)")
-	export  := flag.Bool("export", false, "Salvar snapshot JSON ao sair (equivalente à tecla 'e')")
+	export := flag.Bool("export", false, "Salvar snapshot JSON ao sair (equivalente à tecla 'e')")
+	showVer := flag.Bool("version", false, "Imprime versão e sai")
 	flag.Parse()
+
+	if *showVer {
+		fmt.Printf("xray %s (commit %s, built %s)\n", version, commit, buildDate)
+		os.Exit(0)
+	}
 
 	if *pid == 0 {
 		fmt.Fprintln(os.Stderr, "erro: --pid é obrigatório")
-		fmt.Fprintln(os.Stderr, "uso:  xray --pid <PID> [--fps 5] [--no-ebpf]")
+		fmt.Fprintln(os.Stderr, "uso:  xray --pid <PID> [--fps 5] [--no-ebpf] [--export]")
+		fmt.Fprintln(os.Stderr, "      xray --version")
 		os.Exit(1)
 	}
 
