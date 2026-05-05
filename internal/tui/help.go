@@ -6,6 +6,15 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// sourceProcOrEmpty retorna "/proc" quando o collector está rodando real,
+// "" caso contrário. Usado pra anotar a source no help overlay.
+func sourceProcOrEmpty(real bool) string {
+	if real {
+		return "/proc"
+	}
+	return ""
+}
+
 // renderHelpOverlay desenha um modal centralizado com todos os keybindings.
 // Recebe as dimensões totais do content area; lipgloss.Place centraliza o card.
 //
@@ -30,12 +39,18 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 
 	statusReal := lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Render("● real")
 	statusMock := lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel).Render("○ mock")
-	statusRow := func(name string, isMock bool) string {
+	sourceStyle := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Italic(true)
+
+	statusRow := func(name string, isMock bool, source string) string {
 		s := statusReal
 		if isMock {
 			s = statusMock
 		}
-		return keyStyle.Render(padRight(name, 14)) + descStyle.Render(" ") + s
+		row := keyStyle.Render(padRight(name, 14)) + descStyle.Render(" ") + s
+		if source != "" {
+			row += sourceStyle.Render(" via " + source)
+		}
+		return row
 	}
 
 	lines := []string{
@@ -62,13 +77,13 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		dimRow("--export", "Flag CLI: export desde o launch + snapshot final ao sair"),
 		"",
 		sectionTitle.Render("Collectors"),
-		statusRow("syscalls", m.usingMockSyscalls),
-		statusRow("cpu", m.usingMockCPU),
-		statusRow("memory", m.usingMockMem),
-		statusRow("threads", m.usingMockThreads),
-		statusRow("io-wait", m.usingMockIOWait),
-		statusRow("io-throughput", m.usingMockIOThrough),
-		statusRow("fds", m.usingMockFDs),
+		statusRow("syscalls", m.usingMockSyscalls, m.syscallsSource),
+		statusRow("cpu", m.usingMockCPU, m.cpuSource),
+		statusRow("memory", m.usingMockMem, sourceProcOrEmpty(!m.usingMockMem)),
+		statusRow("threads", m.usingMockThreads, sourceProcOrEmpty(!m.usingMockThreads)),
+		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
+		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),
+		statusRow("fds", m.usingMockFDs, sourceProcOrEmpty(!m.usingMockFDs)),
 	}
 
 	body := strings.Join(lines, "\n")

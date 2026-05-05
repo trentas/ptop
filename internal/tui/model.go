@@ -157,7 +157,12 @@ type Model struct {
 	usingMockIOWait      bool
 	usingMockIOThrough   bool
 	usingMockSyscalls    bool
-	lastSimAt           time.Time
+	lastSimAt            time.Time
+
+	// Sources: indicam de onde veio o dado real ("eBPF" | "/proc" | "" pra mock).
+	// Mostrado no help overlay (?) pra debug e visibilidade.
+	cpuSource      string
+	syscallsSource string
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -207,17 +212,22 @@ func NewModel(cfg Config) Model {
 		}
 		// CPU: tenta eBPF perf_event primeiro (granularidade 100Hz/CPU);
 		// se falhar (sem -tags=ebpf, sem caps, etc.), cai pra /proc polling.
+		// Erro de eBPF é exposto em stderr ANTES do alt-screen pra usuário ver.
 		if !cfg.NoEBPF {
 			c := collector.NewCPUEBPFCollector()
 			if err := c.Start(cfg.PID); err == nil {
 				m.cpuEBPF = c
 				m.usingMockCPU = false
+				m.cpuSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF cpu collector indisponível: %v\n", err)
 			}
 		}
 		if m.cpuEBPF == nil {
 			if c := collector.NewCPUCollector(); c.Start(cfg.PID) == nil {
 				m.cpuCollector = c
 				m.usingMockCPU = false
+				m.cpuSource = "/proc"
 			}
 		}
 		if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
@@ -237,13 +247,15 @@ func NewModel(cfg Config) Model {
 			m.usingMockIOThrough = false
 		}
 		// Coletor eBPF: só funciona em build com -tags=ebpf, kernel >= 5.8
-		// e CAP_BPF/CAP_PERFMON. Em qualquer outra config, Start falha
-		// silenciosamente e mantemos usingMockSyscalls=true.
+		// e CAP_BPF/CAP_PERFMON. Erro vai pra stderr pra usuário ver.
 		if !cfg.NoEBPF {
 			c := collector.NewSyscallsEBPFCollector()
 			if err := c.Start(cfg.PID); err == nil {
 				m.syscallsEBPF = c
 				m.usingMockSyscalls = false
+				m.syscallsSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF syscalls collector indisponível: %v\n", err)
 			}
 		}
 	}
