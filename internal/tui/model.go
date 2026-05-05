@@ -62,6 +62,9 @@ type Config struct {
 
 type TickMsg time.Time
 type FDMsg []collector.FDEntry
+type CpuMsg collector.CpuSample
+type ThreadsMsg []collector.ThreadInfo
+type MemMsg collector.MemStats
 
 // ─── Tipos auxiliares ────────────────────────────────────────────────────────
 
@@ -104,13 +107,19 @@ type Model struct {
 	Height    int
 
 	// Collectors
-	fdCollector *collector.FDCollector
+	fdCollector      *collector.FDCollector
+	cpuCollector     *collector.CPUCollector
+	threadsCollector *collector.ThreadsCollector
+	memCollector     *collector.MemCollector
 
 	// Simulação
-	rng          *rand.Rand
-	tickN        int
-	usingMockFDs bool
-	lastSimAt    time.Time
+	rng              *rand.Rand
+	tickN            int
+	usingMockFDs     bool
+	usingMockCPU     bool
+	usingMockThreads bool
+	usingMockMem     bool
+	lastSimAt        time.Time
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -128,30 +137,44 @@ type Model struct {
 
 func NewModel(cfg Config) Model {
 	m := Model{
-		cfg:           cfg,
-		ProcessName:   "api-server",
-		Runtime:       "Go 1.22",
-		State:         "RUNNING",
-		StartedAt:     time.Now(),
-		ActiveTab:     TabOverview,
-		FDFilter:      "all",
-		SyscallCounts: make(map[string]uint64),
-		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
-		usingMockFDs:  true,
+		cfg:              cfg,
+		ProcessName:      "api-server",
+		Runtime:          "Go 1.22",
+		State:            "RUNNING",
+		StartedAt:        time.Now(),
+		ActiveTab:        TabOverview,
+		FDFilter:         "all",
+		SyscallCounts:    make(map[string]uint64),
+		rng:              rand.New(rand.NewSource(time.Now().UnixNano())),
+		usingMockFDs:     true,
+		usingMockCPU:     true,
+		usingMockThreads: true,
+		usingMockMem:     true,
 	}
 
 	m.seedMockData()
 
-	// Tenta iniciar o collector real de FDs (lê /proc).
-	// Em --no-ebpf isto continua sendo a fonte real; se falhar (ex: macOS, sem /proc),
-	// caímos em simulação silenciosamente.
+	// Tenta iniciar collectors reais que leem /proc (Linux only).
+	// Falha silenciosa em macOS/Windows: usingMock* permanece true e o model
+	// continua simulando aquele subsistema.
 	if cfg.PID > 0 {
-		c := collector.NewFDCollector()
-		if err := c.Start(cfg.PID); err == nil {
+		if c := collector.NewFDCollector(); c.Start(cfg.PID) == nil {
 			m.fdCollector = c
 			m.usingMockFDs = false
 		} else if !cfg.NoEBPF {
-			fmt.Fprintf(os.Stderr, "aviso: FD collector indisponível: %v\n", err)
+			fmt.Fprintf(os.Stderr, "aviso: FD collector indisponível\n")
+		}
+		if c := collector.NewCPUCollector(); c.Start(cfg.PID) == nil {
+			m.cpuCollector = c
+			m.usingMockCPU = false
+		}
+		if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
+			m.threadsCollector = c
+			m.usingMockThreads = false
+		}
+		if c := collector.NewMemCollector(); c.Start(cfg.PID) == nil {
+			m.memCollector = c
+			m.usingMockMem = false
 		}
 	}
 
@@ -164,6 +187,15 @@ func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tick(m.cfg.FPS)}
 	if m.fdCollector != nil {
 		cmds = append(cmds, waitForFD(m.fdCollector))
+	}
+	if m.cpuCollector != nil {
+		cmds = append(cmds, waitForCPU(m.cpuCollector))
+	}
+	if m.threadsCollector != nil {
+		cmds = append(cmds, waitForThreads(m.threadsCollector))
+	}
+	if m.memCollector != nil {
+		cmds = append(cmds, waitForMem(m.memCollector))
 	}
 	return tea.Batch(cmds...)
 }
@@ -196,6 +228,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usingMockFDs = false
 		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
 		return m, waitForFD(m.fdCollector)
+
+	case CpuMsg:
+		s := collector.CpuSample(v)
+		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
+		m.usingMockCPU = false
+		return m, waitForCPU(m.cpuCollector)
+
+	case ThreadsMsg:
+		m.Threads = []collector.ThreadInfo(v)
+		m.usingMockThreads = false
+		return m, waitForThreads(m.threadsCollector)
+
+	case MemMsg:
+		m.MemStats = collector.MemStats(v)
+		m.usingMockMem = false
+		return m, waitForMem(m.memCollector)
 	}
 	return m, nil
 }
@@ -460,30 +508,35 @@ func (m *Model) tick() {
 	m.tickN++
 	r := m.rng
 
-	// CPU
-	prev := 20.0
-	if len(m.CPUHistory) > 0 {
-		prev = m.CPUHistory[len(m.CPUHistory)-1]
+	// CPU — só simula se collector real não está rodando.
+	// Quando real, o campo é alimentado via CpuMsg.
+	if m.usingMockCPU {
+		prev := 20.0
+		if len(m.CPUHistory) > 0 {
+			prev = m.CPUHistory[len(m.CPUHistory)-1]
+		}
+		delta := (r.Float64()*2 - 0.9) * 12
+		cpu := clamp(prev+delta, 0, 100)
+		m.CPUHistory = appendCapped(m.CPUHistory, cpu, 60)
 	}
-	delta := (r.Float64()*2 - 0.9) * 12
-	cpu := clamp(prev+delta, 0, 100)
-	m.CPUHistory = appendCapped(m.CPUHistory, cpu, 60)
 
-	// Syscalls — incrementa um aleatório
+	// Syscalls — sem collector real ainda (issue #9 trará via eBPF)
 	for i := 0; i < 3; i++ {
 		k := simSyscalls[r.Intn(len(simSyscalls))]
 		m.SyscallCounts[k] += uint64(r.Intn(20))
 	}
 
-	// Memory
-	if r.Float64() > 0.7 {
-		m.MemStats.RSSBytes += uint64(r.Intn(2 << 20))
+	// Memory — só simula se collector real não está rodando
+	if m.usingMockMem {
+		if r.Float64() > 0.7 {
+			m.MemStats.RSSBytes += uint64(r.Intn(2 << 20))
+		}
+		m.MemStats.HeapBytes = uint64(clamp(float64(m.MemStats.HeapBytes)+(r.Float64()-0.5)*3*(1<<20), 60*(1<<20), 256*(1<<20)))
+		if r.Float64() > 0.8 {
+			m.MemStats.PageFaults++
+		}
+		m.MemStats.AllocsPerS = uint64(clamp(float64(m.MemStats.AllocsPerS)+r.Float64()*8-3, 50, 2000))
 	}
-	m.MemStats.HeapBytes = uint64(clamp(float64(m.MemStats.HeapBytes)+(r.Float64()-0.5)*3*(1<<20), 60*(1<<20), 256*(1<<20)))
-	if r.Float64() > 0.8 {
-		m.MemStats.PageFaults++
-	}
-	m.MemStats.AllocsPerS = uint64(clamp(float64(m.MemStats.AllocsPerS)+r.Float64()*8-3, 50, 2000))
 
 	// Network — jitter de latência + estado oscilante
 	for i := range m.NetConns {
@@ -498,17 +551,19 @@ func (m *Model) tick() {
 		}
 	}
 
-	// Threads — running varia CPU; estado raramente muda
-	states := []string{"running", "blocked", "sleeping"}
-	for i := range m.Threads {
-		t := &m.Threads[i]
-		if t.State == "running" {
-			t.CPUPct = clamp(t.CPUPct+(r.Float64()-0.5)*8, 0, 99)
-		} else {
-			t.CPUPct = 0
-		}
-		if r.Float64() > 0.95 {
-			t.State = states[r.Intn(len(states))]
+	// Threads — só simula se collector real não está rodando
+	if m.usingMockThreads {
+		states := []string{"running", "blocked", "sleeping"}
+		for i := range m.Threads {
+			t := &m.Threads[i]
+			if t.State == "running" {
+				t.CPUPct = clamp(t.CPUPct+(r.Float64()-0.5)*8, 0, 99)
+			} else {
+				t.CPUPct = 0
+			}
+			if r.Float64() > 0.95 {
+				t.State = states[r.Intn(len(states))]
+			}
 		}
 	}
 
@@ -702,7 +757,45 @@ func waitForFD(c *collector.FDCollector) tea.Cmd {
 		if fds, ok := v.([]collector.FDEntry); ok {
 			return FDMsg(fds)
 		}
-		// canal fechou ou tipo inesperado; reagenda sem entregar
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForCPU(c *collector.CPUCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		v := <-c.Subscribe()
+		if s, ok := v.(collector.CpuSample); ok {
+			return CpuMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForThreads(c *collector.ThreadsCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		v := <-c.Subscribe()
+		if t, ok := v.([]collector.ThreadInfo); ok {
+			return ThreadsMsg(t)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForMem(c *collector.MemCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		v := <-c.Subscribe()
+		if s, ok := v.(collector.MemStats); ok {
+			return MemMsg(s)
+		}
 		return TickMsg(time.Now())
 	}
 }
