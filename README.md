@@ -1,9 +1,9 @@
-# bpf-inspector
+# xray
 
 TUI para inspeção profunda de processos Linux via eBPF.
 
 ```
-⬡ bpf-inspector  api-server  PID 18423  Go 1.22  RUNNING  15 fds
+⬡ xray  api-server  PID 18423  Go 1.22  RUNNING  15 fds
 ────────────────────────────────────────────────────────────────
  F1 Overview │ F2 Syscalls │ F3 Network │ F4 Threads │ F5 I/O │ F6 FD │ F7 Timeline
 ```
@@ -18,8 +18,8 @@ TUI para inspeção profunda de processos Linux via eBPF.
 ## Instalação
 
 ```bash
-git clone https://github.com/yourusername/bpf-inspector
-cd bpf-inspector
+git clone git@github.com:trentas/xray.git
+cd xray
 make build
 ```
 
@@ -27,13 +27,13 @@ make build
 
 ```bash
 # modo completo (requer root)
-sudo ./bin/bpf-inspector --pid 1234
+sudo ./bin/xray --pid 1234
 
 # modo desenvolvimento (sem eBPF, lê /proc)
-./bin/bpf-inspector --pid 1234 --no-ebpf
+./bin/xray --pid 1234 --no-ebpf
 
 # com taxa de atualização customizada
-sudo ./bin/bpf-inspector --pid 1234 --fps 10
+sudo ./bin/xray --pid 1234 --fps 10
 ```
 
 ## Navegação

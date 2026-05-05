@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/yourusername/bpf-inspector/internal/collector"
+	"github.com/trentas/xray/internal/collector"
 )
 
 // renderTimelineView (F7) — assets/mockup.jsx → TimelineView

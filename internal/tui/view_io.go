@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/yourusername/bpf-inspector/internal/collector"
+	"github.com/trentas/xray/internal/collector"
 )
 
 // renderIOView (F5) — assets/mockup.jsx → IOView

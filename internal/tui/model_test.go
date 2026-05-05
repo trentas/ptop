@@ -35,7 +35,7 @@ func TestRenderAllTabs(t *testing.T) {
 			if out == "" {
 				t.Errorf("size=%dx%d tab=%d: vazio", sz.w, sz.h, tab)
 			}
-			if !strings.Contains(out, "bpf-inspector") {
+			if !strings.Contains(out, "xray") {
 				t.Errorf("size=%dx%d tab=%d: header ausente", sz.w, sz.h, tab)
 			}
 		}

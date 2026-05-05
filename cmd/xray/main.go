@@ -6,7 +6,7 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/yourusername/bpf-inspector/internal/tui"
+	"github.com/trentas/xray/internal/tui"
 )
 
 func main() {
@@ -18,7 +18,7 @@ func main() {
 
 	if *pid == 0 {
 		fmt.Fprintln(os.Stderr, "erro: --pid é obrigatório")
-		fmt.Fprintln(os.Stderr, "uso:  bpf-inspector --pid <PID> [--fps 5] [--no-ebpf]")
+		fmt.Fprintln(os.Stderr, "uso:  xray --pid <PID> [--fps 5] [--no-ebpf]")
 		os.Exit(1)
 	}
 
