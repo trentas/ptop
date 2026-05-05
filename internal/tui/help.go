@@ -86,6 +86,52 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		statusRow("fds", m.usingMockFDs, sourceProcOrEmpty(!m.usingMockFDs)),
 	}
 
+	// Scroll: card tem border (2 lines) + padding (2 lines) = 4 overhead;
+	// se ainda assim sobrar pra scroll indicators (2 linhas), maxBody fica
+	// h - 4 - 2 = h - 6. Em terminais 80x24 com chrome ocupando ~3 linhas,
+	// contentH ≈ 21, maxBody ≈ 15 — menor que ~30 linhas do help. Scroll é
+	// realmente necessário.
+	maxBody := h - 4
+	if maxBody < 5 {
+		maxBody = 5
+	}
+
+	scroll := m.helpScroll
+	hasMoreAbove := false
+	hasMoreBelow := false
+
+	if len(lines) > maxBody {
+		// reserva 2 linhas pros indicators de scroll
+		bodyH := maxBody - 2
+		if bodyH < 3 {
+			bodyH = 3
+		}
+		// clamp scroll
+		maxScroll := len(lines) - bodyH
+		if scroll > maxScroll {
+			scroll = maxScroll
+		}
+		if scroll < 0 {
+			scroll = 0
+		}
+		hasMoreAbove = scroll > 0
+		hasMoreBelow = scroll+bodyH < len(lines)
+		lines = lines[scroll : scroll+bodyH]
+	}
+
+	scrollIndicator := func(visible bool, glyph, hint string) string {
+		if !visible {
+			return lipgloss.NewStyle().Foreground(ColorPanel).Background(ColorPanel).Render(strings.Repeat(" ", 30))
+		}
+		return lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel).Italic(true).
+			Render(glyph + " " + hint)
+	}
+
+	if hasMoreAbove || hasMoreBelow {
+		lines = append([]string{scrollIndicator(hasMoreAbove, "↑", "mais acima (↑/PgUp)")}, lines...)
+		lines = append(lines, scrollIndicator(hasMoreBelow, "↓", "mais abaixo (↓/PgDn)"))
+	}
+
 	body := strings.Join(lines, "\n")
 
 	card := lipgloss.NewStyle().

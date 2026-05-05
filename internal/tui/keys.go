@@ -22,7 +22,31 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 
 	// 1. Help overlay
 	if m.showHelp {
-		m.showHelp = false
+		switch key {
+		case "up", "k":
+			if m.helpScroll > 0 {
+				m.helpScroll--
+			}
+		case "down", "j":
+			m.helpScroll++ // capado pela view se passar do total
+		case "pgup":
+			m.helpScroll -= 10
+			if m.helpScroll < 0 {
+				m.helpScroll = 0
+			}
+		case "pgdown":
+			m.helpScroll += 10
+		case "home", "g":
+			m.helpScroll = 0
+		case "end", "G":
+			m.helpScroll = 9999 // capado pela view
+		case "?", "esc", "q":
+			m.showHelp = false
+			m.helpScroll = 0
+		default:
+			// outras teclas: ignora (mantém help aberto pro user scrollar
+			// sem fechar acidentalmente). `?` ou esc/q pra sair.
+		}
 		return m, nil
 	}
 
