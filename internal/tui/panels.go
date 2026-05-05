@@ -1,0 +1,581 @@
+package tui
+
+import (
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/yourusername/bpf-inspector/internal/collector"
+)
+
+// ─── CPU ─────────────────────────────────────────────────────────────────────
+
+// renderCPU desenha um sparkline + valor atual à direita.
+// Usa escala FIXA 0-100% — sem isso o sparkline rescalaria a cada tick e
+// causaria o efeito "tudo pulando".
+func renderCPU(history []float64, w int) string {
+	if w < 12 {
+		return MutedStyle.Render("…")
+	}
+	cur := 0.0
+	if len(history) > 0 {
+		cur = history[len(history)-1]
+	}
+	color := ColorGreen
+	switch {
+	case cur > 80:
+		color = ColorRed
+	case cur > 50:
+		color = ColorAmber
+	}
+
+	val := lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%.0f%%", cur))
+	lbl := MutedStyle.Render("cpu usage")
+
+	rightW := maxInt(lipgloss.Width(val), lipgloss.Width(lbl))
+	sparkW := w - rightW - 2
+	if sparkW < 4 {
+		sparkW = 4
+	}
+	spark := SparklineWithMax(history, sparkW, 100, color)
+
+	right := lipgloss.JoinVertical(lipgloss.Right,
+		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Right).Render(val),
+		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Right).Render(lbl),
+	)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, spark, "  ", right)
+}
+
+// ─── Syscall bars ────────────────────────────────────────────────────────────
+
+var syscallBarColors = []lipgloss.Color{
+	ColorCyan, ColorBlue, ColorPurple, ColorPink, ColorAmber, ColorGreen, ColorRed, ColorMuted,
+}
+
+type syscallEntry struct {
+	name  string
+	count uint64
+}
+
+func sortedSyscalls(counts map[string]uint64) []syscallEntry {
+	out := make([]syscallEntry, 0, len(counts))
+	for k, v := range counts {
+		out = append(out, syscallEntry{k, v})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].count == out[j].count {
+			return out[i].name < out[j].name
+		}
+		return out[i].count > out[j].count
+	})
+	return out
+}
+
+// renderSyscallBars: tabela compacta para o overview (até 8 linhas).
+// Recebe a lista de nomes em ordem ESTÁVEL (vinda de m.topSyscallNames) e
+// só renderiza esses; counts são lidos do mapa (atualizados a cada tick).
+// Quando names é nil ou vazio, cai no comportamento dinâmico (top-N por count
+// reordenado a cada chamada — útil só pra primeiro frame antes do refresh).
+func renderSyscallBars(counts map[string]uint64, names []string, w, h int) string {
+	entries := stableSyscallEntries(counts, names)
+	if h > 0 && len(entries) > h {
+		entries = entries[:h]
+	}
+	if len(entries) == 0 {
+		return ""
+	}
+
+	maxCount := uint64(1)
+	for _, s := range entries {
+		if s.count > maxCount {
+			maxCount = s.count
+		}
+	}
+
+	const nameW = 13
+	const countW = 7
+	barW := w - nameW - countW - 2
+	if barW < 5 {
+		barW = 5
+	}
+
+	lines := make([]string, 0, len(entries))
+	for i, s := range entries {
+		c := syscallBarColors[i%len(syscallBarColors)]
+		name := lipgloss.NewStyle().Foreground(c).Width(nameW).Render(truncate(s.name, nameW))
+		bar := HorizontalBar(float64(s.count), float64(maxCount), barW, c)
+		count := lipgloss.NewStyle().
+			Foreground(c).Width(countW).Align(lipgloss.Right).
+			Render(fmt.Sprintf("%d", s.count))
+		lines = append(lines, name+" "+bar+" "+count)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// stableSyscallEntries constrói a lista de entries respeitando `names` se
+// fornecida; senão pega top-8 por count.
+func stableSyscallEntries(counts map[string]uint64, names []string) []syscallEntry {
+	if len(names) > 0 {
+		out := make([]syscallEntry, 0, len(names))
+		for _, n := range names {
+			out = append(out, syscallEntry{name: n, count: counts[n]})
+		}
+		return out
+	}
+	all := sortedSyscalls(counts)
+	if len(all) > 8 {
+		all = all[:8]
+	}
+	return all
+}
+
+// renderSyscallTable: versão completa para o F2 (todos os syscalls + percentual + total).
+// Mostra TODOS os syscalls — em F2 a reordenação por count é desejável (a tela
+// inteira é dedicada). Para reduzir oscilação, usamos um max acumulativo (o
+// pico já visto) em vez do max corrente.
+func renderSyscallTable(counts map[string]uint64, w, h int) string {
+	all := sortedSyscalls(counts)
+	if len(all) == 0 {
+		return MutedStyle.Render("(sem dados)")
+	}
+	var total uint64
+	for _, s := range all {
+		total += s.count
+	}
+	maxCount := all[0].count
+	if maxCount == 0 {
+		maxCount = 1
+	}
+
+	const nameW = 14
+	const countW = 8
+	const pctW = 7
+	barW := w - nameW - countW - pctW - 3
+	if barW < 5 {
+		barW = 5
+	}
+
+	header := MutedStyle.Render(
+		padRight("SYSCALL", nameW) + " " +
+			padRight("FREQUENCY", barW) + " " +
+			lipgloss.NewStyle().Width(countW).Align(lipgloss.Right).Render("COUNT") + " " +
+			lipgloss.NewStyle().Width(pctW).Align(lipgloss.Right).Render("%"),
+	)
+
+	lines := []string{header}
+	maxRows := h - 3
+	if maxRows < 0 {
+		maxRows = 0
+	}
+	if len(all) > maxRows {
+		all = all[:maxRows]
+	}
+
+	for i, s := range all {
+		c := syscallBarColors[i%len(syscallBarColors)]
+		name := lipgloss.NewStyle().Foreground(c).Width(nameW).Render(truncate(s.name, nameW))
+		bar := HorizontalBar(float64(s.count), float64(maxCount), barW, c)
+		count := lipgloss.NewStyle().
+			Foreground(ColorText).Width(countW).Align(lipgloss.Right).
+			Render(fmt.Sprintf("%d", s.count))
+		pct := 0.0
+		if total > 0 {
+			pct = float64(s.count) / float64(total) * 100
+		}
+		pctStr := lipgloss.NewStyle().
+			Foreground(ColorMuted).Width(pctW).Align(lipgloss.Right).
+			Render(fmt.Sprintf("%.1f%%", pct))
+		lines = append(lines, name+" "+bar+" "+count+" "+pctStr)
+	}
+
+	footer := DimStyle.Render(strings.Repeat("─", w)) + "\n" +
+		MutedStyle.Render("total events  ") + BrightStyle.Render(fmt.Sprintf("%d", total))
+	return strings.Join(lines, "\n") + "\n" + footer
+}
+
+// ─── Threads ─────────────────────────────────────────────────────────────────
+
+func threadStateGlyph(state string) (string, lipgloss.Color) {
+	switch state {
+	case "running":
+		return "▶", ColorGreen
+	case "blocked":
+		return "■", ColorRed
+	case "sleeping":
+		return "·", ColorMuted
+	default:
+		return "·", ColorMuted
+	}
+}
+
+// renderThreadList: lista compacta para overview.
+func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
+	const nameW = 11
+	const cpuW = 5
+	const waitW = 14
+	barW := w - nameW - cpuW - waitW - 5
+	if barW < 5 {
+		barW = 5
+	}
+
+	lines := make([]string, 0, len(threads))
+	for _, t := range threads {
+		if h > 0 && len(lines) >= h {
+			break
+		}
+		glyph, color := threadStateGlyph(t.State)
+		gly := lipgloss.NewStyle().Foreground(color).Render(glyph)
+		name := lipgloss.NewStyle().Foreground(ColorBright).Width(nameW).Render(truncate(t.Name, nameW))
+
+		var bar string
+		if t.State == "running" {
+			bar = HorizontalBar(t.CPUPct, 100, barW, color)
+		} else {
+			bar = lipgloss.NewStyle().Foreground(ColorDim).Render(strings.Repeat("░", barW))
+		}
+
+		cpuLabel := "--"
+		if t.CPUPct > 0 {
+			cpuLabel = fmt.Sprintf("%.0f%%", t.CPUPct)
+		}
+		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
+
+		wait := ""
+		if t.Waiting != "" {
+			wait = AmberStyle.Render(truncate("⏳ "+t.Waiting, waitW))
+		}
+		waitCol := lipgloss.NewStyle().Width(waitW).Render(wait)
+
+		lines = append(lines, gly+" "+name+" "+bar+" "+cpuStr+" "+waitCol)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// renderThreadTable: versão completa para F4 (mais larga, com STATE textual).
+func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
+	const nameW = 14
+	const stateW = 10
+	const cpuW = 5
+	const waitW = 18
+	barW := w - 2 - nameW - stateW - cpuW - waitW - 5
+	if barW < 5 {
+		barW = 5
+	}
+
+	header := MutedStyle.Render(
+		padRight("  NAME", 2+nameW) + " " +
+			padRight("STATE", stateW) + " " +
+			padRight("CPU", barW) + " " +
+			lipgloss.NewStyle().Width(cpuW).Align(lipgloss.Right).Render("%") + " " +
+			padRight("WAITING ON", waitW),
+	)
+
+	lines := []string{header}
+	for _, t := range threads {
+		if h > 0 && len(lines) >= h-1 {
+			break
+		}
+		glyph, color := threadStateGlyph(t.State)
+		gly := lipgloss.NewStyle().Foreground(color).Width(2).Render(glyph)
+		name := lipgloss.NewStyle().Foreground(ColorBright).Width(nameW).Render(truncate(t.Name, nameW))
+		state := lipgloss.NewStyle().Foreground(color).Width(stateW).Render(strings.ToUpper(t.State))
+
+		var bar string
+		if t.State == "running" {
+			bar = HorizontalBar(t.CPUPct, 100, barW, color)
+		} else {
+			bar = lipgloss.NewStyle().Foreground(ColorDim).Render(strings.Repeat("░", barW))
+		}
+		cpuLabel := "--"
+		if t.CPUPct > 0 {
+			cpuLabel = fmt.Sprintf("%.0f%%", t.CPUPct)
+		}
+		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
+
+		wait := "–"
+		waitColor := ColorDim
+		if t.Waiting != "" {
+			wait = t.Waiting
+			waitColor = ColorAmber
+		}
+		waitStr := lipgloss.NewStyle().Foreground(waitColor).Width(waitW).Render(truncate(wait, waitW))
+
+		lines = append(lines, gly+name+" "+state+" "+bar+" "+cpuStr+" "+waitStr)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ─── I/O Throughput mini (overview) ──────────────────────────────────────────
+
+// renderIOMini: read/write sparklines + stats compactos.
+// maxRead/maxWrite vêm do model com decay lento — sem isso o sparkline rescala
+// a cada tick e dá impressão de instabilidade.
+func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWrite float64, w int) string {
+	if w < 24 {
+		return MutedStyle.Render("…")
+	}
+	curR := 0.0
+	curW := 0.0
+	if len(readH) > 0 {
+		curR = readH[len(readH)-1]
+	}
+	if len(writeH) > 0 {
+		curW = writeH[len(writeH)-1]
+	}
+
+	rightW := 12
+	sparkW := w - rightW - 2
+	if sparkW < 5 {
+		sparkW = 5
+	}
+
+	rSpark := SparklineWithMax(readH, sparkW, maxRead, ColorCyan)
+	wSpark := SparklineWithMax(writeH, sparkW, maxWrite, ColorOrange)
+
+	rLabel := MutedStyle.Render("read/s ") +
+		lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(fmtBytesPerSec(curR))
+	wLabel := MutedStyle.Render("write/s ") +
+		lipgloss.NewStyle().Foreground(ColorOrange).Bold(true).Render(fmtBytesPerSec(curW))
+	right := lipgloss.NewStyle().Width(rightW).Align(lipgloss.Left).Render(rLabel) +
+		"\n" +
+		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Left).Render(wLabel)
+
+	sparks := rSpark + "\n" + wSpark
+	header := lipgloss.JoinHorizontal(lipgloss.Top, sparks, "  ", right)
+
+	stats := []string{
+		MutedStyle.Render("read ops ") + CyanStyle.Render(fmt.Sprintf("%d", io.ReadOps)),
+		MutedStyle.Render("write ops ") + OrangeStyle.Render(fmt.Sprintf("%d", io.WriteOps)),
+		MutedStyle.Render("fsyncs ") + colorByThreshold(io.Fsyncs, 20).Render(fmt.Sprintf("%d", io.Fsyncs)),
+		MutedStyle.Render("io-wait ") + colorByPctThreshold(io.IOWaitPct, 15).Render(fmt.Sprintf("%.1f%%", io.IOWaitPct)),
+	}
+	bottom := strings.Join(stats, "  ")
+
+	return header + "\n" + bottom
+}
+
+// renderIOLargeThroughput: dual sparkline maior para a F5.
+// Usa max com decay (mesmo do mini) para manter escala estável.
+func renderIOLargeThroughput(io collector.IOStats, readH, writeH []float64, maxRead, maxWrite float64, w, h int) string {
+	if w < 30 {
+		return MutedStyle.Render("…")
+	}
+	rightW := 14
+	sparkW := w - rightW - 2
+	if sparkW < 10 {
+		sparkW = 10
+	}
+
+	curR, curW := 0.0, 0.0
+	if len(readH) > 0 {
+		curR = readH[len(readH)-1]
+	}
+	if len(writeH) > 0 {
+		curW = writeH[len(writeH)-1]
+	}
+
+	rSpark := SparklineWithMax(readH, sparkW, maxRead, ColorCyan)
+	wSpark := SparklineWithMax(writeH, sparkW, maxWrite, ColorOrange)
+
+	rRight := MutedStyle.Render("read/s\n") +
+		lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(fmtBytesPerSec(curR))
+	wRight := MutedStyle.Render("write/s\n") +
+		lipgloss.NewStyle().Foreground(ColorOrange).Bold(true).Render(fmtBytesPerSec(curW))
+
+	first := lipgloss.JoinHorizontal(lipgloss.Top,
+		rSpark, "  ",
+		lipgloss.NewStyle().Width(rightW).Render(rRight),
+	)
+	second := lipgloss.JoinHorizontal(lipgloss.Top,
+		wSpark, "  ",
+		lipgloss.NewStyle().Width(rightW).Render(wRight),
+	)
+	return first + "\n" + second
+}
+
+// ─── FD breakdown / mini ─────────────────────────────────────────────────────
+
+var fdTypeOrder = []string{"file", "socket", "pipe", "epoll", "timer"}
+
+func fdBreakdownCounts(fds []collector.FDEntry) map[string]int {
+	m := make(map[string]int, len(fdTypeOrder))
+	for _, t := range fdTypeOrder {
+		m[t] = 0
+	}
+	for _, f := range fds {
+		m[f.Type]++
+	}
+	return m
+}
+
+func renderFDMini(fds []collector.FDEntry, w int) string {
+	counts := fdBreakdownCounts(fds)
+	maxC := 1
+	for _, c := range counts {
+		if c > maxC {
+			maxC = c
+		}
+	}
+	const nameW = 8
+	const countW = 4
+	barW := w - nameW - countW - 2
+	if barW < 5 {
+		barW = 5
+	}
+
+	headerLine := MutedStyle.Render(padRight("open fds", w-6)) +
+		lipgloss.NewStyle().Foreground(ColorBright).Bold(true).Render(fmt.Sprintf("%4d", len(fds)))
+
+	lines := []string{headerLine}
+	for _, t := range fdTypeOrder {
+		c := counts[t]
+		color := FDTypeColor(t)
+		name := lipgloss.NewStyle().Foreground(ColorMuted).Width(nameW).Render(t)
+		bar := HorizontalBar(float64(c), float64(maxC), barW, color)
+		count := lipgloss.NewStyle().Foreground(color).Width(countW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", c))
+		lines = append(lines, name+" "+bar+" "+count)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ─── Network mini / table ────────────────────────────────────────────────────
+
+func netStateColor(state string) lipgloss.Color {
+	switch state {
+	case "WAIT":
+		return ColorAmber
+	case "RECV":
+		return ColorCyan
+	case "ESTABLISHED":
+		return ColorGreen
+	default:
+		return ColorMuted
+	}
+}
+
+func renderNetMini(conns []collector.NetConn, w, h int) string {
+	const typeW = 5
+	const stateW = 12
+	const latW = 7
+	remoteW := w - typeW - stateW - latW - 4
+	if remoteW < 8 {
+		remoteW = 8
+	}
+
+	header := MutedStyle.Render(
+		padRight("TYPE", typeW) + " " +
+			padRight("REMOTE", remoteW) + " " +
+			padRight("STATE", stateW) + " " +
+			lipgloss.NewStyle().Width(latW).Align(lipgloss.Right).Render("LAT"),
+	)
+
+	lines := []string{header}
+	for _, c := range conns {
+		if h > 0 && len(lines) >= h {
+			break
+		}
+		t := lipgloss.NewStyle().Foreground(ColorBlue).Width(typeW).Render(c.Type)
+		dir := c.Dir
+		if dir == "" {
+			dir = "↔"
+		}
+		remote := lipgloss.NewStyle().Foreground(ColorBright).Width(remoteW).Render(truncate(dir+" "+c.Remote, remoteW))
+		state := lipgloss.NewStyle().Foreground(netStateColor(c.State)).Width(stateW).Render(c.State)
+		latColor := ColorGreen
+		if c.LatencyMs > 30 {
+			latColor = ColorAmber
+		}
+		if c.LatencyMs > 100 {
+			latColor = ColorRed
+		}
+		lat := lipgloss.NewStyle().Foreground(latColor).Width(latW).Align(lipgloss.Right).
+			Render(fmt.Sprintf("%.0fms", c.LatencyMs))
+		lines = append(lines, t+" "+remote+" "+state+" "+lat)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ─── Memory ──────────────────────────────────────────────────────────────────
+
+func renderMemMini(s collector.MemStats, w int) string {
+	rows := []struct {
+		label string
+		value string
+		color lipgloss.Color
+	}{
+		{"RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan},
+		{"Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple},
+		{"Page faults", fmt.Sprintf("%d", s.PageFaults), ColorAmber},
+		{"Allocs/s", fmt.Sprintf("%d", s.AllocsPerS), ColorGreen},
+	}
+	lines := make([]string, 0, len(rows))
+	for _, r := range rows {
+		left := MutedStyle.Render(r.label)
+		right := lipgloss.NewStyle().Foreground(r.color).Render(r.value)
+		gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+		if gap < 1 {
+			gap = 1
+		}
+		lines = append(lines, left+strings.Repeat(" ", gap)+right)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ─── Timeline ────────────────────────────────────────────────────────────────
+
+func renderTimelineCompact(events []collector.TimelineEvent, w, h int) string {
+	if h <= 0 {
+		return ""
+	}
+	visible := events
+	if len(visible) > h {
+		visible = visible[:h]
+	}
+	const tsW = 12
+	const catW = 4
+	msgW := w - tsW - catW - 2
+	if msgW < 8 {
+		msgW = 8
+	}
+
+	lines := make([]string, 0, len(visible))
+	for _, e := range visible {
+		ts := lipgloss.NewStyle().Foreground(ColorDim).Width(tsW).
+			Render(e.Timestamp.Format("15:04:05.000"))
+		c := CategoryColor(e.Category)
+		cat := lipgloss.NewStyle().
+			Foreground(c).Width(catW).Align(lipgloss.Center).
+			Render(strings.TrimSpace(CategoryLabel(e.Category)))
+		msg := lipgloss.NewStyle().Foreground(ColorText).Width(msgW).
+			Render(truncate(e.Message, msgW))
+		lines = append(lines, ts+" "+cat+" "+msg)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// ─── helpers visuais ─────────────────────────────────────────────────────────
+
+func colorByThreshold(value uint64, warn uint64) lipgloss.Style {
+	switch {
+	case value > warn*2:
+		return RedStyle
+	case value > warn:
+		return AmberStyle
+	default:
+		return GreenStyle
+	}
+}
+
+func colorByPctThreshold(value, warn float64) lipgloss.Style {
+	switch {
+	case value > warn*2:
+		return RedStyle
+	case value > warn:
+		return AmberStyle
+	default:
+		return GreenStyle
+	}
+}

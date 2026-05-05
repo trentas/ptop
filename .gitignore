@@ -1,0 +1,19 @@
+# Build output
+/bin/
+*.o
+
+# Test artifacts
+/tmp/
+*.test
+*.prof
+coverage.out
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+
+# Claude Code per-developer config (settings.json fica versionado)
+.claude/settings.local.json
