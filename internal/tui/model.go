@@ -140,6 +140,7 @@ type Model struct {
 	// Collectors
 	fdCollector           *collector.FDCollector
 	cpuCollector          *collector.CPUCollector
+	cpuEBPF               *collector.CPUEBPFCollector
 	threadsCollector      *collector.ThreadsCollector
 	memCollector          *collector.MemCollector
 	iowaitCollector       *collector.IOWaitCollector
@@ -204,9 +205,20 @@ func NewModel(cfg Config) Model {
 		} else if !cfg.NoEBPF {
 			fmt.Fprintf(os.Stderr, "aviso: FD collector indisponível\n")
 		}
-		if c := collector.NewCPUCollector(); c.Start(cfg.PID) == nil {
-			m.cpuCollector = c
-			m.usingMockCPU = false
+		// CPU: tenta eBPF perf_event primeiro (granularidade 100Hz/CPU);
+		// se falhar (sem -tags=ebpf, sem caps, etc.), cai pra /proc polling.
+		if !cfg.NoEBPF {
+			c := collector.NewCPUEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				m.cpuEBPF = c
+				m.usingMockCPU = false
+			}
+		}
+		if m.cpuEBPF == nil {
+			if c := collector.NewCPUCollector(); c.Start(cfg.PID) == nil {
+				m.cpuCollector = c
+				m.usingMockCPU = false
+			}
 		}
 		if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
 			m.threadsCollector = c
@@ -259,6 +271,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.cpuCollector != nil {
 		cmds = append(cmds, waitForCPU(m.cpuCollector))
+	}
+	if m.cpuEBPF != nil {
+		cmds = append(cmds, waitForCPUEBPF(m.cpuEBPF))
 	}
 	if m.threadsCollector != nil {
 		cmds = append(cmds, waitForThreads(m.threadsCollector))
@@ -333,6 +348,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := collector.CpuSample(v)
 		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
 		m.usingMockCPU = false
+		// Reagenda na source ativa: eBPF tem prioridade quando disponível.
+		if m.cpuEBPF != nil {
+			return m, waitForCPUEBPF(m.cpuEBPF)
+		}
 		return m, waitForCPU(m.cpuCollector)
 
 	case ThreadsMsg:
@@ -965,6 +984,23 @@ func waitForCPU(c *collector.CPUCollector) tea.Cmd {
 	}
 	return func() tea.Msg {
 		v := <-c.Subscribe()
+		if s, ok := v.(collector.CpuSample); ok {
+			return CpuMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForCPUEBPF(c *collector.CPUEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
 		if s, ok := v.(collector.CpuSample); ok {
 			return CpuMsg(s)
 		}
