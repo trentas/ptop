@@ -31,7 +31,7 @@ func renderCPU(history []float64, w int) string {
 		color = ColorAmber
 	}
 
-	val := lipgloss.NewStyle().Foreground(color).Bold(true).Render(fmt.Sprintf("%.0f%%", cur))
+	val := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Bold(true).Render(fmt.Sprintf("%.0f%%", cur))
 	lbl := MutedStyle.Render("cpu usage")
 
 	rightW := maxInt(lipgloss.Width(val), lipgloss.Width(lbl))
@@ -105,12 +105,13 @@ func renderSyscallBars(counts map[string]uint64, names []string, w, h int) strin
 	lines := make([]string, 0, len(entries))
 	for i, s := range entries {
 		c := syscallBarColors[i%len(syscallBarColors)]
-		name := lipgloss.NewStyle().Foreground(c).Width(nameW).Render(truncate(s.name, nameW))
+		name := lipgloss.NewStyle().Foreground(c).Background(ColorPanel).Width(nameW).Render(truncate(s.name, nameW))
 		bar := HorizontalBar(float64(s.count), float64(maxCount), barW, c)
 		count := lipgloss.NewStyle().
-			Foreground(c).Width(countW).Align(lipgloss.Right).
+			Foreground(c).Background(ColorPanel).Width(countW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%d", s.count))
-		lines = append(lines, name+" "+bar+" "+count)
+		lines = append(lines, panelRow(name, bar, count))
+
 	}
 	return strings.Join(lines, "\n")
 }
@@ -176,19 +177,20 @@ func renderSyscallTable(counts map[string]uint64, w, h int) string {
 
 	for i, s := range all {
 		c := syscallBarColors[i%len(syscallBarColors)]
-		name := lipgloss.NewStyle().Foreground(c).Width(nameW).Render(truncate(s.name, nameW))
+		name := lipgloss.NewStyle().Foreground(c).Background(ColorPanel).Width(nameW).Render(truncate(s.name, nameW))
 		bar := HorizontalBar(float64(s.count), float64(maxCount), barW, c)
 		count := lipgloss.NewStyle().
-			Foreground(ColorText).Width(countW).Align(lipgloss.Right).
+			Foreground(ColorText).Background(ColorPanel).Width(countW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%d", s.count))
 		pct := 0.0
 		if total > 0 {
 			pct = float64(s.count) / float64(total) * 100
 		}
 		pctStr := lipgloss.NewStyle().
-			Foreground(ColorMuted).Width(pctW).Align(lipgloss.Right).
+			Foreground(ColorMuted).Background(ColorPanel).Width(pctW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%.1f%%", pct))
-		lines = append(lines, name+" "+bar+" "+count+" "+pctStr)
+		lines = append(lines, panelRow(name, bar, count, pctStr))
+
 	}
 
 	footer := DimStyle.Render(strings.Repeat("─", w)) + "\n" +
@@ -227,21 +229,21 @@ func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 			break
 		}
 		glyph, color := threadStateGlyph(t.State)
-		gly := lipgloss.NewStyle().Foreground(color).Render(glyph)
-		name := lipgloss.NewStyle().Foreground(ColorBright).Width(nameW).Render(truncate(t.Name, nameW))
+		gly := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Render(glyph)
+		name := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(nameW).Render(truncate(t.Name, nameW))
 
 		var bar string
 		if t.State == "running" {
 			bar = HorizontalBar(t.CPUPct, 100, barW, color)
 		} else {
-			bar = lipgloss.NewStyle().Foreground(ColorDim).Render(strings.Repeat("░", barW))
+			bar = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW))
 		}
 
 		cpuLabel := "--"
 		if t.CPUPct > 0 {
 			cpuLabel = fmt.Sprintf("%.0f%%", t.CPUPct)
 		}
-		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
+		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
 
 		wait := ""
 		if t.Waiting != "" {
@@ -249,7 +251,8 @@ func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 		}
 		waitCol := lipgloss.NewStyle().Width(waitW).Render(wait)
 
-		lines = append(lines, gly+" "+name+" "+bar+" "+cpuStr+" "+waitCol)
+		lines = append(lines, panelRow(gly, name, bar, cpuStr, waitCol))
+
 	}
 	return strings.Join(lines, "\n")
 }
@@ -279,21 +282,21 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 			break
 		}
 		glyph, color := threadStateGlyph(t.State)
-		gly := lipgloss.NewStyle().Foreground(color).Width(2).Render(glyph)
-		name := lipgloss.NewStyle().Foreground(ColorBright).Width(nameW).Render(truncate(t.Name, nameW))
-		state := lipgloss.NewStyle().Foreground(color).Width(stateW).Render(strings.ToUpper(t.State))
+		gly := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Width(2).Render(glyph)
+		name := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(nameW).Render(truncate(t.Name, nameW))
+		state := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Width(stateW).Render(strings.ToUpper(t.State))
 
 		var bar string
 		if t.State == "running" {
 			bar = HorizontalBar(t.CPUPct, 100, barW, color)
 		} else {
-			bar = lipgloss.NewStyle().Foreground(ColorDim).Render(strings.Repeat("░", barW))
+			bar = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW))
 		}
 		cpuLabel := "--"
 		if t.CPUPct > 0 {
 			cpuLabel = fmt.Sprintf("%.0f%%", t.CPUPct)
 		}
-		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
+		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
 
 		wait := "–"
 		waitColor := ColorDim
@@ -301,9 +304,10 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 			wait = t.Waiting
 			waitColor = ColorAmber
 		}
-		waitStr := lipgloss.NewStyle().Foreground(waitColor).Width(waitW).Render(truncate(wait, waitW))
+		waitStr := lipgloss.NewStyle().Foreground(waitColor).Background(ColorPanel).Width(waitW).Render(truncate(wait, waitW))
 
-		lines = append(lines, gly+name+" "+state+" "+bar+" "+cpuStr+" "+waitStr)
+		lines = append(lines, panelRow(gly+name, state, bar, cpuStr, waitStr))
+
 	}
 	return strings.Join(lines, "\n")
 }
@@ -336,9 +340,9 @@ func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWri
 	wSpark := SparklineWithMax(writeH, sparkW, maxWrite, ColorOrange)
 
 	rLabel := MutedStyle.Render("read/s ") +
-		lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(fmtBytesPerSec(curR))
+		lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curR))
 	wLabel := MutedStyle.Render("write/s ") +
-		lipgloss.NewStyle().Foreground(ColorOrange).Bold(true).Render(fmtBytesPerSec(curW))
+		lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curW))
 	right := lipgloss.NewStyle().Width(rightW).Align(lipgloss.Left).Render(rLabel) +
 		"\n" +
 		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Left).Render(wLabel)
@@ -381,9 +385,9 @@ func renderIOLargeThroughput(io collector.IOStats, readH, writeH []float64, maxR
 	wSpark := SparklineWithMax(writeH, sparkW, maxWrite, ColorOrange)
 
 	rRight := MutedStyle.Render("read/s\n") +
-		lipgloss.NewStyle().Foreground(ColorCyan).Bold(true).Render(fmtBytesPerSec(curR))
+		lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curR))
 	wRight := MutedStyle.Render("write/s\n") +
-		lipgloss.NewStyle().Foreground(ColorOrange).Bold(true).Render(fmtBytesPerSec(curW))
+		lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curW))
 
 	first := lipgloss.JoinHorizontal(lipgloss.Top,
 		rSpark, "  ",
@@ -427,16 +431,17 @@ func renderFDMini(fds []collector.FDEntry, w int) string {
 	}
 
 	headerLine := MutedStyle.Render(padRight("open fds", w-6)) +
-		lipgloss.NewStyle().Foreground(ColorBright).Bold(true).Render(fmt.Sprintf("%4d", len(fds)))
+		lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Bold(true).Render(fmt.Sprintf("%4d", len(fds)))
 
 	lines := []string{headerLine}
 	for _, t := range fdTypeOrder {
 		c := counts[t]
 		color := FDTypeColor(t)
-		name := lipgloss.NewStyle().Foreground(ColorMuted).Width(nameW).Render(t)
+		name := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(nameW).Render(t)
 		bar := HorizontalBar(float64(c), float64(maxC), barW, color)
-		count := lipgloss.NewStyle().Foreground(color).Width(countW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", c))
-		lines = append(lines, name+" "+bar+" "+count)
+		count := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Width(countW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", c))
+		lines = append(lines, panelRow(name, bar, count))
+
 	}
 	return strings.Join(lines, "\n")
 }
@@ -477,13 +482,13 @@ func renderNetMini(conns []collector.NetConn, w, h int) string {
 		if h > 0 && len(lines) >= h {
 			break
 		}
-		t := lipgloss.NewStyle().Foreground(ColorBlue).Width(typeW).Render(c.Type)
+		t := lipgloss.NewStyle().Foreground(ColorBlue).Background(ColorPanel).Width(typeW).Render(c.Type)
 		dir := c.Dir
 		if dir == "" {
 			dir = "↔"
 		}
-		remote := lipgloss.NewStyle().Foreground(ColorBright).Width(remoteW).Render(truncate(dir+" "+c.Remote, remoteW))
-		state := lipgloss.NewStyle().Foreground(netStateColor(c.State)).Width(stateW).Render(c.State)
+		remote := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(remoteW).Render(truncate(dir+" "+c.Remote, remoteW))
+		state := lipgloss.NewStyle().Foreground(netStateColor(c.State)).Background(ColorPanel).Width(stateW).Render(c.State)
 		latColor := ColorGreen
 		if c.LatencyMs > 30 {
 			latColor = ColorAmber
@@ -491,9 +496,10 @@ func renderNetMini(conns []collector.NetConn, w, h int) string {
 		if c.LatencyMs > 100 {
 			latColor = ColorRed
 		}
-		lat := lipgloss.NewStyle().Foreground(latColor).Width(latW).Align(lipgloss.Right).
+		lat := lipgloss.NewStyle().Foreground(latColor).Background(ColorPanel).Width(latW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%.0fms", c.LatencyMs))
-		lines = append(lines, t+" "+remote+" "+state+" "+lat)
+		lines = append(lines, panelRow(t, remote, state, lat))
+
 	}
 	return strings.Join(lines, "\n")
 }
@@ -514,7 +520,7 @@ func renderMemMini(s collector.MemStats, w int) string {
 	lines := make([]string, 0, len(rows))
 	for _, r := range rows {
 		left := MutedStyle.Render(r.label)
-		right := lipgloss.NewStyle().Foreground(r.color).Render(r.value)
+		right := lipgloss.NewStyle().Foreground(r.color).Background(ColorPanel).Render(r.value)
 		gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1
@@ -543,15 +549,16 @@ func renderTimelineCompact(events []collector.TimelineEvent, w, h int) string {
 
 	lines := make([]string, 0, len(visible))
 	for _, e := range visible {
-		ts := lipgloss.NewStyle().Foreground(ColorDim).Width(tsW).
+		ts := lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Width(tsW).
 			Render(e.Timestamp.Format("15:04:05.000"))
 		c := CategoryColor(e.Category)
 		cat := lipgloss.NewStyle().
-			Foreground(c).Width(catW).Align(lipgloss.Center).
+			Foreground(c).Background(ColorPanel).Width(catW).Align(lipgloss.Center).
 			Render(strings.TrimSpace(CategoryLabel(e.Category)))
-		msg := lipgloss.NewStyle().Foreground(ColorText).Width(msgW).
+		msg := lipgloss.NewStyle().Foreground(ColorText).Background(ColorPanel).Width(msgW).
 			Render(truncate(e.Message, msgW))
-		lines = append(lines, ts+" "+cat+" "+msg)
+		lines = append(lines, panelRow(ts, cat, msg))
+
 	}
 	return strings.Join(lines, "\n")
 }

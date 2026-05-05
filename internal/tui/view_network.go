@@ -58,11 +58,12 @@ func renderNetLatencyTrend(m Model, w int) string {
 		if c.LatencyMs > 100 {
 			latColor = ColorRed
 		}
-		left := lipgloss.NewStyle().Foreground(ColorMuted).Width(labelW).Render(truncate(c.Remote, labelW))
+		left := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(labelW).Render(truncate(c.Remote, labelW))
 		bar := HorizontalBar(c.LatencyMs, 100, barW, latColor)
-		val := lipgloss.NewStyle().Foreground(latColor).Width(8).Align(lipgloss.Right).
+		val := lipgloss.NewStyle().Foreground(latColor).Background(ColorPanel).Width(8).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%.1fms", c.LatencyMs))
-		lines = append(lines, left+" "+bar+" "+val)
+		lines = append(lines, panelRow(left, bar, val))
+
 	}
 	return strings.Join(lines, "\n\n") // espaçamento entre linhas
 }

@@ -103,13 +103,25 @@ func minInt(a, b int) int {
 }
 
 // padRight retorna s padded com espaços até `w` colunas (largura visível).
-// Se s já for >= w, é truncado.
+// O padding sai com Background(ColorPanel) — caso contrário, células
+// rendered ficariam com bg default do terminal e vazariam pelo gap.
 func padRight(s string, w int) string {
 	vw := lipgloss.Width(s)
 	if vw >= w {
 		return s
 	}
-	return s + strings.Repeat(" ", w-vw)
+	pad := lipgloss.NewStyle().Background(ColorPanel).Render(strings.Repeat(" ", w-vw))
+	return s + pad
+}
+
+// panelRow concatena segments com um separador de 1 espaço PINTADO com
+// ColorPanel — usar pra montar linhas dentro de panel bodies sem deixar
+// gaps com bg default do terminal vazando entre as palavras.
+//
+// Substitui o padrão antigo `name + " " + bar + " " + count`.
+func panelRow(parts ...string) string {
+	sep := lipgloss.NewStyle().Background(ColorPanel).Render(" ")
+	return strings.Join(parts, sep)
 }
 
 // truncate corta s para caber em `w` colunas visíveis, adicionando "…" se necessário.

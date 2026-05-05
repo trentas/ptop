@@ -46,20 +46,39 @@ var (
 			PaddingLeft(1).PaddingRight(1)
 )
 
-// Estilos de texto semânticos
+// Estilos de texto semânticos.
+//
+// IMPORTANTE: todos têm Background(ColorPanel) explícito. Sem isso, células
+// renderizadas inside panels ficam com o background default do terminal
+// (que é o mauve do Ubuntu, ou qualquer cor do tema do user) — vazando
+// pelos espaços entre segmentos coloridos.
+//
+// Header/tabbar/statusbar usam estilos inline com seus próprios backgrounds
+// e NÃO consomem estes; ver header.go, tabbar.go, statusbar.go.
 var (
-	BrightStyle = lipgloss.NewStyle().Foreground(ColorBright)
-	MutedStyle  = lipgloss.NewStyle().Foreground(ColorMuted)
-	DimStyle    = lipgloss.NewStyle().Foreground(ColorDim)
-	GreenStyle  = lipgloss.NewStyle().Foreground(ColorGreen)
-	CyanStyle   = lipgloss.NewStyle().Foreground(ColorCyan)
-	AmberStyle  = lipgloss.NewStyle().Foreground(ColorAmber)
-	RedStyle    = lipgloss.NewStyle().Foreground(ColorRed)
-	BlueStyle   = lipgloss.NewStyle().Foreground(ColorBlue)
-	PurpleStyle = lipgloss.NewStyle().Foreground(ColorPurple)
-	OrangeStyle = lipgloss.NewStyle().Foreground(ColorOrange)
-	TealStyle   = lipgloss.NewStyle().Foreground(ColorTeal)
+	BrightStyle = lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel)
+	MutedStyle  = lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel)
+	DimStyle    = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel)
+	GreenStyle  = lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel)
+	CyanStyle   = lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel)
+	AmberStyle  = lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel)
+	RedStyle    = lipgloss.NewStyle().Foreground(ColorRed).Background(ColorPanel)
+	BlueStyle   = lipgloss.NewStyle().Foreground(ColorBlue).Background(ColorPanel)
+	PurpleStyle = lipgloss.NewStyle().Foreground(ColorPurple).Background(ColorPanel)
+	OrangeStyle = lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel)
+	TealStyle   = lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel)
 )
+
+// PanelStyleBase devolve um base style com ColorPanel como background.
+// Use pra construir estilos inline dentro de panels:
+//
+//	name := PanelStyleBase().Foreground(c).Width(nameW).Render(s)
+//
+// É só açúcar pra `lipgloss.NewStyle().Background(ColorPanel)` mas torna
+// claro a intenção.
+func PanelStyleBase() lipgloss.Style {
+	return lipgloss.NewStyle().Background(ColorPanel)
+}
 
 // Badge: pequeno label colorido inline (ex: "PID 18423", "RUNNING").
 // Single-line por design — usado em headers e tabs onde altura > 1 quebra layout.
