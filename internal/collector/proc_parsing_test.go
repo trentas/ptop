@@ -10,7 +10,7 @@ const sampleStat = `12345 (bash) S 12340 12345 12345 34816 12345 4194304 1234 0 
 const sampleStatTrickyComm = `12345 (sh) (((bad))) S 12340 12345 12345 0 0 0 99 0 7 0 100 200 0 0 20 0 1 0 0 0 0 0 0 0`
 
 func TestParseProcStatTimes_basic(t *testing.T) {
-	utime, stime, minflt, majflt, err := parseProcStatTimes([]byte(sampleStat))
+	utime, stime, minflt, majflt, blkio, err := parseProcStatTimes([]byte(sampleStat))
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -26,11 +26,48 @@ func TestParseProcStatTimes_basic(t *testing.T) {
 	if majflt != 5 {
 		t.Errorf("majflt=%d, esperado 5", majflt)
 	}
+	if blkio != 0 {
+		// no sampleStat, post[39] = "0"
+		t.Errorf("blkio=%d, esperado 0 no sample", blkio)
+	}
+}
+
+// Sample com campo 42 (blkio) > 0 — coloquei 99 no índice post[39]:
+//
+//	pid (comm) state ppid pgrp session tty_nr tpgid flags
+//	minflt cminflt majflt cmajflt utime stime cutime cstime
+//	priority nice num_threads itrealvalue starttime vsize rss
+//	rsslim startcode endcode startstack kstkesp kstkeip signal
+//	blocked sigignore sigcatch wchan nswap cnswap exit_signal
+//	processor rt_priority policy delayacct_blkio_ticks ...
+const sampleStatWithBlkio = `12345 (myapp) R 1 1 1 0 -1 4194304 100 0 0 0 50 25 0 0 20 0 1 0 100 8454144 1024 ` +
+	`18446744073709551615 1 1 0 0 0 0 0 0 65536 1 0 0 17 0 0 0 99 0 0 0 0 0 0 0 0 0`
+
+func TestParseProcStatTimes_blkio(t *testing.T) {
+	_, _, _, _, blkio, err := parseProcStatTimes([]byte(sampleStatWithBlkio))
+	if err != nil {
+		t.Fatalf("erro: %v", err)
+	}
+	if blkio != 99 {
+		t.Errorf("blkio=%d, esperado 99", blkio)
+	}
+}
+
+// Kernel antigo (sem CONFIG_TASK_DELAY_ACCT) ou trunca antes do campo 42 — tem que retornar blkio=0 sem erro.
+func TestParseProcStatTimes_shortNoBlkio(t *testing.T) {
+	short := `12345 (proc) S 1 2 3 0 0 0 1 0 2 0 10 5 0 0 20 0 1 0`
+	_, _, _, _, blkio, err := parseProcStatTimes([]byte(short))
+	if err != nil {
+		t.Fatalf("erro inesperado: %v", err)
+	}
+	if blkio != 0 {
+		t.Errorf("blkio deve ser 0 quando o campo não está presente, got %d", blkio)
+	}
 }
 
 func TestParseProcStatTimes_trickyComm(t *testing.T) {
 	// Garante que o parser usa o ÚLTIMO `)` e não o primeiro
-	utime, stime, _, majflt, err := parseProcStatTimes([]byte(sampleStatTrickyComm))
+	utime, stime, _, majflt, _, err := parseProcStatTimes([]byte(sampleStatTrickyComm))
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}
@@ -43,10 +80,10 @@ func TestParseProcStatTimes_trickyComm(t *testing.T) {
 }
 
 func TestParseProcStatTimes_malformed(t *testing.T) {
-	if _, _, _, _, err := parseProcStatTimes([]byte("garbage no parens here")); err == nil {
+	if _, _, _, _, _, err := parseProcStatTimes([]byte("garbage no parens here")); err == nil {
 		t.Error("esperava erro pra entrada sem ')'")
 	}
-	if _, _, _, _, err := parseProcStatTimes([]byte("123 (x) S")); err == nil {
+	if _, _, _, _, _, err := parseProcStatTimes([]byte("123 (x) S")); err == nil {
 		t.Error("esperava erro pra entrada com poucos campos")
 	}
 }

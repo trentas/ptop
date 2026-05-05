@@ -79,7 +79,7 @@ func (c *MemCollector) sample() (MemStats, error) {
 	if err != nil {
 		return MemStats{}, err
 	}
-	_, _, minflt, majflt, _ := parseProcStatTimes(statData)
+	_, _, minflt, majflt, _, _ := parseProcStatTimes(statData)
 	totalFaults := minflt + majflt
 
 	c.mu.Lock()

@@ -65,6 +65,7 @@ type FDMsg []collector.FDEntry
 type CpuMsg collector.CpuSample
 type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
+type IOWaitMsg collector.IOWaitSample
 
 // ─── Tipos auxiliares ────────────────────────────────────────────────────────
 
@@ -111,6 +112,7 @@ type Model struct {
 	cpuCollector     *collector.CPUCollector
 	threadsCollector *collector.ThreadsCollector
 	memCollector     *collector.MemCollector
+	iowaitCollector  *collector.IOWaitCollector
 
 	// Simulação
 	rng              *rand.Rand
@@ -119,6 +121,7 @@ type Model struct {
 	usingMockCPU     bool
 	usingMockThreads bool
 	usingMockMem     bool
+	usingMockIOWait  bool
 	lastSimAt        time.Time
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
@@ -150,6 +153,7 @@ func NewModel(cfg Config) Model {
 		usingMockCPU:     true,
 		usingMockThreads: true,
 		usingMockMem:     true,
+		usingMockIOWait:  true,
 	}
 
 	m.seedMockData()
@@ -176,6 +180,10 @@ func NewModel(cfg Config) Model {
 			m.memCollector = c
 			m.usingMockMem = false
 		}
+		if c := collector.NewIOWaitCollector(); c.Start(cfg.PID) == nil {
+			m.iowaitCollector = c
+			m.usingMockIOWait = false
+		}
 	}
 
 	return m
@@ -196,6 +204,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.memCollector != nil {
 		cmds = append(cmds, waitForMem(m.memCollector))
+	}
+	if m.iowaitCollector != nil {
+		cmds = append(cmds, waitForIOWait(m.iowaitCollector))
 	}
 	return tea.Batch(cmds...)
 }
@@ -244,6 +255,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.MemStats = collector.MemStats(v)
 		m.usingMockMem = false
 		return m, waitForMem(m.memCollector)
+
+	case IOWaitMsg:
+		m.IOStats.IOWaitPct = collector.IOWaitSample(v).Pct
+		m.usingMockIOWait = false
+		return m, waitForIOWait(m.iowaitCollector)
 	}
 	return m, nil
 }
@@ -601,7 +617,9 @@ func (m *Model) tick() {
 	if r.Float64() > 0.7 {
 		m.IOStats.Opens++
 	}
-	m.IOStats.IOWaitPct = clamp(m.IOStats.IOWaitPct+(r.Float64()-0.5)*2, 0, 40)
+	if m.usingMockIOWait {
+		m.IOStats.IOWaitPct = clamp(m.IOStats.IOWaitPct+(r.Float64()-0.5)*2, 0, 40)
+	}
 
 	for i := range m.IOStats.TopFiles {
 		f := &m.IOStats.TopFiles[i]
@@ -795,6 +813,19 @@ func waitForMem(c *collector.MemCollector) tea.Cmd {
 		v := <-c.Subscribe()
 		if s, ok := v.(collector.MemStats); ok {
 			return MemMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForIOWait(c *collector.IOWaitCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		v := <-c.Subscribe()
+		if s, ok := v.(collector.IOWaitSample); ok {
+			return IOWaitMsg(s)
 		}
 		return TickMsg(time.Now())
 	}
