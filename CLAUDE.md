@@ -1,4 +1,4 @@
-# bpf-inspector
+# xray
 
 TUI interativa para inspeção profunda de processos Linux via eBPF.
 Permite diagnóstico ao vivo de CPU, syscalls, rede, I/O, memória, threads e file descriptors
@@ -40,7 +40,7 @@ teal:    #2dd4bf
 ## Estrutura do projeto
 
 ```
-bpf-inspector/
+xray/
 ├── CLAUDE.md
 ├── go.mod
 ├── go.sum
@@ -246,11 +246,11 @@ gen:
 	go generate ./internal/bpf/...
 
 build: gen
-	go build -o bin/bpf-inspector ./cmd/inspector
+	go build -o bin/xray ./cmd/xray
 
 # requer root para eBPF
 run: build
-	sudo ./bin/bpf-inspector --pid $(PID)
+	sudo ./bin/xray --pid $(PID)
 
 clean:
 	rm -rf bin/
@@ -261,10 +261,10 @@ clean:
 ## Flags de linha de comando
 
 ```
-bpf-inspector --pid <PID>            # inspecionar processo específico
-bpf-inspector --pid <PID> --fps 10   # taxa de atualização (default: 5)
-bpf-inspector --pid <PID> --export   # salvar snapshot JSON ao sair (tecla 'e')
-bpf-inspector --pid <PID> --no-ebpf  # modo degradado: só /proc, sem eBPF (para testes)
+xray --pid <PID>            # inspecionar processo específico
+xray --pid <PID> --fps 10   # taxa de atualização (default: 5)
+xray --pid <PID> --export   # salvar snapshot JSON ao sair (tecla 'e')
+xray --pid <PID> --no-ebpf  # modo degradado: só /proc, sem eBPF (para testes)
 ```
 
 ---

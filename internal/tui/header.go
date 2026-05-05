@@ -10,7 +10,7 @@ import (
 
 // renderHeader desenha a barra superior:
 //
-//	⬡ bpf-inspector │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
+//	⬡ xray │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
 //
 // O resultado é SEMPRE truncado para caber em m.Width. Se a linha estourar a
 // largura, o terminal faz line-wrap e o resto da TUI vira de ponta-cabeça —
@@ -22,7 +22,7 @@ func renderHeader(m Model) string {
 		Foreground(ColorCyan).
 		Background(headerBg).
 		Bold(true).
-		Render("⬡ bpf-inspector")
+		Render("⬡ xray")
 
 	sep := lipgloss.NewStyle().
 		Foreground(ColorBorder).

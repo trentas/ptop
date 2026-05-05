@@ -1,4 +1,4 @@
-module github.com/yourusername/bpf-inspector
+module github.com/trentas/xray
 
 go 1.22
 

@@ -11,7 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/yourusername/bpf-inspector/internal/collector"
+	"github.com/trentas/xray/internal/collector"
 )
 
 // simInterval define a granularidade da simulação. O TickMsg dispara no FPS
