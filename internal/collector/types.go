@@ -109,6 +109,14 @@ type LatencyBucket struct {
 
 // ─── File Descriptors ────────────────────────────────────────────────────────
 
+// FDEvent é um evento granular do stream de FDs (openat/close/dup2/...).
+// Diferente do snapshot []FDEntry que é o estado atual completo, FDEvent
+// é uma notificação de mudança — usado pra alimentar a F6 ▸ FD Events.
+type FDEvent struct {
+	Timestamp time.Time
+	Message   string
+}
+
 type FDEntry struct {
 	FD     int
 	Type   string // "file" | "socket" | "pipe" | "epoll" | "timer" | "event"

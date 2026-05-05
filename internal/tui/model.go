@@ -67,14 +67,8 @@ type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
 type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
-
-// ─── Tipos auxiliares ────────────────────────────────────────────────────────
-
-// FDEvent é um evento do stream de FDs (openat/close/dup2/...).
-type FDEvent struct {
-	Timestamp time.Time
-	Message   string
-}
+type TimelineMsg collector.TimelineEvent
+type FDEventMsg collector.FDEvent
 
 // ─── Model ───────────────────────────────────────────────────────────────────
 
@@ -98,7 +92,7 @@ type Model struct {
 	IOWriteHist    []float64
 	FDs            []collector.FDEntry
 	FDCountHistory []float64
-	FDEvents       []FDEvent
+	FDEvents       []collector.FDEvent
 	Timeline       []collector.TimelineEvent
 
 	// Estado da UI
@@ -249,6 +243,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.FDs = []collector.FDEntry(v)
 		m.usingMockFDs = false
 		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
+		return m, waitForFD(m.fdCollector)
+
+	case TimelineMsg:
+		// Timeline é prepend; mais recente em cima. Cap em 120 (mesmo limite
+		// usado pela simulação).
+		m.Timeline = append([]collector.TimelineEvent{collector.TimelineEvent(v)}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
+		return m, waitForFD(m.fdCollector)
+
+	case FDEventMsg:
+		m.FDEvents = append([]collector.FDEvent{collector.FDEvent(v)}, m.FDEvents...)
+		if len(m.FDEvents) > 60 {
+			m.FDEvents = m.FDEvents[:60]
+		}
 		return m, waitForFD(m.fdCollector)
 
 	case CpuMsg:
@@ -491,7 +501,7 @@ func (m *Model) seedMockData() {
 
 	// Timeline (semeada vazia — vai sendo preenchida pelo tick)
 	m.Timeline = make([]collector.TimelineEvent, 0, 120)
-	m.FDEvents = make([]FDEvent, 0, 60)
+	m.FDEvents = make([]collector.FDEvent, 0, 60)
 
 	// Inicializa caches estáveis e máximos com decay
 	m.refreshTopN()
@@ -780,7 +790,7 @@ func (m *Model) maybePushFDEvent() {
 		func() string { return fmt.Sprintf("fcntl fd=%d F_SETFL O_NONBLOCK", r.Intn(8)+3) },
 	}
 	t := templates[r.Intn(len(templates))]
-	m.FDEvents = append([]FDEvent{{Timestamp: time.Now(), Message: t()}}, m.FDEvents...)
+	m.FDEvents = append([]collector.FDEvent{{Timestamp: time.Now(), Message: t()}}, m.FDEvents...)
 	if len(m.FDEvents) > 60 {
 		m.FDEvents = m.FDEvents[:60]
 	}
@@ -797,15 +807,21 @@ func tick(fps int) tea.Cmd {
 }
 
 // waitForFD bloqueia até receber uma mensagem do FD collector e a entrega ao Update.
-// Faz type-assertion para []FDEntry; mensagens de tipo desconhecido são ignoradas.
+// O FDCollector publica 3 tipos diferentes na mesma channel; demuxamos via
+// type-switch e mapeamos pra tea.Msg específica.
 func waitForFD(c *collector.FDCollector) tea.Cmd {
 	if c == nil {
 		return nil
 	}
 	return func() tea.Msg {
 		v := <-c.Subscribe()
-		if fds, ok := v.([]collector.FDEntry); ok {
-			return FDMsg(fds)
+		switch t := v.(type) {
+		case []collector.FDEntry:
+			return FDMsg(t)
+		case collector.TimelineEvent:
+			return TimelineMsg(t)
+		case collector.FDEvent:
+			return FDEventMsg(t)
 		}
 		return TickMsg(time.Now())
 	}

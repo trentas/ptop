@@ -270,7 +270,7 @@ func renderFDStats(m Model, w int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderFDEvents(events []FDEvent, w, h int) string {
+func renderFDEvents(events []collector.FDEvent, w, h int) string {
 	if h <= 0 {
 		return ""
 	}
