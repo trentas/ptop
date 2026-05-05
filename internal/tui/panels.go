@@ -42,11 +42,11 @@ func renderCPU(history []float64, w int) string {
 	spark := SparklineWithMax(history, sparkW, 100, color)
 
 	right := lipgloss.JoinVertical(lipgloss.Right,
-		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Right).Render(val),
-		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Right).Render(lbl),
+		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Right).Render(val),
+		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Right).Render(lbl),
 	)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, spark, "  ", right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, spark, panelSp2, right)
 }
 
 // ─── Syscall bars ────────────────────────────────────────────────────────────
@@ -162,8 +162,8 @@ func renderSyscallTable(counts map[string]uint64, w, h int) string {
 	header := MutedStyle.Render(
 		padRight("SYSCALL", nameW) + " " +
 			padRight("FREQUENCY", barW) + " " +
-			lipgloss.NewStyle().Width(countW).Align(lipgloss.Right).Render("COUNT") + " " +
-			lipgloss.NewStyle().Width(pctW).Align(lipgloss.Right).Render("%"),
+			lipgloss.NewStyle().Width(countW).Background(ColorPanel).Align(lipgloss.Right).Render("COUNT") + " " +
+			lipgloss.NewStyle().Width(pctW).Background(ColorPanel).Align(lipgloss.Right).Render("%"),
 	)
 
 	lines := []string{header}
@@ -249,7 +249,7 @@ func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 		if t.Waiting != "" {
 			wait = AmberStyle.Render(truncate("⏳ "+t.Waiting, waitW))
 		}
-		waitCol := lipgloss.NewStyle().Width(waitW).Render(wait)
+		waitCol := lipgloss.NewStyle().Width(waitW).Background(ColorPanel).Render(wait)
 
 		lines = append(lines, panelRow(gly, name, bar, cpuStr, waitCol))
 
@@ -272,7 +272,7 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 		padRight("  NAME", 2+nameW) + " " +
 			padRight("STATE", stateW) + " " +
 			padRight("CPU", barW) + " " +
-			lipgloss.NewStyle().Width(cpuW).Align(lipgloss.Right).Render("%") + " " +
+			lipgloss.NewStyle().Width(cpuW).Background(ColorPanel).Align(lipgloss.Right).Render("%") + " " +
 			padRight("WAITING ON", waitW),
 	)
 
@@ -343,12 +343,12 @@ func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWri
 		lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curR))
 	wLabel := MutedStyle.Render("write/s ") +
 		lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curW))
-	right := lipgloss.NewStyle().Width(rightW).Align(lipgloss.Left).Render(rLabel) +
+	right := lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Left).Render(rLabel) +
 		"\n" +
-		lipgloss.NewStyle().Width(rightW).Align(lipgloss.Left).Render(wLabel)
+		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Left).Render(wLabel)
 
 	sparks := rSpark + "\n" + wSpark
-	header := lipgloss.JoinHorizontal(lipgloss.Top, sparks, "  ", right)
+	header := lipgloss.JoinHorizontal(lipgloss.Top, sparks, panelSp2, right)
 
 	stats := []string{
 		MutedStyle.Render("read ops ") + CyanStyle.Render(fmt.Sprintf("%d", io.ReadOps)),
@@ -390,12 +390,12 @@ func renderIOLargeThroughput(io collector.IOStats, readH, writeH []float64, maxR
 		lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(curW))
 
 	first := lipgloss.JoinHorizontal(lipgloss.Top,
-		rSpark, "  ",
-		lipgloss.NewStyle().Width(rightW).Render(rRight),
+		rSpark, panelSp2,
+		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Render(rRight),
 	)
 	second := lipgloss.JoinHorizontal(lipgloss.Top,
-		wSpark, "  ",
-		lipgloss.NewStyle().Width(rightW).Render(wRight),
+		wSpark, panelSp2,
+		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Render(wRight),
 	)
 	return first + "\n" + second
 }
@@ -474,7 +474,7 @@ func renderNetMini(conns []collector.NetConn, w, h int) string {
 		padRight("TYPE", typeW) + " " +
 			padRight("REMOTE", remoteW) + " " +
 			padRight("STATE", stateW) + " " +
-			lipgloss.NewStyle().Width(latW).Align(lipgloss.Right).Render("LAT"),
+			lipgloss.NewStyle().Width(latW).Background(ColorPanel).Align(lipgloss.Right).Render("LAT"),
 	)
 
 	lines := []string{header}
