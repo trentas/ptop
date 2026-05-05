@@ -121,10 +121,10 @@ func renderIOTopFiles(files []collector.IOFileStats, displayPaths []string, w, h
 	header := MutedStyle.Render(
 		padRight("TYPE", typeW) + " " +
 			padRight("PATH", pathW) + " " +
-			lipgloss.NewStyle().Width(opsW).Align(lipgloss.Right).Render("OPS") + " " +
-			lipgloss.NewStyle().Width(bytesW).Align(lipgloss.Right).Render("BYTES") + " " +
-			lipgloss.NewStyle().Width(latW).Align(lipgloss.Right).Render("LAT") + " " +
-			lipgloss.NewStyle().Width(fsyncW).Align(lipgloss.Right).Render("FSYNC"),
+			lipgloss.NewStyle().Width(opsW).Background(ColorPanel).Align(lipgloss.Right).Render("OPS") + " " +
+			lipgloss.NewStyle().Width(bytesW).Background(ColorPanel).Align(lipgloss.Right).Render("BYTES") + " " +
+			lipgloss.NewStyle().Width(latW).Background(ColorPanel).Align(lipgloss.Right).Render("LAT") + " " +
+			lipgloss.NewStyle().Width(fsyncW).Background(ColorPanel).Align(lipgloss.Right).Render("FSYNC"),
 	)
 
 	maxOps := uint64(1)
@@ -204,8 +204,8 @@ func renderIOLatencyDist(buckets []collector.LatencyBucket, w, h int) string {
 		writeNum := lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel).Width(numW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f", b.Write))
 
 		stack := lipgloss.JoinVertical(lipgloss.Left,
-			lipgloss.JoinHorizontal(lipgloss.Top, label, " ", readBar, " ", readNum),
-			lipgloss.JoinHorizontal(lipgloss.Top, padRight("", labelW), " ", writeBar, " ", writeNum),
+			lipgloss.JoinHorizontal(lipgloss.Top, label, panelSp1, readBar, panelSp1, readNum),
+			lipgloss.JoinHorizontal(lipgloss.Top, padRight("", labelW), panelSp1, writeBar, panelSp1, writeNum),
 		)
 		lines = append(lines, stack)
 	}

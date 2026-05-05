@@ -95,7 +95,7 @@ func renderFDCountSparkline(m Model, w int) string {
 	val := lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel).Bold(true).Width(rightW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", cur))
 	lbl := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(rightW).Align(lipgloss.Right).Render("open fds")
 	right := val + "\n" + lbl
-	return lipgloss.JoinHorizontal(lipgloss.Top, spark, "  ", right)
+	return lipgloss.JoinHorizontal(lipgloss.Top, spark, panelSp2, right)
 }
 
 func renderFDFilterRow(m Model, w int) string {
@@ -144,13 +144,13 @@ func renderFDTable(m Model, w, h int) string {
 	}
 
 	header := MutedStyle.Render(
-		lipgloss.NewStyle().Width(fdW).Render("FD") + " " +
+		lipgloss.NewStyle().Width(fdW).Background(ColorPanel).Render("FD") + " " +
 			padRight("TYPE", typeW) + " " +
 			padRight("DESCRIPTION", descW) + " " +
 			padRight("FLAGS", flagsW) + " " +
-			lipgloss.NewStyle().Width(bytesW).Align(lipgloss.Right).Render("BYTES") + " " +
-			lipgloss.NewStyle().Width(ageW).Align(lipgloss.Right).Render("AGE") + " " +
-			lipgloss.NewStyle().Width(dotW).Render(""),
+			lipgloss.NewStyle().Width(bytesW).Background(ColorPanel).Align(lipgloss.Right).Render("BYTES") + " " +
+			lipgloss.NewStyle().Width(ageW).Background(ColorPanel).Align(lipgloss.Right).Render("AGE") + " " +
+			lipgloss.NewStyle().Width(dotW).Background(ColorPanel).Render(""),
 	)
 
 	// filtra: primeiro por tipo (FDFilter cíclico), depois por substring

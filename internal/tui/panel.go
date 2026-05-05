@@ -120,9 +120,26 @@ func padRight(s string, w int) string {
 //
 // Substitui o padrão antigo `name + " " + bar + " " + count`.
 func panelRow(parts ...string) string {
-	sep := lipgloss.NewStyle().Background(ColorPanel).Render(" ")
-	return strings.Join(parts, sep)
+	return strings.Join(parts, panelSp1)
 }
+
+// panelGap retorna `width` espaços pintados com ColorPanel.
+// Usar em lipgloss.JoinHorizontal quando precisa de gap entre elementos:
+//
+//	lipgloss.JoinHorizontal(lipgloss.Top, spark, panelGap(2), right)
+//
+// — em vez do `"  "` cru que vazaria o background do terminal.
+func panelGap(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return lipgloss.NewStyle().Background(ColorPanel).Render(strings.Repeat(" ", width))
+}
+
+var (
+	panelSp1 = panelGap(1)
+	panelSp2 = panelGap(2)
+)
 
 // truncate corta s para caber em `w` colunas visíveis, adicionando "…" se necessário.
 func truncate(s string, w int) string {
