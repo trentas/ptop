@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -50,8 +52,39 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.FDFilter = fdFilters[0]
 		}
 
-	case "s", "e":
-		// snapshot / export — placeholders. A implementação real grava JSON em disco.
+	case "s":
+		// One-shot snapshot: grava xray-snapshot-<timestamp>.json em cwd.
+		path, err := SaveSnapshot(m)
+		if err != nil {
+			m.toast = fmtToast("⚠ snapshot: %v", err)
+		} else {
+			m.toast = fmtToast("✓ snapshot: %s", path)
+		}
+		return m, clearToastAfter(toastTTL)
+
+	case "e":
+		// Toggle export contínuo: liga/desliga o JSONL.
+		if m.exportFile != nil {
+			_ = m.exportFile.Close()
+			m.exportFile = nil
+			m.toast = "✓ export: OFF"
+			return m, clearToastAfter(toastTTL)
+		}
+		f, err := openExportFile()
+		if err != nil {
+			m.toast = fmtToast("⚠ export: %v", err)
+			return m, clearToastAfter(toastTTL)
+		}
+		m.exportFile = f
+		m.toast = fmtToast("✓ export: %s", f.Name())
+		// Dispara o primeiro tick + clear-toast em paralelo
+		return m, tea.Batch(exportTick(), clearToastAfter(toastTTL))
 	}
 	return m, nil
+}
+
+// fmtToast é um wrapper de fmt.Sprintf isolado pra deixar a chamada legível
+// no switch acima.
+func fmtToast(format string, args ...interface{}) string {
+	return fmt.Sprintf(format, args...)
 }
