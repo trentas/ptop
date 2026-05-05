@@ -51,6 +51,14 @@ type ThreadInfo struct {
 
 // ─── I/O ─────────────────────────────────────────────────────────────────────
 
+// IOWaitSample é a fração do wallclock que o processo passou bloqueado em
+// block I/O síncrono no último intervalo. Calculado pelo collector que lê
+// /proc/<pid>/stat campo 42 (delayacct_blkio_ticks).
+type IOWaitSample struct {
+	Pct       float64
+	Timestamp time.Time
+}
+
 type IOEvent struct {
 	Op        string // "read" | "write" | "fsync" | "openat" | "stat"
 	Path      string

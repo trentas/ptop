@@ -70,7 +70,7 @@ func (c *CPUCollector) sample() (CpuSample, error) {
 	if err != nil {
 		return CpuSample{}, err
 	}
-	utime, stime, _, _, err := parseProcStatTimes(data)
+	utime, stime, _, _, _, err := parseProcStatTimes(data)
 	if err != nil {
 		return CpuSample{}, err
 	}
@@ -100,29 +100,36 @@ func (c *CPUCollector) sample() (CpuSample, error) {
 	}, nil
 }
 
-// parseProcStatTimes extrai utime, stime, minflt, majflt de /proc/<pid>/stat.
+// parseProcStatTimes extrai campos numéricos chave de /proc/<pid>/stat.
 //
 // O campo 2 (comm) é parentesizado e PODE conter espaços/parens — o parser
 // canônico procura o ÚLTIMO `)` na linha; o que vem depois são os campos 3..N
 // space-separated. Index do post (post[i] = campo i+3):
 //
-//	post[7]  = minflt   (campo 10)
-//	post[9]  = majflt   (campo 12)
-//	post[11] = utime    (campo 14)
-//	post[12] = stime    (campo 15)
-func parseProcStatTimes(data []byte) (utime, stime, minflt, majflt uint64, err error) {
+//	post[7]  = minflt              (campo 10)
+//	post[9]  = majflt              (campo 12)
+//	post[11] = utime               (campo 14)
+//	post[12] = stime               (campo 15)
+//	post[39] = delayacct_blkio_ticks (campo 42)
+//
+// `blkio` retorna 0 se o kernel não exporta o campo (CONFIG_TASK_DELAY_ACCT
+// off, ou kernel 5.14+ sem boot param `delayacct=on`).
+func parseProcStatTimes(data []byte) (utime, stime, minflt, majflt, blkio uint64, err error) {
 	s := string(data)
 	end := strings.LastIndex(s, ")")
 	if end < 0 {
-		return 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: ')' ausente")
+		return 0, 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: ')' ausente")
 	}
 	fields := strings.Fields(strings.TrimSpace(s[end+1:]))
 	if len(fields) < 13 {
-		return 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: %d campos", len(fields))
+		return 0, 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: %d campos", len(fields))
 	}
 	utime, _ = strconv.ParseUint(fields[11], 10, 64)
 	stime, _ = strconv.ParseUint(fields[12], 10, 64)
 	minflt, _ = strconv.ParseUint(fields[7], 10, 64)
 	majflt, _ = strconv.ParseUint(fields[9], 10, 64)
+	if len(fields) > 39 {
+		blkio, _ = strconv.ParseUint(fields[39], 10, 64)
+	}
 	return
 }
