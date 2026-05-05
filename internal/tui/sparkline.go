@@ -42,8 +42,8 @@ func SparklineWithMax(data []float64, width int, maxScale float64, color lipglos
 		points = points[len(points)-width:]
 	}
 
-	style := lipgloss.NewStyle().Foreground(color)
-	dimStyle := lipgloss.NewStyle().Foreground(ColorDim)
+	style := lipgloss.NewStyle().Foreground(color).Background(ColorPanel)
+	dimStyle := lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel)
 
 	var sb strings.Builder
 
@@ -90,7 +90,7 @@ func HorizontalBar(value, max float64, width int, color lipgloss.Color) string {
 		return ""
 	}
 	if max <= 0 {
-		return lipgloss.NewStyle().Foreground(ColorDim).Render(strings.Repeat("░", width))
+		return lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", width))
 	}
 	if value < 0 {
 		value = 0
@@ -104,6 +104,6 @@ func HorizontalBar(value, max float64, width int, color lipgloss.Color) string {
 	}
 	full := strings.Repeat("█", filled)
 	empty := strings.Repeat("░", width-filled)
-	return lipgloss.NewStyle().Foreground(color).Render(full) +
-		lipgloss.NewStyle().Foreground(ColorDim).Render(empty)
+	return lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Render(full) +
+		lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(empty)
 }

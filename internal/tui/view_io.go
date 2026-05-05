@@ -142,10 +142,10 @@ func renderIOTopFiles(files []collector.IOFileStats, displayPaths []string, w, h
 		ops := f.Reads + f.Writes
 		typeColor := ioFileTypeColor(f.Type)
 
-		typeStr := lipgloss.NewStyle().Foreground(typeColor).Width(typeW).Render(f.Type)
-		path := lipgloss.NewStyle().Foreground(ColorText).Width(pathW).Render(truncate(f.Path, pathW))
-		opsStr := lipgloss.NewStyle().Foreground(ColorBright).Width(opsW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", ops))
-		bytesStr := lipgloss.NewStyle().Foreground(ColorMuted).Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(f.Bytes))
+		typeStr := lipgloss.NewStyle().Foreground(typeColor).Background(ColorPanel).Width(typeW).Render(f.Type)
+		path := lipgloss.NewStyle().Foreground(ColorText).Background(ColorPanel).Width(pathW).Render(truncate(f.Path, pathW))
+		opsStr := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(opsW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", ops))
+		bytesStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(f.Bytes))
 
 		latColor := ColorGreen
 		if f.LatencyMs > 1 {
@@ -154,7 +154,7 @@ func renderIOTopFiles(files []collector.IOFileStats, displayPaths []string, w, h
 		if f.LatencyMs > 5 {
 			latColor = ColorRed
 		}
-		latStr := lipgloss.NewStyle().Foreground(latColor).Width(latW).Align(lipgloss.Right).Render(fmt.Sprintf("%.1fms", f.LatencyMs))
+		latStr := lipgloss.NewStyle().Foreground(latColor).Background(ColorPanel).Width(latW).Align(lipgloss.Right).Render(fmt.Sprintf("%.1fms", f.LatencyMs))
 
 		fsyncColor := ColorDim
 		fsyncLabel := "–"
@@ -165,9 +165,10 @@ func renderIOTopFiles(files []collector.IOFileStats, displayPaths []string, w, h
 		if f.Fsyncs > 10 {
 			fsyncColor = ColorRed
 		}
-		fsyncStr := lipgloss.NewStyle().Foreground(fsyncColor).Width(fsyncW).Align(lipgloss.Right).Render(fsyncLabel)
+		fsyncStr := lipgloss.NewStyle().Foreground(fsyncColor).Background(ColorPanel).Width(fsyncW).Align(lipgloss.Right).Render(fsyncLabel)
 
-		lines = append(lines, typeStr+" "+path+" "+opsStr+" "+bytesStr+" "+latStr+" "+fsyncStr)
+		lines = append(lines, panelRow(typeStr, path, opsStr, bytesStr, latStr, fsyncStr))
+
 	}
 	return strings.Join(lines, "\n")
 }
@@ -196,11 +197,11 @@ func renderIOLatencyDist(buckets []collector.LatencyBucket, w, h int) string {
 		if h > 0 && len(lines) >= h {
 			break
 		}
-		label := lipgloss.NewStyle().Foreground(ColorMuted).Width(labelW).Render(b.Label)
+		label := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(labelW).Render(b.Label)
 		readBar := HorizontalBar(b.Read, maxV, barW, ColorCyan)
 		writeBar := HorizontalBar(b.Write, maxV, barW, ColorOrange)
-		readNum := lipgloss.NewStyle().Foreground(ColorCyan).Width(numW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f", b.Read))
-		writeNum := lipgloss.NewStyle().Foreground(ColorOrange).Width(numW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f", b.Write))
+		readNum := lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Width(numW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f", b.Read))
+		writeNum := lipgloss.NewStyle().Foreground(ColorOrange).Background(ColorPanel).Width(numW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f", b.Write))
 
 		stack := lipgloss.JoinVertical(lipgloss.Left,
 			lipgloss.JoinHorizontal(lipgloss.Top, label, " ", readBar, " ", readNum),
@@ -228,7 +229,7 @@ func renderIOStats(s collector.IOStats, w int) string {
 	lines := []string{}
 	for _, r := range rows {
 		left := MutedStyle.Render(r.label)
-		right := lipgloss.NewStyle().Foreground(r.color).Render(r.value)
+		right := lipgloss.NewStyle().Foreground(r.color).Background(ColorPanel).Render(r.value)
 		gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1

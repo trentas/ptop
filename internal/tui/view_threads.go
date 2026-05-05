@@ -29,7 +29,7 @@ func renderThreadsView(m Model, w, h int) string {
 // Versão MVP — quando vier um collector real, substituir por análise de hold/wait.
 func renderLockGraph(m Model, w int) string {
 	title := MutedStyle.Render("lock graph")
-	body := lipgloss.NewStyle().Foreground(ColorAmber).Render("mutex-A") +
+	body := lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel).Render("mutex-A") +
 		MutedStyle.Render(" held by ") +
 		GreenStyle.Render("main(1)") +
 		MutedStyle.Render(" ← blocked: ") +

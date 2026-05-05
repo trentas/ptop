@@ -92,8 +92,8 @@ func renderFDCountSparkline(m Model, w int) string {
 		sparkW = 5
 	}
 	spark := Sparkline(m.FDCountHistory, sparkW, ColorTeal)
-	val := lipgloss.NewStyle().Foreground(ColorTeal).Bold(true).Width(rightW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", cur))
-	lbl := lipgloss.NewStyle().Foreground(ColorMuted).Width(rightW).Align(lipgloss.Right).Render("open fds")
+	val := lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel).Bold(true).Width(rightW).Align(lipgloss.Right).Render(fmt.Sprintf("%d", cur))
+	lbl := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(rightW).Align(lipgloss.Right).Render("open fds")
 	right := val + "\n" + lbl
 	return lipgloss.JoinHorizontal(lipgloss.Top, spark, "  ", right)
 }
@@ -185,32 +185,32 @@ func renderFDTable(m Model, w, h int) string {
 		isOld := f.AgeMs > 3600*1000
 		isSuspect := f.Type == "file" && strings.Contains(f.Desc, "/tmp") && f.AgeMs > 600*1000
 
-		fdNum := lipgloss.NewStyle().Foreground(ColorMuted).Bold(true).Width(fdW).Render(fmt.Sprintf("%d", f.FD))
-		typeStr := lipgloss.NewStyle().Foreground(FDTypeColor(f.Type)).Width(typeW).Render(FDTypeIcon(f.Type) + " " + f.Type)
+		fdNum := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Bold(true).Width(fdW).Render(fmt.Sprintf("%d", f.FD))
+		typeStr := lipgloss.NewStyle().Foreground(FDTypeColor(f.Type)).Background(ColorPanel).Width(typeW).Render(FDTypeIcon(f.Type) + " " + f.Type)
 
 		descColor := ColorText
 		if f.Active {
 			descColor = ColorBright
 		}
-		descStr := lipgloss.NewStyle().Foreground(descColor).Width(descW).Render(truncate(f.Desc, descW))
+		descStr := lipgloss.NewStyle().Foreground(descColor).Background(ColorPanel).Width(descW).Render(truncate(f.Desc, descW))
 
-		flagsStr := lipgloss.NewStyle().Foreground(ColorDim).Width(flagsW).Render(f.Flags)
-		bytesStr := lipgloss.NewStyle().Foreground(ColorMuted).Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(f.Bytes))
+		flagsStr := lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Width(flagsW).Render(f.Flags)
+		bytesStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(f.Bytes))
 
 		ageColor := ColorDim
 		if isOld {
 			ageColor = ColorAmber
 		}
-		ageStr := lipgloss.NewStyle().Foreground(ageColor).Width(ageW).Align(lipgloss.Right).Render(fmtAgeMs(f.AgeMs))
+		ageStr := lipgloss.NewStyle().Foreground(ageColor).Background(ColorPanel).Width(ageW).Align(lipgloss.Right).Render(fmtAgeMs(f.AgeMs))
 
 		var dot string
 		if f.Active {
-			dot = lipgloss.NewStyle().Foreground(ColorGreen).Render("●")
+			dot = lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Render("●")
 		} else {
-			dot = lipgloss.NewStyle().Foreground(ColorDim).Render("○")
+			dot = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render("○")
 		}
 
-		row := fdNum + " " + typeStr + " " + descStr + " " + flagsStr + " " + bytesStr + " " + ageStr + " " + dot
+		row := panelRow(fdNum, typeStr, descStr, flagsStr, bytesStr, ageStr, dot)
 		if isSuspect {
 			row = lipgloss.NewStyle().Background(lipgloss.Color("#1f1a08")).Render(row)
 		}
@@ -271,7 +271,7 @@ func renderFDStats(m Model, w int) string {
 	lines := []string{}
 	for _, r := range rows {
 		left := MutedStyle.Render(r.label)
-		right := lipgloss.NewStyle().Foreground(r.color).Render(r.value)
+		right := lipgloss.NewStyle().Foreground(r.color).Background(ColorPanel).Render(r.value)
 		gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 		if gap < 1 {
 			gap = 1
@@ -296,9 +296,10 @@ func renderFDEvents(events []collector.FDEvent, w, h int) string {
 	}
 	lines := make([]string, 0, len(visible))
 	for _, e := range visible {
-		ts := lipgloss.NewStyle().Foreground(ColorDim).Width(tsW).Render(e.Timestamp.Format("15:04:05.000"))
-		msg := lipgloss.NewStyle().Foreground(ColorText).Width(msgW).Render(truncate(e.Message, msgW))
-		lines = append(lines, ts+" "+msg)
+		ts := lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Width(tsW).Render(e.Timestamp.Format("15:04:05.000"))
+		msg := lipgloss.NewStyle().Foreground(ColorText).Background(ColorPanel).Width(msgW).Render(truncate(e.Message, msgW))
+		lines = append(lines, panelRow(ts, msg))
+
 	}
 	return strings.Join(lines, "\n")
 }

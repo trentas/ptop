@@ -13,26 +13,29 @@ import (
 // (real vs mock) — issue #19 acceptance: "Tecla ou flag pra ver o status de
 // cada collector em runtime".
 func renderHelpOverlayWithStatus(m Model, w, h int) string {
-	sectionTitle := lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
-	keyStyle := lipgloss.NewStyle().Foreground(ColorTeal).Bold(true)
-	descStyle := lipgloss.NewStyle().Foreground(ColorText)
-	dimDesc := lipgloss.NewStyle().Foreground(ColorMuted)
+	// Help overlay vive sobre o ColorPanel do card. Todos os estilos abaixo
+	// setam ColorPanel como bg pra que segmentos não vazem o background do
+	// terminal entre as palavras.
+	sectionTitle := lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Bold(true)
+	keyStyle := lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel).Bold(true)
+	descStyle := lipgloss.NewStyle().Foreground(ColorText).Background(ColorPanel)
+	dimDesc := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel)
 
 	row := func(key, desc string) string {
-		return keyStyle.Render(padRight(key, 14)) + " " + descStyle.Render(desc)
+		return keyStyle.Render(padRight(key, 14)) + descStyle.Render(" "+desc)
 	}
 	dimRow := func(key, desc string) string {
-		return keyStyle.Render(padRight(key, 14)) + " " + dimDesc.Render(desc)
+		return keyStyle.Render(padRight(key, 14)) + dimDesc.Render(" "+desc)
 	}
 
-	statusReal := lipgloss.NewStyle().Foreground(ColorGreen).Render("● real")
-	statusMock := lipgloss.NewStyle().Foreground(ColorAmber).Render("○ mock")
+	statusReal := lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Render("● real")
+	statusMock := lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel).Render("○ mock")
 	statusRow := func(name string, isMock bool) string {
 		s := statusReal
 		if isMock {
 			s = statusMock
 		}
-		return keyStyle.Render(padRight(name, 14)) + " " + s
+		return keyStyle.Render(padRight(name, 14)) + descStyle.Render(" ") + s
 	}
 
 	lines := []string{

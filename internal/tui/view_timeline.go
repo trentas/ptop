@@ -35,17 +35,19 @@ func renderTimelineFull(events []collector.TimelineEvent, w, h int) string {
 
 	lines := make([]string, 0, len(visible))
 	for _, e := range visible {
-		ts := lipgloss.NewStyle().Foreground(ColorDim).Width(tsW).
+		ts := lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Width(tsW).
 			Render(e.Timestamp.Format("15:04:05.000"))
 		c := CategoryColor(e.Category)
 		cat := lipgloss.NewStyle().
 			Foreground(c).
+			Background(ColorPanel).
 			Width(catW).
 			Align(lipgloss.Center).
 			Render(strings.TrimSpace(CategoryLabel(e.Category)))
-		msg := lipgloss.NewStyle().Foreground(ColorText).Width(msgW).
+		msg := lipgloss.NewStyle().Foreground(ColorText).Background(ColorPanel).Width(msgW).
 			Render(truncate(e.Message, msgW))
-		lines = append(lines, ts+" "+cat+" "+msg)
+		lines = append(lines, panelRow(ts, cat, msg))
+
 	}
 	return strings.Join(lines, "\n")
 }
