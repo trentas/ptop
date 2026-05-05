@@ -1,41 +1,53 @@
+//go:build linux && ebpf
+
 package bpf
 
-// loader.go — carrega programas eBPF compilados e gerencia seu ciclo de vida.
-//
-// go:generate gera os binários .o a partir dos .c em programs/:
-//go:generate make -C ../../../ gen
+import "fmt"
 
-// Os objetos compilados são embarcados no binário via go:embed.
-// Exemplo para syscalls:
+// Loader gerencia o ciclo de vida de programas eBPF carregados via libbpfgo.
+// Esta versão (Linux + tag `ebpf`) será preenchida pela issue #9 com a
+// implementação real. Por agora retorna erro indicando que o subsystem
+// ainda não está implementado.
+type Loader struct{}
+
+func NewLoader() *Loader {
+	return &Loader{}
+}
+
+// LoadSyscalls carrega o programa eBPF de tracing de syscalls e attacha
+// nos tracepoints raw_syscalls/sys_{enter,exit} filtrando por target_pid.
 //
-//   //go:embed programs/syscalls.bpf.o
-//   var syscallsBPFObj []byte
-//
-// Uso com libbpfgo:
-//
-//   import bpf "github.com/aquasecurity/libbpfgo"
-//
-//   func LoadSyscallsProgram(pid int) (*bpf.Module, error) {
-//       m, err := bpf.NewModuleFromBuffer(syscallsBPFObj, "syscalls")
-//       if err != nil {
-//           return nil, err
-//       }
-//       if err := m.BPFLoadObject(); err != nil {
-//           return nil, err
-//       }
-//       // setar PID no map target_pid
-//       pidMap, _ := m.GetMap("target_pid")
-//       key := uint32(0)
-//       val := uint32(pid)
-//       pidMap.Update(unsafe.Pointer(&key), unsafe.Pointer(&val))
-//
-//       // attach tracepoints
-//       for _, tp := range []string{"sys_enter", "sys_exit"} {
-//           prog, _ := m.GetProgram("tracepoint__raw_syscalls__" + tp)
-//           prog.AttachTracepoint("raw_syscalls", tp)
-//       }
-//       return m, nil
-//   }
-//
-// TODO: implementar quando os .c estiverem compilando corretamente.
-// Para MVP use --no-ebpf com leitura de /proc.
+// Issue #9 vai implementar de fato:
+//   - go:generate compila programs/syscalls.bpf.c → .o
+//   - go:embed embute o .o no binário
+//   - libbpfgo.NewModuleFromBuffer carrega o objeto
+//   - mapeia target_pid via BPF map
+//   - attacha programs em raw_syscalls:sys_enter / sys_exit
+func (*Loader) LoadSyscalls(pid int) error {
+	return fmt.Errorf("eBPF syscalls collector ainda não implementado (issue #9)")
+}
+
+// LoadCPU sampling via perf_event — issue #10
+func (*Loader) LoadCPU(pid int) error {
+	return fmt.Errorf("eBPF cpu collector ainda não implementado (issue #10)")
+}
+
+// LoadIO block tracepoints — issue #11
+func (*Loader) LoadIO(pid int) error {
+	return fmt.Errorf("eBPF io collector ainda não implementado (issue #11)")
+}
+
+// LoadNetwork sock tracepoints — issue #12
+func (*Loader) LoadNetwork(pid int) error {
+	return fmt.Errorf("eBPF network collector ainda não implementado (issue #12)")
+}
+
+// LoadSched threads + off-CPU — issue #13
+func (*Loader) LoadSched(pid int) error {
+	return fmt.Errorf("eBPF sched collector ainda não implementado (issue #13)")
+}
+
+// LoadMemory mmap/page_fault tracepoints — issue #14
+func (*Loader) LoadMemory(pid int) error {
+	return fmt.Errorf("eBPF memory collector ainda não implementado (issue #14)")
+}
