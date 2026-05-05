@@ -59,6 +59,18 @@ type IOWaitSample struct {
 	Timestamp time.Time
 }
 
+// IOThroughputSample é o snapshot do throughput de I/O do processo no último
+// intervalo. ReadBytesPerS/WriteBytesPerS são taxas instantâneas; ReadOps/
+// WriteOps são CUMULATIVOS desde o início do processo (mesma semântica de
+// /proc/<pid>/io). Calculado pelo collector que lê /proc/<pid>/io.
+type IOThroughputSample struct {
+	ReadBytesPerS  float64
+	WriteBytesPerS float64
+	ReadOps        uint64
+	WriteOps       uint64
+	Timestamp      time.Time
+}
+
 type IOEvent struct {
 	Op        string // "read" | "write" | "fsync" | "openat" | "stat"
 	Path      string

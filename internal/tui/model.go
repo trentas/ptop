@@ -66,6 +66,7 @@ type CpuMsg collector.CpuSample
 type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
 type IOWaitMsg collector.IOWaitSample
+type IOThroughputMsg collector.IOThroughputSample
 
 // ─── Tipos auxiliares ────────────────────────────────────────────────────────
 
@@ -112,17 +113,19 @@ type Model struct {
 	cpuCollector     *collector.CPUCollector
 	threadsCollector *collector.ThreadsCollector
 	memCollector     *collector.MemCollector
-	iowaitCollector  *collector.IOWaitCollector
+	iowaitCollector     *collector.IOWaitCollector
+	ioThroughputCollector *collector.IOThroughputCollector
 
 	// Simulação
-	rng              *rand.Rand
-	tickN            int
-	usingMockFDs     bool
-	usingMockCPU     bool
-	usingMockThreads bool
-	usingMockMem     bool
-	usingMockIOWait  bool
-	lastSimAt        time.Time
+	rng                 *rand.Rand
+	tickN               int
+	usingMockFDs        bool
+	usingMockCPU        bool
+	usingMockThreads    bool
+	usingMockMem        bool
+	usingMockIOWait     bool
+	usingMockIOThrough  bool
+	lastSimAt           time.Time
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -153,7 +156,8 @@ func NewModel(cfg Config) Model {
 		usingMockCPU:     true,
 		usingMockThreads: true,
 		usingMockMem:     true,
-		usingMockIOWait:  true,
+		usingMockIOWait:    true,
+		usingMockIOThrough: true,
 	}
 
 	m.seedMockData()
@@ -184,6 +188,10 @@ func NewModel(cfg Config) Model {
 			m.iowaitCollector = c
 			m.usingMockIOWait = false
 		}
+		if c := collector.NewIOThroughputCollector(); c.Start(cfg.PID) == nil {
+			m.ioThroughputCollector = c
+			m.usingMockIOThrough = false
+		}
 	}
 
 	return m
@@ -207,6 +215,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.iowaitCollector != nil {
 		cmds = append(cmds, waitForIOWait(m.iowaitCollector))
+	}
+	if m.ioThroughputCollector != nil {
+		cmds = append(cmds, waitForIOThroughput(m.ioThroughputCollector))
 	}
 	return tea.Batch(cmds...)
 }
@@ -260,6 +271,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.IOStats.IOWaitPct = collector.IOWaitSample(v).Pct
 		m.usingMockIOWait = false
 		return m, waitForIOWait(m.iowaitCollector)
+
+	case IOThroughputMsg:
+		s := collector.IOThroughputSample(v)
+		m.IOStats.ReadBytesPerS = s.ReadBytesPerS
+		m.IOStats.WriteBytesPerS = s.WriteBytesPerS
+		m.IOStats.ReadOps = s.ReadOps
+		m.IOStats.WriteOps = s.WriteOps
+		m.IOReadHist = appendCapped(m.IOReadHist, s.ReadBytesPerS, 60)
+		m.IOWriteHist = appendCapped(m.IOWriteHist, s.WriteBytesPerS, 60)
+		m.ioMaxRead = math.Max(m.ioMaxRead*0.97, s.ReadBytesPerS)
+		m.ioMaxWrite = math.Max(m.ioMaxWrite*0.97, s.WriteBytesPerS)
+		if m.ioMaxRead < 100*1024 {
+			m.ioMaxRead = 100 * 1024
+		}
+		if m.ioMaxWrite < 100*1024 {
+			m.ioMaxWrite = 100 * 1024
+		}
+		m.usingMockIOThrough = false
+		return m, waitForIOThroughput(m.ioThroughputCollector)
 	}
 	return m, nil
 }
@@ -583,34 +613,36 @@ func (m *Model) tick() {
 		}
 	}
 
-	// I/O throughput
-	nr := r.Float64() * 1200 * 1024
-	if r.Float64() > 0.85 {
-		nr += 2000 * 1024
-	}
-	nw := r.Float64() * 600 * 1024
-	if r.Float64() > 0.9 {
-		nw += 1500 * 1024
-	}
-	m.IOReadHist = appendCapped(m.IOReadHist, nr, 60)
-	m.IOWriteHist = appendCapped(m.IOWriteHist, nw, 60)
-	m.IOStats.ReadBytesPerS = nr
-	m.IOStats.WriteBytesPerS = nw
+	// I/O throughput — só simula se collector real não está rodando
+	if m.usingMockIOThrough {
+		nr := r.Float64() * 1200 * 1024
+		if r.Float64() > 0.85 {
+			nr += 2000 * 1024
+		}
+		nw := r.Float64() * 600 * 1024
+		if r.Float64() > 0.9 {
+			nw += 1500 * 1024
+		}
+		m.IOReadHist = appendCapped(m.IOReadHist, nr, 60)
+		m.IOWriteHist = appendCapped(m.IOWriteHist, nw, 60)
+		m.IOStats.ReadBytesPerS = nr
+		m.IOStats.WriteBytesPerS = nw
 
-	// Máximo "decay": cresce no instante do pico e cai 3% por tick.
-	// Isso evita rescale brusco do sparkline cada vez que aparece um valor
-	// alto isolado e depois some.
-	const decayPerTick = 0.97
-	m.ioMaxRead = math.Max(m.ioMaxRead*decayPerTick, nr)
-	m.ioMaxWrite = math.Max(m.ioMaxWrite*decayPerTick, nw)
-	if m.ioMaxRead < 100*1024 { // piso visual: 100KB/s
-		m.ioMaxRead = 100 * 1024
+		// Máximo "decay": cresce no instante do pico e cai 3% por tick.
+		// Isso evita rescale brusco do sparkline cada vez que aparece um valor
+		// alto isolado e depois some.
+		const decayPerTick = 0.97
+		m.ioMaxRead = math.Max(m.ioMaxRead*decayPerTick, nr)
+		m.ioMaxWrite = math.Max(m.ioMaxWrite*decayPerTick, nw)
+		if m.ioMaxRead < 100*1024 { // piso visual: 100KB/s
+			m.ioMaxRead = 100 * 1024
+		}
+		if m.ioMaxWrite < 100*1024 {
+			m.ioMaxWrite = 100 * 1024
+		}
+		m.IOStats.ReadOps += uint64(r.Intn(12))
+		m.IOStats.WriteOps += uint64(r.Intn(6))
 	}
-	if m.ioMaxWrite < 100*1024 {
-		m.ioMaxWrite = 100 * 1024
-	}
-	m.IOStats.ReadOps += uint64(r.Intn(12))
-	m.IOStats.WriteOps += uint64(r.Intn(6))
 	if r.Float64() > 0.8 {
 		m.IOStats.Fsyncs++
 	}
@@ -826,6 +858,19 @@ func waitForIOWait(c *collector.IOWaitCollector) tea.Cmd {
 		v := <-c.Subscribe()
 		if s, ok := v.(collector.IOWaitSample); ok {
 			return IOWaitMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForIOThroughput(c *collector.IOThroughputCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		v := <-c.Subscribe()
+		if s, ok := v.(collector.IOThroughputSample); ok {
+			return IOThroughputMsg(s)
 		}
 		return TickMsg(time.Now())
 	}
