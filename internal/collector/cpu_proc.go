@@ -3,6 +3,7 @@ package collector
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"sync"
@@ -61,9 +62,25 @@ func (c *CPUCollector) loop() {
 	}
 }
 
-// clkTck assume CONFIG_HZ=100, default em x86/x86_64 Linux há ~20 anos.
-// Em ARM pode ser 250 — corrigir via sysconf(_SC_CLK_TCK) quando virar problema.
-const clkTck = 100
+// clkTck é a frequência do relógio do kernel (CONFIG_HZ), em ticks/segundo.
+// Varia por arquitetura/distro:
+//   - x86/x86_64: tipicamente 100 (Ubuntu) ou 250 (RHEL family)
+//   - ARM/ARM64:  tipicamente 250 (Ubuntu/Debian) ou 1000 (Fedora ARM)
+//
+// Detecção via `getconf CLK_TCK` (POSIX, disponível em Linux e Darwin) —
+// uma única invocação no startup, custo desprezível. Antes era hardcoded em
+// 100, o que dava CPU% 2.5x errado em ARM (issue #18 follow-up).
+var clkTck float64 = detectClkTck()
+
+func detectClkTck() float64 {
+	out, err := exec.Command("getconf", "CLK_TCK").Output()
+	if err == nil {
+		if v, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64); err == nil && v > 0 {
+			return v
+		}
+	}
+	return 100 // fallback razoável
+}
 
 func (c *CPUCollector) sample() (CpuSample, error) {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", c.pid))

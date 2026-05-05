@@ -1,0 +1,103 @@
+# lima.yaml — VM de desenvolvimento Linux ARM64 para testar xray com eBPF.
+#
+# Uso:
+#   limactl start --name=xray-dev ./lima.yaml
+#   limactl shell xray-dev
+#   cd /Users/<você>/src/github.com/trentas/xray
+#   make build-ebpf       # quando os .bpf.c entrarem (issues #9-#14)
+#   sudo ./bin/xray --pid 1
+#
+# Limpeza:
+#   limactl stop xray-dev && limactl delete xray-dev
+
+# Apple Virtualization Framework — performance quase nativa em Apple Silicon.
+# Em Macs Intel, troque para "qemu" (Lima detecta automaticamente também).
+vmType: vz
+
+# Ubuntu 24.04 LTS Server cloudimg arm64.
+# Kernel 6.8 vem com BTF, ring buffer, CAP_BPF — tudo que precisamos.
+images:
+  - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+    arch: aarch64
+
+cpus: 4
+memory: "4GiB"
+disk: "20GiB"
+
+# Compartilha o home do Mac com o VM. Edita no Mac, roda dentro do VM.
+# `writable: true` permite que builds dentro do VM (bin/, *.o) apareçam no Mac.
+mounts:
+  - location: "~"
+    writable: true
+mountType: virtiofs
+
+# Provisioning: roda uma vez no primeiro start.
+provision:
+  - mode: system
+    description: "Instala toolchain Go + eBPF (clang, libbpf, bpftool)"
+    script: |
+      #!/bin/bash
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y \
+        build-essential \
+        clang \
+        llvm \
+        libbpf-dev \
+        linux-tools-common \
+        linux-tools-generic \
+        bpftool \
+        git \
+        curl \
+        ca-certificates \
+        pkg-config
+
+      # Go 1.22+ — apt do Ubuntu 24.04 ainda traz 1.22 mas em path estranho.
+      # Baixar diretamente do go.dev é mais determinístico.
+      GOVER=1.22.10
+      if ! command -v go >/dev/null 2>&1 || ! go version | grep -q "go1.2[2-9]"; then
+        curl -sL "https://go.dev/dl/go${GOVER}.linux-arm64.tar.gz" | tar -C /usr/local -xz
+        ln -sf /usr/local/go/bin/go /usr/local/bin/go
+        ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+      fi
+
+  - mode: user
+    description: "PATH + variáveis convenientes para o usuário default (lima)"
+    script: |
+      #!/bin/bash
+      set -eux
+      grep -q 'GOPATH' ~/.bashrc 2>/dev/null || cat >>~/.bashrc <<'EOF'
+
+      # xray dev env
+      export GOPATH=$HOME/go
+      export PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
+      EOF
+
+# Probes: validam que o setup terminou. lima espera todos passarem antes de
+# devolver controle ao terminal.
+probes:
+  - description: "Go instalado"
+    script: |
+      #!/bin/bash
+      command -v go >/dev/null 2>&1
+      go version | grep -q "go1.2[2-9]"
+  - description: "libbpf-dev instalado"
+    script: |
+      #!/bin/bash
+      pkg-config --exists libbpf
+  - description: "clang disponível"
+    script: |
+      #!/bin/bash
+      command -v clang >/dev/null 2>&1
+
+# Ao terminar provisioning, imprime hints úteis no log (`limactl logs xray-dev`).
+message: |
+  ✓ VM xray-dev pronta.
+
+  Próximos passos:
+    limactl shell xray-dev
+    cd /Users/$(whoami)/src/github.com/trentas/xray   # ajuste pro seu user
+    make test                                          # roda os testes Linux
+    make build-ebpf                                    # quando .bpf.c entrarem (#9+)
+    sudo ./bin/xray --pid 1 --no-ebpf                  # já funciona com a MVP atual
