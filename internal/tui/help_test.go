@@ -32,11 +32,59 @@ func TestHelpOverlayToggle(t *testing.T) {
 		t.Error("overlay não renderizou seção Filtro")
 	}
 
-	// Qualquer tecla fecha
+	// Tecla 'a' agora não fecha (só ?, esc, q fecham — outras são ignoradas
+	// pra permitir scroll com setas/PgUp/PgDn sem fechar acidentalmente).
 	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	m = nm.(Model)
+	if !m.showHelp {
+		t.Error("tecla 'a' fechou help — deveria ignorar")
+	}
+
+	// '?' fecha
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	m = nm.(Model)
 	if m.showHelp {
-		t.Error("tecla não fechou o help")
+		t.Error("? não fechou o help")
+	}
+}
+
+func TestHelpScroll(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m.Width = 80
+	m.Height = 24
+	m.showHelp = true
+
+	if m.helpScroll != 0 {
+		t.Fatal("helpScroll inicial != 0")
+	}
+
+	// ↓ aumenta scroll
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = nm.(Model)
+	if m.helpScroll != 1 {
+		t.Errorf("após ↓, helpScroll=%d (esperado 1)", m.helpScroll)
+	}
+
+	// ↑ diminui
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = nm.(Model)
+	if m.helpScroll != 0 {
+		t.Errorf("após ↑, helpScroll=%d (esperado 0)", m.helpScroll)
+	}
+
+	// ↑ não vai abaixo de 0
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyUp})
+	m = nm.(Model)
+	if m.helpScroll != 0 {
+		t.Errorf("↑ no topo deveria ficar em 0, got %d", m.helpScroll)
+	}
+
+	// Esc fecha e zera scroll
+	m.helpScroll = 5
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = nm.(Model)
+	if m.showHelp || m.helpScroll != 0 {
+		t.Errorf("Esc deveria fechar e zerar scroll: showHelp=%v scroll=%d", m.showHelp, m.helpScroll)
 	}
 }
 

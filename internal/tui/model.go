@@ -134,8 +134,10 @@ type Model struct {
 	inputBuf  string
 
 	// showHelp: quando true, View() renderiza overlay com keybindings sobre
-	// o conteúdo. Fechado por qualquer tecla (incluindo `?` e `esc`).
-	showHelp bool
+	// o conteúdo. Fechado por `?`, `esc` ou `q`. Setas/PgUp/PgDn fazem scroll
+	// quando o overlay não cabe na altura disponível.
+	showHelp   bool
+	helpScroll int
 
 	// Collectors
 	fdCollector           *collector.FDCollector
