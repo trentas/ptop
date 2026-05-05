@@ -39,12 +39,25 @@ func main() {
 	}
 
 	if !*noEBPF {
-		caps := bpf.GetCapStatus()
-		if diag := caps.Diagnose(); diag != "" {
-			fmt.Fprintln(os.Stderr, "erro: eBPF não disponível")
+		// Diagnóstico de build vs runtime:
+		//   - Available = false → binário foi compilado SEM `-tags=ebpf`.
+		//     Não é erro de permissão; é build errado. Cai pra /proc.
+		//   - Available = true mas caps insuficientes → erro fatal antes
+		//     do TUI subir, com mensagem detalhada de Diagnose().
+		if !bpf.Available {
+			fmt.Fprintln(os.Stderr, "[xray] eBPF não está embarcado neste binário")
+			fmt.Fprintln(os.Stderr, "       Rode `make build-ebpf` (Linux + libbpf-dev) pra ativar.")
+			fmt.Fprintln(os.Stderr, "       Continuando em modo /proc-only.")
 			fmt.Fprintln(os.Stderr, "")
-			fmt.Fprint(os.Stderr, diag)
-			os.Exit(1)
+		} else {
+			caps := bpf.GetCapStatus()
+			if diag := caps.Diagnose(); diag != "" {
+				fmt.Fprintln(os.Stderr, "erro: eBPF não disponível")
+				fmt.Fprintln(os.Stderr, "")
+				fmt.Fprint(os.Stderr, diag)
+				os.Exit(1)
+			}
+			fmt.Fprintln(os.Stderr, "[xray] eBPF embarcado, kernel suporta. Iniciando tracers...")
 		}
 	}
 
