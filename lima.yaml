@@ -40,6 +40,9 @@ provision:
       set -eux
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
+      # Ubuntu 22.04 não tem `bpftool` como pacote standalone — ele vem
+      # dentro de linux-tools-$(uname -r). Em 24.04 existe, mas usar
+      # linux-tools-* é compatível com ambos.
       apt-get install -y \
         build-essential \
         clang \
@@ -47,7 +50,7 @@ provision:
         libbpf-dev \
         linux-tools-common \
         linux-tools-generic \
-        bpftool \
+        linux-tools-$(uname -r) \
         git \
         curl \
         ca-certificates \
