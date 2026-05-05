@@ -153,15 +153,26 @@ func renderFDTable(m Model, w, h int) string {
 			lipgloss.NewStyle().Width(dotW).Render(""),
 	)
 
-	// filtra
+	// filtra: primeiro por tipo (FDFilter cíclico), depois por substring
+	// (m.filter, vindo do input mode `/`).
 	filtered := m.FDs
 	if m.FDFilter != "all" && m.FDFilter != "" {
-		filtered = make([]collector.FDEntry, 0, len(m.FDs))
+		next := make([]collector.FDEntry, 0, len(m.FDs))
 		for _, f := range m.FDs {
 			if f.Type == m.FDFilter {
-				filtered = append(filtered, f)
+				next = append(next, f)
 			}
 		}
+		filtered = next
+	}
+	if m.filter != "" {
+		next := make([]collector.FDEntry, 0, len(filtered))
+		for _, f := range filtered {
+			if strings.Contains(strings.ToLower(f.Desc), strings.ToLower(m.filter)) {
+				next = append(next, f)
+			}
+		}
+		filtered = next
 	}
 	sort.Slice(filtered, func(i, j int) bool { return filtered[i].FD < filtered[j].FD })
 
