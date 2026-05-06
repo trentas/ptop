@@ -10,13 +10,16 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// NetworkEBPFCollector usa o tracepoint sock:inet_sock_set_state pra
-// descobrir conexões TCP do PID alvo em tempo real, e publica []NetConn
-// a cada 500ms. Latência vem do RTT do handshake (SYN_SENT → ESTABLISHED).
+// NetworkEBPFCollector combina:
+//   - tracepoint sock:inet_sock_set_state — descobre 5-tuple + state +
+//     RTT do handshake (SYN_SENT → ESTABLISHED).
+//   - kprobes em tcp_sendmsg/tcp_cleanup_rbuf — bytes Tx/Rx por conexão,
+//     correlacionados via map auxiliar sock_to_key (skaddr → 5-tuple)
+//     populado pelo próprio tracepoint.
 //
-// Bytes Tx/Rx ficam zerados nesta primeira fase — adicionar exigiria
-// kprobes em tcp_sendmsg/tcp_cleanup_rbuf com leitura de struct sock,
-// que requer vmlinux.h ou offsets manuais (seguir em issue separado).
+// Publica []NetConn a cada 500ms. Conexões pré-existentes (abertas antes
+// do attach) não aparecem — limitação do tracepoint, que só dispara em
+// transitions de estado.
 type NetworkEBPFCollector struct {
 	tracer *bpf.NetTracer
 	ch     chan interface{}
@@ -90,8 +93,10 @@ func (c *NetworkEBPFCollector) snapshot() []NetConn {
 			Type:      "TCP",
 			Remote:    formatNetAddr(s.DAddr.String(), s.DPort, s.Family),
 			State:     mapTCPState(s.State),
-			Dir:       "→",
+			Dir:       directionFromBytes(s.TxBytes, s.RxBytes),
 			LatencyMs: latMs,
+			TxBytes:   s.TxBytes,
+			RxBytes:   s.RxBytes,
 		})
 	}
 	// Ordem estável: mais recente primeiro pra não pular linhas no terminal.
@@ -141,6 +146,27 @@ func mapTCPState(s uint32) string {
 		return "CLOSING"
 	default:
 		return "?"
+	}
+}
+
+// directionFromBytes infere a "direção" predominante da conexão pelo
+// volume de tx vs rx. "→" outbound (tx >> rx), "←" inbound (rx >> tx),
+// "↔" balanceado ou ambos zero. É só um indicador visual — não muda
+// o que o usuário vê do remote.
+func directionFromBytes(tx, rx uint64) string {
+	switch {
+	case tx == 0 && rx == 0:
+		return "↔"
+	case tx > 0 && rx == 0:
+		return "→"
+	case rx > 0 && tx == 0:
+		return "←"
+	case tx > rx*4:
+		return "→"
+	case rx > tx*4:
+		return "←"
+	default:
+		return "↔"
 	}
 }
 

@@ -10,14 +10,16 @@ import (
 var errNetStub = errors.New("eBPF network tracer não disponível neste build")
 
 type NetSnapshot struct {
-	Family uint16
-	SAddr  net.IP
-	DAddr  net.IP
-	SPort  uint16
-	DPort  uint16
-	State  uint32
-	RTTNs  uint64
-	LastNs uint64
+	Family  uint16
+	SAddr   net.IP
+	DAddr   net.IP
+	SPort   uint16
+	DPort   uint16
+	State   uint32
+	RTTNs   uint64
+	TxBytes uint64
+	RxBytes uint64
+	LastNs  uint64
 }
 
 type NetTracer struct{}

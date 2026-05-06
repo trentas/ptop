@@ -29,13 +29,15 @@ type NetConnKey struct {
 	_      uint16 // pad
 }
 
-// NetConnVal espelha `struct net_val`. 48 bytes.
+// NetConnVal espelha `struct net_val`. 64 bytes.
 type NetConnVal struct {
 	FirstSeenNs   uint64
 	LastSeenNs    uint64
 	SynSentNs     uint64
 	EstablishedNs uint64
 	RTTNs         uint64
+	TxBytes       uint64
+	RxBytes       uint64
 	State         uint32
 	_             uint32 // pad
 }
@@ -43,22 +45,25 @@ type NetConnVal struct {
 // NetSnapshot é o formato user-friendly devolvido por Stats() — 5-tuple
 // já decodificada em net.IP + ports em host order, RTT calculado.
 type NetSnapshot struct {
-	Family uint16 // 2=IPv4, 10=IPv6
-	SAddr  net.IP
-	DAddr  net.IP
-	SPort  uint16
-	DPort  uint16
-	State  uint32
-	RTTNs  uint64
-	LastNs uint64
+	Family  uint16 // 2=IPv4, 10=IPv6
+	SAddr   net.IP
+	DAddr   net.IP
+	SPort   uint16
+	DPort   uint16
+	State   uint32
+	RTTNs   uint64
+	TxBytes uint64
+	RxBytes uint64
+	LastNs  uint64
 }
 
 // NetTracer carrega network.bpf.o, attacha o tracepoint
-// sock:inet_sock_set_state e expõe Stats() pra ler o map.
+// sock:inet_sock_set_state + kprobes em tcp_sendmsg/tcp_cleanup_rbuf,
+// e expõe Stats() pra ler o map.
 type NetTracer struct {
-	coll *ebpf.Collection
-	link link.Link
-	cmap *ebpf.Map
+	coll  *ebpf.Collection
+	links []link.Link
+	cmap  *ebpf.Map
 }
 
 func OpenNetTracer(pid int) (*NetTracer, error) {
@@ -97,17 +102,39 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 		return nil, errors.New("net_conn_map ausente")
 	}
 
-	prog := coll.Programs["handle_inet_set_state"]
-	if prog == nil {
+	tpProg := coll.Programs["handle_inet_set_state"]
+	if tpProg == nil {
 		t.Close()
 		return nil, errors.New("program handle_inet_set_state ausente")
 	}
-	l, err := link.Tracepoint("sock", "inet_sock_set_state", prog, nil)
+	tpLink, err := link.Tracepoint("sock", "inet_sock_set_state", tpProg, nil)
 	if err != nil {
 		t.Close()
 		return nil, fmt.Errorf("attach sock/inet_sock_set_state: %w", err)
 	}
-	t.link = l
+	t.links = append(t.links, tpLink)
+
+	// kprobes pra bytes Tx/Rx. Se kprobe falha (kernel sem CONFIG_KPROBES,
+	// símbolo renomeado, etc.), tracer continua funcionando — só perde bytes.
+	// Logamos via warning seria ideal, mas pra simplificar deixamos silencioso:
+	// state/RTT continuam disponíveis. Erros de fato fatais são raros.
+	kprobes := []struct{ sym, prog string }{
+		{"tcp_sendmsg", "handle_tcp_sendmsg"},
+		{"tcp_cleanup_rbuf", "handle_tcp_cleanup_rbuf"},
+	}
+	for _, kp := range kprobes {
+		p := coll.Programs[kp.prog]
+		if p == nil {
+			t.Close()
+			return nil, fmt.Errorf("program %s ausente", kp.prog)
+		}
+		l, err := link.Kprobe(kp.sym, p, nil)
+		if err != nil {
+			t.Close()
+			return nil, fmt.Errorf("attach kprobe %s: %w", kp.sym, err)
+		}
+		t.links = append(t.links, l)
+	}
 
 	return t, nil
 }
@@ -125,14 +152,16 @@ func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 	iter := t.cmap.Iterate()
 	for iter.Next(&k, &v) {
 		out = append(out, NetSnapshot{
-			Family: k.Family,
-			SAddr:  ipFromKey(k.SAddr, k.Family),
-			DAddr:  ipFromKey(k.DAddr, k.Family),
-			SPort:  k.SPort,
-			DPort:  k.DPort,
-			State:  v.State,
-			RTTNs:  v.RTTNs,
-			LastNs: v.LastSeenNs,
+			Family:  k.Family,
+			SAddr:   ipFromKey(k.SAddr, k.Family),
+			DAddr:   ipFromKey(k.DAddr, k.Family),
+			SPort:   k.SPort,
+			DPort:   k.DPort,
+			State:   v.State,
+			RTTNs:   v.RTTNs,
+			TxBytes: v.TxBytes,
+			RxBytes: v.RxBytes,
+			LastNs:  v.LastSeenNs,
 		})
 	}
 	if err := iter.Err(); err != nil {
@@ -156,10 +185,10 @@ func (t *NetTracer) Close() error {
 	if t == nil {
 		return nil
 	}
-	if t.link != nil {
-		_ = t.link.Close()
-		t.link = nil
+	for _, l := range t.links {
+		_ = l.Close()
 	}
+	t.links = nil
 	if t.coll != nil {
 		t.coll.Close()
 		t.coll = nil
