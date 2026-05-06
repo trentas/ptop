@@ -1,7 +1,23 @@
-.PHONY: build build-ebpf run gen clean dev test test-all vet lint
+.PHONY: all build build-ebpf run gen clean dev test test-all vet lint
+
+.DEFAULT_GOAL := all
 
 BINARY := xray
 PKG    := ./cmd/xray
+
+# ─── all ─────────────────────────────────────────────────────────────────────
+
+# Full developer/CI verification. On Linux: generates .bpf.o, vets and tests
+# in both modes (default + -tags=ebpf), then produces the eBPF-embedded
+# binary. On other OSes: vet + test + /proc-only binary (eBPF requires
+# Linux + libbpf-dev to compile the .bpf.c programs).
+ifeq ($(shell uname),Linux)
+all: gen vet test-all build-ebpf
+else
+all: vet test build
+	@echo
+	@echo "(non-Linux host — built /proc-only binary; eBPF needs Linux + libbpf-dev)"
+endif
 
 # ─── eBPF compilation ────────────────────────────────────────────────────────
 
