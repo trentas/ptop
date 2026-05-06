@@ -79,6 +79,7 @@ type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
 type FDEventMsg collector.FDEvent
 type SyscallsMsg map[string]uint64
+type IOEBPFMsg collector.IOEBPFSnapshot
 
 // exportTickMsg dispara periodicamente quando export contínuo está ON.
 type exportTickMsg time.Time
@@ -148,6 +149,7 @@ type Model struct {
 	iowaitCollector       *collector.IOWaitCollector
 	ioThroughputCollector *collector.IOThroughputCollector
 	syscallsEBPF          *collector.SyscallsEBPFCollector
+	ioEBPF                *collector.IOEBPFCollector
 
 	// Simulação
 	rng                  *rand.Rand
@@ -159,12 +161,14 @@ type Model struct {
 	usingMockIOWait      bool
 	usingMockIOThrough   bool
 	usingMockSyscalls    bool
+	usingMockIOFiles     bool
 	lastSimAt            time.Time
 
 	// Sources: indicam de onde veio o dado real ("eBPF" | "/proc" | "" pra mock).
 	// Mostrado no help overlay (?) pra debug e visibilidade.
 	cpuSource      string
 	syscallsSource string
+	ioFilesSource  string
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -198,6 +202,7 @@ func NewModel(cfg Config) Model {
 		usingMockIOWait:    true,
 		usingMockIOThrough: true,
 		usingMockSyscalls:  true,
+		usingMockIOFiles:   true,
 	}
 
 	m.seedMockData()
@@ -259,6 +264,15 @@ func NewModel(cfg Config) Model {
 			} else {
 				fmt.Fprintf(os.Stderr, "aviso: eBPF syscalls collector indisponível: %v\n", err)
 			}
+
+			c2 := collector.NewIOEBPFCollector()
+			if err := c2.Start(cfg.PID); err == nil {
+				m.ioEBPF = c2
+				m.usingMockIOFiles = false
+				m.ioFilesSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF io collector indisponível: %v\n", err)
+			}
 		}
 	}
 
@@ -303,6 +317,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.syscallsEBPF != nil {
 		cmds = append(cmds, waitForSyscalls(m.syscallsEBPF))
+	}
+	if m.ioEBPF != nil {
+		cmds = append(cmds, waitForIOEBPF(m.ioEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -407,6 +424,22 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SyscallCounts = map[string]uint64(v)
 		m.usingMockSyscalls = false
 		return m, waitForSyscalls(m.syscallsEBPF)
+
+	case IOEBPFMsg:
+		s := collector.IOEBPFSnapshot(v)
+		m.IOStats.TopFiles = s.TopFiles
+		// Buckets agora vêm da janela atual (read+write counts deste intervalo).
+		// Mesclamos com os labels existentes pra preservar a ordem.
+		if len(s.Buckets) == len(m.IOStats.LatencyBuckets) {
+			for i, b := range s.Buckets {
+				m.IOStats.LatencyBuckets[i].Read = b.Read
+				m.IOStats.LatencyBuckets[i].Write = b.Write
+			}
+		} else if len(s.Buckets) > 0 {
+			m.IOStats.LatencyBuckets = s.Buckets
+		}
+		m.usingMockIOFiles = false
+		return m, waitForIOEBPF(m.ioEBPF)
 
 	case IOThroughputMsg:
 		s := collector.IOThroughputSample(v)
@@ -804,28 +837,32 @@ func (m *Model) tick() {
 		m.IOStats.IOWaitPct = clamp(m.IOStats.IOWaitPct+(r.Float64()-0.5)*2, 0, 40)
 	}
 
-	for i := range m.IOStats.TopFiles {
-		f := &m.IOStats.TopFiles[i]
-		if r.Float64() > 0.4 {
-			f.Reads += uint64(r.Intn(8))
+	// TopFiles + LatencyBuckets só simulam quando o eBPF io collector
+	// não está rodando — quando rodando, IOEBPFMsg substitui esses campos.
+	if m.usingMockIOFiles {
+		for i := range m.IOStats.TopFiles {
+			f := &m.IOStats.TopFiles[i]
+			if r.Float64() > 0.4 {
+				f.Reads += uint64(r.Intn(8))
+			}
+			if r.Float64() > 0.6 {
+				f.Writes += uint64(r.Intn(4))
+			}
+			f.Bytes += uint64(r.Intn(512))
+			f.LatencyMs = clamp(f.LatencyMs+(r.Float64()-0.5)*0.4, 0.05, 50)
+			if f.Type == "db" && r.Float64() > 0.7 {
+				f.Fsyncs++
+			}
 		}
-		if r.Float64() > 0.6 {
-			f.Writes += uint64(r.Intn(4))
+		for i := range m.IOStats.LatencyBuckets {
+			b := &m.IOStats.LatencyBuckets[i]
+			bias := 1.0
+			if i == 0 {
+				bias = 2.0
+			}
+			b.Read = clamp(b.Read+(r.Float64()-0.4)*2*bias, 1, 1000)
+			b.Write = clamp(b.Write+(r.Float64()-0.4)*2*bias, 1, 1000)
 		}
-		f.Bytes += uint64(r.Intn(512))
-		f.LatencyMs = clamp(f.LatencyMs+(r.Float64()-0.5)*0.4, 0.05, 50)
-		if f.Type == "db" && r.Float64() > 0.7 {
-			f.Fsyncs++
-		}
-	}
-	for i := range m.IOStats.LatencyBuckets {
-		b := &m.IOStats.LatencyBuckets[i]
-		bias := 1.0
-		if i == 0 {
-			bias = 2.0
-		}
-		b.Read = clamp(b.Read+(r.Float64()-0.4)*2*bias, 1, 1000)
-		b.Write = clamp(b.Write+(r.Float64()-0.4)*2*bias, 1, 1000)
 	}
 
 	// FDs — só simulamos quando não há collector real plugado
@@ -1086,6 +1123,23 @@ func waitForSyscalls(c *collector.SyscallsEBPFCollector) tea.Cmd {
 		v := <-ch
 		if m, ok := v.(map[string]uint64); ok {
 			return SyscallsMsg(m)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForIOEBPF(c *collector.IOEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
+		if s, ok := v.(collector.IOEBPFSnapshot); ok {
+			return IOEBPFMsg(s)
 		}
 		return TickMsg(time.Now())
 	}
