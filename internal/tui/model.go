@@ -80,6 +80,7 @@ type TimelineMsg collector.TimelineEvent
 type FDEventMsg collector.FDEvent
 type SyscallsMsg map[string]uint64
 type IOEBPFMsg collector.IOEBPFSnapshot
+type NetMsg []collector.NetConn
 
 // exportTickMsg dispara periodicamente quando export contínuo está ON.
 type exportTickMsg time.Time
@@ -150,6 +151,7 @@ type Model struct {
 	ioThroughputCollector *collector.IOThroughputCollector
 	syscallsEBPF          *collector.SyscallsEBPFCollector
 	ioEBPF                *collector.IOEBPFCollector
+	networkEBPF           *collector.NetworkEBPFCollector
 
 	// Simulação
 	rng                  *rand.Rand
@@ -162,6 +164,7 @@ type Model struct {
 	usingMockIOThrough   bool
 	usingMockSyscalls    bool
 	usingMockIOFiles     bool
+	usingMockNet         bool
 	lastSimAt            time.Time
 
 	// Sources: indicam de onde veio o dado real ("eBPF" | "/proc" | "" pra mock).
@@ -169,6 +172,7 @@ type Model struct {
 	cpuSource      string
 	syscallsSource string
 	ioFilesSource  string
+	netSource      string
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -203,6 +207,7 @@ func NewModel(cfg Config) Model {
 		usingMockIOThrough: true,
 		usingMockSyscalls:  true,
 		usingMockIOFiles:   true,
+		usingMockNet:       true,
 	}
 
 	m.seedMockData()
@@ -273,6 +278,15 @@ func NewModel(cfg Config) Model {
 			} else {
 				fmt.Fprintf(os.Stderr, "aviso: eBPF io collector indisponível: %v\n", err)
 			}
+
+			c3 := collector.NewNetworkEBPFCollector()
+			if err := c3.Start(cfg.PID); err == nil {
+				m.networkEBPF = c3
+				m.usingMockNet = false
+				m.netSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF network collector indisponível: %v\n", err)
+			}
 		}
 	}
 
@@ -320,6 +334,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.ioEBPF != nil {
 		cmds = append(cmds, waitForIOEBPF(m.ioEBPF))
+	}
+	if m.networkEBPF != nil {
+		cmds = append(cmds, waitForNetEBPF(m.networkEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -424,6 +441,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.SyscallCounts = map[string]uint64(v)
 		m.usingMockSyscalls = false
 		return m, waitForSyscalls(m.syscallsEBPF)
+
+	case NetMsg:
+		m.NetConns = []collector.NetConn(v)
+		m.usingMockNet = false
+		return m, waitForNetEBPF(m.networkEBPF)
 
 	case IOEBPFMsg:
 		s := collector.IOEBPFSnapshot(v)
@@ -768,15 +790,18 @@ func (m *Model) tick() {
 		m.MemStats.AllocsPerS = uint64(clamp(float64(m.MemStats.AllocsPerS)+r.Float64()*8-3, 50, 2000))
 	}
 
-	// Network — jitter de latência + estado oscilante
-	for i := range m.NetConns {
-		c := &m.NetConns[i]
-		c.LatencyMs = clamp(c.LatencyMs+(r.Float64()-0.5)*5, 1, 200)
-		if i == 0 && r.Float64() > 0.7 {
-			if c.State == "WAIT" {
-				c.State = "RECV"
-			} else {
-				c.State = "WAIT"
+	// Network — jitter de latência + estado oscilante. Só simulamos quando
+	// o eBPF network collector não está rodando.
+	if m.usingMockNet {
+		for i := range m.NetConns {
+			c := &m.NetConns[i]
+			c.LatencyMs = clamp(c.LatencyMs+(r.Float64()-0.5)*5, 1, 200)
+			if i == 0 && r.Float64() > 0.7 {
+				if c.State == "WAIT" {
+					c.State = "RECV"
+				} else {
+					c.State = "WAIT"
+				}
 			}
 		}
 	}
@@ -1123,6 +1148,23 @@ func waitForSyscalls(c *collector.SyscallsEBPFCollector) tea.Cmd {
 		v := <-ch
 		if m, ok := v.(map[string]uint64); ok {
 			return SyscallsMsg(m)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForNetEBPF(c *collector.NetworkEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
+		if conns, ok := v.([]collector.NetConn); ok {
+			return NetMsg(conns)
 		}
 		return TickMsg(time.Now())
 	}

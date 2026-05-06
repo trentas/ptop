@@ -23,7 +23,8 @@ endif
 BPF_SRCS := \
 	internal/bpf/programs/syscalls.bpf.c \
 	internal/bpf/programs/cpu.bpf.c \
-	internal/bpf/programs/io.bpf.c
+	internal/bpf/programs/io.bpf.c \
+	internal/bpf/programs/network.bpf.c
 
 BPF_OBJS := $(BPF_SRCS:.c=.o)
 
