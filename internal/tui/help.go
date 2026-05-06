@@ -81,7 +81,7 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		statusRow("cpu", m.usingMockCPU, m.cpuSource),
 		statusRow("io-files", m.usingMockIOFiles, m.ioFilesSource),
 		statusRow("network", m.usingMockNet, m.netSource),
-		statusRow("memory", m.usingMockMem, sourceProcOrEmpty(!m.usingMockMem)),
+		statusRow("memory", m.usingMockMem, m.memSource),
 		statusRow("threads", m.usingMockThreads, m.threadsSource),
 		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
 		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),

@@ -153,6 +153,7 @@ type Model struct {
 	ioEBPF                *collector.IOEBPFCollector
 	networkEBPF           *collector.NetworkEBPFCollector
 	threadsEBPF           *collector.ThreadsEBPFCollector
+	memEBPF               *collector.MemEBPFCollector
 
 	// Simulação
 	rng                  *rand.Rand
@@ -175,6 +176,7 @@ type Model struct {
 	ioFilesSource  string
 	netSource      string
 	threadsSource  string
+	memSource      string
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -264,9 +266,25 @@ func NewModel(cfg Config) Model {
 				m.threadsSource = "/proc"
 			}
 		}
-		if c := collector.NewMemCollector(); c.Start(cfg.PID) == nil {
-			m.memCollector = c
-			m.usingMockMem = false
+		// Memory: eBPF preferred (allocs/s reais via mmap+brk syscalls,
+		// page_faults real-time via kprobe handle_mm_fault). /proc-only
+		// fallback usa /proc/<pid>/stat que cumula minflt+majflt.
+		if !cfg.NoEBPF {
+			c := collector.NewMemEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				m.memEBPF = c
+				m.usingMockMem = false
+				m.memSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF memory collector indisponível: %v\n", err)
+			}
+		}
+		if m.memEBPF == nil {
+			if c := collector.NewMemCollector(); c.Start(cfg.PID) == nil {
+				m.memCollector = c
+				m.usingMockMem = false
+				m.memSource = "/proc"
+			}
 		}
 		if c := collector.NewIOWaitCollector(); c.Start(cfg.PID) == nil {
 			m.iowaitCollector = c
@@ -359,6 +377,9 @@ func (m Model) Init() tea.Cmd {
 	if m.threadsEBPF != nil {
 		cmds = append(cmds, waitForThreadsEBPF(m.threadsEBPF))
 	}
+	if m.memEBPF != nil {
+		cmds = append(cmds, waitForMemEBPF(m.memEBPF))
+	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
 	}
@@ -435,6 +456,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MemMsg:
 		m.MemStats = collector.MemStats(v)
 		m.usingMockMem = false
+		// Reagenda na fonte ativa.
+		if m.memEBPF != nil {
+			return m, waitForMemEBPF(m.memEBPF)
+		}
 		return m, waitForMem(m.memCollector)
 
 	case IOWaitMsg:
@@ -1134,6 +1159,23 @@ func waitForThreads(c *collector.ThreadsCollector) tea.Cmd {
 		v := <-c.Subscribe()
 		if t, ok := v.([]collector.ThreadInfo); ok {
 			return ThreadsMsg(t)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForMemEBPF(c *collector.MemEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
+		if s, ok := v.(collector.MemStats); ok {
+			return MemMsg(s)
 		}
 		return TickMsg(time.Now())
 	}
