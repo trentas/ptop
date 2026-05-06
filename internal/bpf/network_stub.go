@@ -22,8 +22,18 @@ type NetSnapshot struct {
 	LastNs  uint64
 }
 
+type NetConnKey struct {
+	DAddr  [16]byte
+	SAddr  [16]byte
+	DPort  uint16
+	SPort  uint16
+	Family uint16
+	_      uint16
+}
+
 type NetTracer struct{}
 
-func OpenNetTracer(int) (*NetTracer, error)       { return nil, errNetStub }
-func (*NetTracer) Stats() ([]NetSnapshot, error)  { return nil, errNetStub }
-func (*NetTracer) Close() error                   { return nil }
+func OpenNetTracer(int) (*NetTracer, error)                       { return nil, errNetStub }
+func (*NetTracer) Stats() ([]NetSnapshot, error)                   { return nil, errNetStub }
+func (*NetTracer) SeedConnection(NetConnKey, uint32) error         { return errNetStub }
+func (*NetTracer) Close() error                                    { return nil }

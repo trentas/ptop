@@ -115,6 +115,51 @@ func TestParseUnixFile(t *testing.T) {
 	}
 }
 
+func TestFillRawAddr_ipv4(t *testing.T) {
+	var addr [16]byte
+	var port uint16
+	fillRawAddr(&addr, &port, "0100007F:1F90", true)
+	// 127.0.0.1 em network order: [7F, 00, 00, 01]
+	want := [4]byte{0x7F, 0x00, 0x00, 0x01}
+	if [4]byte(addr[:4]) != want {
+		t.Errorf("saddr esperado %v, got %v", want, addr[:4])
+	}
+	if port != 8080 {
+		t.Errorf("port esperado 8080, got %d", port)
+	}
+	// Resto deve ficar zero
+	for i := 4; i < 16; i++ {
+		if addr[i] != 0 {
+			t.Errorf("addr[%d] esperado 0, got %d", i, addr[i])
+		}
+	}
+}
+
+func TestParseInetFile_rawFields(t *testing.T) {
+	tmp := t.TempDir() + "/tcp"
+	if err := writeFileForTest(tmp, sampleProcNetTCP); err != nil {
+		t.Fatal(err)
+	}
+	out := make(map[uint64]SocketInfo)
+	parseInetFile(tmp, "TCP", true, out)
+
+	est := out[11111]
+	// 127.0.0.1:E96A → DAddr [7F,00,00,01], DPort 0xE96A=59754
+	wantDAddr := [4]byte{0x7F, 0x00, 0x00, 0x01}
+	if [4]byte(est.DAddr[:4]) != wantDAddr {
+		t.Errorf("DAddr esperado %v, got %v", wantDAddr, est.DAddr[:4])
+	}
+	if est.DPort != 59754 {
+		t.Errorf("DPort esperado 59754, got %d", est.DPort)
+	}
+	if est.AF != 2 {
+		t.Errorf("AF esperado 2 (AF_INET), got %d", est.AF)
+	}
+	if est.StateNum != 1 {
+		t.Errorf("StateNum esperado 1 (ESTABLISHED), got %d", est.StateNum)
+	}
+}
+
 // helpers
 
 func writeFileForTest(path, content string) error {

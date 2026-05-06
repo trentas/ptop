@@ -4,6 +4,7 @@ package collector
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"time"
 
@@ -21,15 +22,18 @@ import (
 // do attach) não aparecem — limitação do tracepoint, que só dispara em
 // transitions de estado.
 type NetworkEBPFCollector struct {
-	tracer *bpf.NetTracer
-	ch     chan interface{}
-	stop   chan struct{}
+	tracer   *bpf.NetTracer
+	pid      int
+	resolver *SocketResolver
+	ch       chan interface{}
+	stop     chan struct{}
 }
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
 	return &NetworkEBPFCollector{
-		ch:   make(chan interface{}, 4),
-		stop: make(chan struct{}),
+		ch:       make(chan interface{}, 4),
+		stop:     make(chan struct{}),
+		resolver: NewSocketResolver(),
 	}
 }
 
@@ -39,6 +43,11 @@ func (c *NetworkEBPFCollector) Start(pid int) error {
 		return fmt.Errorf("network eBPF: %w", err)
 	}
 	c.tracer = tracer
+	c.pid = pid
+	// Bootstrap síncrono: popula o map com conexões TCP já existentes
+	// no /proc/<pid>/net/tcp{,6} antes do primeiro snapshot. Sem isso,
+	// processos com keep-alive aparecem vazios até alguma transição.
+	c.bootstrapFromProc()
 	go c.publishLoop()
 	return nil
 }
@@ -58,17 +67,79 @@ func (c *NetworkEBPFCollector) Subscribe() <-chan interface{} {
 func (c *NetworkEBPFCollector) publishLoop() {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
+	// Re-seed a cada 5s pra capturar conexões long-lived que não passaram
+	// por nenhuma transição de estado durante o lifetime do xray.
+	const reseedEvery = 10 // 10 × 500ms = 5s
+	tick := 0
 	for {
 		select {
 		case <-c.stop:
 			return
 		case <-t.C:
+			tick++
+			if tick%reseedEvery == 0 {
+				c.bootstrapFromProc()
+			}
 			conns := c.snapshot()
 			select {
 			case c.ch <- conns:
 			default:
 			}
 		}
+	}
+}
+
+// bootstrapFromProc enumera /proc/<pid>/fd/, identifica socket FDs do
+// processo, resolve seus inodes via /proc/net/tcp{,6} (SocketResolver)
+// e seedea o eBPF net_conn_map com BPF_NOEXIST — entries existentes
+// (vindas do tracepoint) são preservadas com seu state/RTT/bytes reais.
+//
+// Conexões pre-existentes seedadas têm tx/rx zerados e RTT zero — sem
+// skaddr não dá pra correlacionar com os kprobes. É o trade-off do
+// approach (alternativa seria iterar sock objects via vmlinux.h).
+func (c *NetworkEBPFCollector) bootstrapFromProc() {
+	if c.tracer == nil || c.pid <= 0 {
+		return
+	}
+	fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", c.pid))
+	if err != nil {
+		return
+	}
+	// Coleta inodes de socket FDs do processo.
+	inodes := make(map[uint64]struct{}, 16)
+	for _, e := range fds {
+		link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", c.pid, e.Name()))
+		if err != nil {
+			continue
+		}
+		if inode, ok := extractSocketInode(link); ok && inode != 0 {
+			inodes[inode] = struct{}{}
+		}
+	}
+	if len(inodes) == 0 {
+		return
+	}
+	// Resolve via SocketResolver. Resolver tem cache 2s, mas chamamos
+	// uma vez aqui — força refresh se stale.
+	for inode := range inodes {
+		info, ok := c.resolver.Resolve(inode)
+		if !ok {
+			continue
+		}
+		if info.Family != "TCP" {
+			continue
+		}
+		if info.StateNum == 0 {
+			continue
+		}
+		key := bpf.NetConnKey{
+			DAddr:  info.DAddr,
+			SAddr:  info.SAddr,
+			DPort:  info.DPort,
+			SPort:  info.SPort,
+			Family: info.AF,
+		}
+		_ = c.tracer.SeedConnection(key, info.StateNum)
 	}
 }
 

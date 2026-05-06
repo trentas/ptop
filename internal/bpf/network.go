@@ -139,6 +139,30 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 	return t, nil
 }
 
+// SeedConnection insere uma entry em net_conn_map para uma 5-tupla que
+// não foi capturada pelo tracepoint (ex: conexões TCP já estabelecidas
+// quando xray attachou). Usa BPF_NOEXIST: se já existe uma entry (porque
+// o tracepoint disparou em algum momento), preserva o que está lá —
+// dados do tracepoint têm RTT real, bytes acumulados, etc.
+//
+// State é o numérico do kernel (1=ESTABLISHED, 2=SYN_SENT, ..., 11=CLOSING).
+// last_seen_ns fica zerado pra que conexões "frescas" do tracepoint
+// fiquem ranqueadas acima.
+func (t *NetTracer) SeedConnection(key NetConnKey, state uint32) error {
+	if t == nil || t.cmap == nil {
+		return errors.New("tracer não inicializado")
+	}
+	val := NetConnVal{
+		State: state,
+	}
+	err := t.cmap.Update(&key, &val, ebpf.UpdateNoExist)
+	if err != nil && errors.Is(err, ebpf.ErrKeyExist) {
+		// Já existe (vindo do tracepoint) — mantém o que está, não é erro.
+		return nil
+	}
+	return err
+}
+
 // Stats itera o map net_conn_map e devolve um snapshot. Iter é seguro
 // concorrente com escritas do programa BPF — pode pular ou repetir
 // entries marginais (aceitável pra UI).
