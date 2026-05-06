@@ -14,17 +14,17 @@ import (
 //
 // Layout:
 //
-//   ┌── FD Count Over Time (esq) ─┬── Breakdown ──────┐
-//   │ sparkline + valor           │ file ▇▇▇  6       │
+//   ┌── FD Count Over Time (left) ─┬── Breakdown ─────┐
+//   │ sparkline + value           │ file ▇▇▇  6       │
 //   └─────────────────────────────┴───────────────────┘
 //   filter chips: [all][file][socket][pipe][epoll][timer]
 //   ┌── FD table ─────────────────────────────────────┐
 //   │ FD TYPE DESC FLAGS BYTES AGE ●                  │
 //   │ ...                                             │
-//   ├── Alertas ──┬── Stats ─────┬── FD Events ──────┤
+//   ├── Alerts ───┬── Stats ─────┬── FD Events ──────┤
 func renderFDView(m Model, w, h int) string {
 	if w < 50 || h < 12 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+		return MutedStyle.Render("(terminal too small)")
 	}
 
 	leftW := w * 25 / 35 // ratio 2.5 : 1.0
@@ -40,11 +40,11 @@ func renderFDView(m Model, w, h int) string {
 		topH = 4
 	}
 
-	// filter chips ocupa 1 linha
+	// filter chips occupy 1 line
 	filterRow := renderFDFilterRow(m, leftW)
 	filterH := lipgloss.Height(filterRow)
 
-	// table ocupa o resto
+	// table takes the rest
 	tableH := h - topH - filterH
 	if tableH < 4 {
 		tableH = 4
@@ -70,7 +70,7 @@ func renderFDView(m Model, w, h int) string {
 	// === RIGHT COLUMN ===========================================================
 	rightHs := splitFlex([]float64{0.7, 0.7, 2.0}, h)
 
-	alertsPanel := Panel("Alertas", renderFDAlerts(m), rightW, rightHs[0])
+	alertsPanel := Panel("Alerts", renderFDAlerts(m), rightW, rightHs[0])
 	statsPanel := Panel("Stats", renderFDStats(m, rightW-2), rightW, rightHs[1])
 	eventsPanel := Panel("FD Events",
 		renderFDEvents(m.FDEvents, rightW-2, rightHs[2]-3),
@@ -153,8 +153,8 @@ func renderFDTable(m Model, w, h int) string {
 			lipgloss.NewStyle().Width(dotW).Background(ColorPanel).Render(""),
 	)
 
-	// filtra: primeiro por tipo (FDFilter cíclico), depois por substring
-	// (m.filter, vindo do input mode `/`).
+	// filter: first by type (cyclic FDFilter), then by substring
+	// (m.filter, from `/` input mode).
 	filtered := m.FDs
 	if m.FDFilter != "all" && m.FDFilter != "" {
 		next := make([]collector.FDEntry, 0, len(m.FDs))
@@ -226,17 +226,17 @@ func renderFDAlerts(m Model) string {
 		if f.Type == "file" && strings.Contains(f.Desc, "/tmp") && f.AgeMs > 600*1000 {
 			suspect++
 			lines = append(lines, AmberStyle.Render(
-				fmt.Sprintf("⚠ fd=%d %s aberto há %s sem atividade", f.FD, f.Type, fmtAgeMs(f.AgeMs)),
+				fmt.Sprintf("⚠ fd=%d %s open for %s with no activity", f.FD, f.Type, fmtAgeMs(f.AgeMs)),
 			))
 		}
 	}
 	if len(m.FDs) > 20 {
 		lines = append(lines, RedStyle.Render(
-			fmt.Sprintf("⚠ %d fds abertos — próximo do limite", len(m.FDs)),
+			fmt.Sprintf("⚠ %d fds open — close to the limit", len(m.FDs)),
 		))
 	}
 	if len(lines) == 0 {
-		lines = append(lines, GreenStyle.Render("✓ sem vazamentos detectados"))
+		lines = append(lines, GreenStyle.Render("✓ no leaks detected"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -261,11 +261,11 @@ func renderFDStats(m Model, w int) string {
 		value string
 		color lipgloss.Color
 	}{
-		{"Total abertos", fmt.Sprintf("%d", len(m.FDs)), ColorTeal},
-		{"Ativos agora", fmt.Sprintf("%d", active), ColorGreen},
+		{"Total open", fmt.Sprintf("%d", len(m.FDs)), ColorTeal},
+		{"Active now", fmt.Sprintf("%d", active), ColorGreen},
 		{"Sockets", fmt.Sprintf("%d", counts["socket"]), ColorBlue},
 		{"Files", fmt.Sprintf("%d", counts["file"]), ColorCyan},
-		{"Mais antigo", fmtAgeMs(maxAge), ColorAmber},
+		{"Oldest", fmtAgeMs(maxAge), ColorAmber},
 		{"Total I/O", fmtBytes(totalBytes), ColorMuted},
 	}
 	lines := []string{}

@@ -7,11 +7,11 @@ import (
 	"testing"
 )
 
-// TestDumpFrames opcionalmente dumpa o resultado de View() de cada aba
-// num arquivo para inspeção visual. Ative com TUI_DUMP=1.
+// TestDumpFrames optionally dumps the View() result of each tab
+// to a file for visual inspection. Enable with TUI_DUMP=1.
 func TestDumpFrames(t *testing.T) {
 	if os.Getenv("TUI_DUMP") == "" {
-		t.Skip("set TUI_DUMP=1 para gerar /tmp/tui_*.txt")
+		t.Skip("set TUI_DUMP=1 to generate /tmp/tui_*.txt")
 	}
 	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
 	w, h := 180, 50

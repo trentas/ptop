@@ -10,16 +10,16 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// CPUEBPFCollector consome o contador de samples on-CPU do tracer perf_event
-// (internal/bpf/cpu.go) e publica CpuSample{UsagePct} a cada 1s.
+// CPUEBPFCollector consumes the on-CPU sample counter from the perf_event
+// tracer (internal/bpf/cpu.go) and publishes CpuSample{UsagePct} every 1s.
 //
-// Cálculo:
+// Calculation:
 //   delta_samples / (SampleFreq × NCPU × elapsed_seconds) × 100 × NCPU
 //   = delta_samples / (SampleFreq × elapsed_seconds) × 100
-//   = % single-core (top-style; pode passar 100% em multi-thread)
+//   = single-core % (top-style; can exceed 100% when multi-threaded)
 //
-// Em build sem -tags=ebpf ou OS não-Linux, o stub paralelo sempre falha
-// em Start, levando o model a usar /proc collector ou simulação.
+// In builds without -tags=ebpf or non-Linux OS, the parallel stub always
+// fails in Start, leading the model to use the /proc collector or simulation.
 type CPUEBPFCollector struct {
 	tracer *bpf.CPUTracer
 	ch     chan interface{}
@@ -82,7 +82,7 @@ func (c *CPUEBPFCollector) sample() (CpuSample, error) {
 	defer c.mu.Unlock()
 
 	if c.tracer == nil {
-		return CpuSample{}, fmt.Errorf("tracer não aberto")
+		return CpuSample{}, fmt.Errorf("tracer not open")
 	}
 	count, err := c.tracer.SampleCount()
 	if err != nil {
@@ -95,14 +95,14 @@ func (c *CPUEBPFCollector) sample() (CpuSample, error) {
 		elapsed := now.Sub(c.lastAt).Seconds()
 		if elapsed > 0 && count >= c.lastSamp {
 			delta := float64(count - c.lastSamp)
-			// pct = % of single-core. SampleFreq amostras por segundo por CPU
-			// dão NCPU × SampleFreq amostras/s no total. delta nesse intervalo
-			// representa frações da CPU usada pelo target.
+			// pct = single-core %. SampleFreq samples per second per CPU
+			// give NCPU × SampleFreq samples/s in total. delta in that
+			// interval represents fractions of CPU used by the target.
 			//
 			// pct = (delta / (SampleFreq × elapsed)) × 100
 			pct = (delta / (float64(bpf.SampleFreq) * elapsed)) * 100
 			if pct > float64(c.tracer.NumCPU()*100) {
-				pct = float64(c.tracer.NumCPU() * 100) // saturação
+				pct = float64(c.tracer.NumCPU() * 100) // saturation
 			}
 		}
 	}

@@ -15,15 +15,15 @@ import (
 	"github.com/trentas/xray/internal/collector"
 )
 
-// simInterval define a granularidade da simulação. O TickMsg dispara no FPS
-// (5/s por padrão) para manter o relógio fluido, mas a sim só avança quando
-// passa esse intervalo. 700ms é o sweet-spot do mockup React e produz mudanças
-// visíveis sem o efeito "tudo pulando".
+// simInterval defines the granularity of the simulation. TickMsg fires at FPS
+// (5/s by default) to keep the clock fluid, but the sim only advances when
+// this interval elapses. 700ms is the sweet-spot from the React mockup and
+// produces visible changes without the "everything jumping" effect.
 const simInterval = 700 * time.Millisecond
 
-// topRefreshInterval define quando a lista de top-syscalls/top-files é
-// reordenada. Entre refreshes, mesmas linhas com counts atualizados — evita
-// bagunça visual a cada tick.
+// topRefreshInterval defines when the top-syscalls/top-files list is
+// reordered. Between refreshes, same rows with updated counts — avoids
+// visual churn every tick.
 const topRefreshInterval = 4 * time.Second
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
@@ -39,7 +39,7 @@ const (
 	TabCount
 )
 
-// InputMode descreve qual input modal está ativo (se algum).
+// InputMode describes which modal input is active (if any).
 type InputMode int
 
 const (
@@ -59,7 +59,7 @@ var tabNames = []string{
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-// Config vem do main via flags CLI.
+// Config comes from main via CLI flags.
 type Config struct {
 	PID    int
 	FPS    int
@@ -67,7 +67,7 @@ type Config struct {
 	Export bool
 }
 
-// ─── Mensagens Bubbletea ─────────────────────────────────────────────────────
+// ─── Bubbletea messages ──────────────────────────────────────────────────────
 
 type TickMsg time.Time
 type FDMsg []collector.FDEntry
@@ -84,10 +84,10 @@ type NetMsg []collector.NetConn
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
-// exportTickMsg dispara periodicamente quando export contínuo está ON.
+// exportTickMsg fires periodically when continuous export is ON.
 type exportTickMsg time.Time
 
-// clearToastMsg apaga o toast/status temporário do statusbar após N segundos.
+// clearToastMsg clears the temporary toast/status from the statusbar after N seconds.
 type clearToastMsg struct{}
 
 // ─── Model ───────────────────────────────────────────────────────────────────
@@ -95,13 +95,13 @@ type clearToastMsg struct{}
 type Model struct {
 	cfg Config
 
-	// Identificação
+	// Identification
 	ProcessName string
 	Runtime     string
 	State       string
 	StartedAt   time.Time
 
-	// Dados coletados
+	// Collected data
 	CPUHistory     []float64
 	SyscallCounts  map[string]uint64
 	NetConns       []collector.NetConn
@@ -116,31 +116,31 @@ type Model struct {
 	Timeline       []collector.TimelineEvent
 	LockGraph      []collector.LockEntry
 
-	// Estado da UI
+	// UI state
 	ActiveTab int
 	FDFilter  string
 	Paused    bool
 	Width     int
 	Height    int
 
-	// Toast: mensagem temporária no statusbar (ex: "snapshot salvo em /tmp/xxx").
-	// Vazio quando não há toast ativo. clearToastMsg apaga após 2s.
+	// Toast: temporary message in the statusbar (e.g. "snapshot saved to /tmp/xxx").
+	// Empty when no toast is active. clearToastMsg clears it after 2s.
 	toast string
 
-	// Export contínuo (tecla 'e' ou flag --export):
-	// quando exportFile != nil, exportTickMsg agenda a próxima escrita JSONL.
+	// Continuous export ('e' key or --export flag):
+	// when exportFile != nil, exportTickMsg schedules the next JSONL write.
 	exportFile *os.File
 
-	// Filter: substring aplicada às listas das views (FD/threads/syscalls).
-	// inputMode é InputModeFilter quando o usuário está digitando — inputBuf
-	// é o que está sendo composto. Após Enter, vira filter; após Esc, descartado.
+	// Filter: substring applied to view lists (FD/threads/syscalls).
+	// inputMode is InputModeFilter while the user is typing — inputBuf
+	// is what's being composed. On Enter, becomes filter; on Esc, discarded.
 	filter    string
 	inputMode InputMode
 	inputBuf  string
 
-	// showHelp: quando true, View() renderiza overlay com keybindings sobre
-	// o conteúdo. Fechado por `?`, `esc` ou `q`. Setas/PgUp/PgDn fazem scroll
-	// quando o overlay não cabe na altura disponível.
+	// showHelp: when true, View() renders an overlay with keybindings over
+	// the content. Closed by `?`, `esc` or `q`. Arrows/PgUp/PgDn scroll
+	// when the overlay doesn't fit in the available height.
 	showHelp   bool
 	helpScroll int
 
@@ -159,7 +159,7 @@ type Model struct {
 	memEBPF               *collector.MemEBPFCollector
 	futexEBPF             *collector.FutexEBPFCollector
 
-	// Simulação
+	// Simulation
 	rng                  *rand.Rand
 	tickN                int
 	usingMockFDs         bool
@@ -173,8 +173,8 @@ type Model struct {
 	usingMockNet         bool
 	lastSimAt            time.Time
 
-	// Sources: indicam de onde veio o dado real ("eBPF" | "/proc" | "" pra mock).
-	// Mostrado no help overlay (?) pra debug e visibilidade.
+	// Sources: indicate where the real data came from ("eBPF" | "/proc" | "" for mock).
+	// Shown in the help overlay (?) for debugging and visibility.
 	cpuSource      string
 	syscallsSource string
 	ioFilesSource  string
@@ -183,19 +183,19 @@ type Model struct {
 	memSource      string
 	locksSource    string
 
-	// Caches estáveis para evitar reordenação visual entre ticks.
-	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
-	// renderizamos a mesma lista (em ordem alfabética) com counts atualizados.
+	// Stable caches to avoid visual reordering between ticks.
+	// topSyscallNames is recomputed every `topRefreshInterval`; between refreshes
+	// we render the same list (alphabetically sorted) with updated counts.
 	topSyscallNames []string
 	topFilesPaths   []string
 	lastTopRefresh  time.Time
 
-	// IO maxima com decay lento — evita rescale dos sparklines a cada tick.
+	// IO maxima with slow decay — avoids rescaling sparklines every tick.
 	ioMaxRead  float64
 	ioMaxWrite float64
 }
 
-// ─── Construção ──────────────────────────────────────────────────────────────
+// ─── Construction ────────────────────────────────────────────────────────────
 
 func NewModel(cfg Config) Model {
 	m := Model{
@@ -221,19 +221,19 @@ func NewModel(cfg Config) Model {
 
 	m.seedMockData()
 
-	// Tenta iniciar collectors reais que leem /proc (Linux only).
-	// Falha silenciosa em macOS/Windows: usingMock* permanece true e o model
-	// continua simulando aquele subsistema.
+	// Try to start real collectors that read /proc (Linux only).
+	// Silent failure on macOS/Windows: usingMock* stays true and the model
+	// keeps simulating that subsystem.
 	if cfg.PID > 0 {
 		if c := collector.NewFDCollector(); c.Start(cfg.PID) == nil {
 			m.fdCollector = c
 			m.usingMockFDs = false
 		} else if !cfg.NoEBPF {
-			fmt.Fprintf(os.Stderr, "aviso: FD collector indisponível\n")
+			fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
 		}
-		// CPU: tenta eBPF perf_event primeiro (granularidade 100Hz/CPU);
-		// se falhar (sem -tags=ebpf, sem caps, etc.), cai pra /proc polling.
-		// Erro de eBPF é exposto em stderr ANTES do alt-screen pra usuário ver.
+		// CPU: try eBPF perf_event first (100Hz/CPU granularity);
+		// if it fails (no -tags=ebpf, no caps, etc.), fall back to /proc polling.
+		// eBPF error is exposed on stderr BEFORE the alt-screen so the user sees it.
 		if !cfg.NoEBPF {
 			c := collector.NewCPUEBPFCollector()
 			if err := c.Start(cfg.PID); err == nil {
@@ -241,7 +241,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockCPU = false
 				m.cpuSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF cpu collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF cpu collector unavailable: %v\n", err)
 			}
 		}
 		if m.cpuEBPF == nil {
@@ -251,9 +251,9 @@ func NewModel(cfg Config) Model {
 				m.cpuSource = "/proc"
 			}
 		}
-		// Threads: eBPF preferred (sched_switch dá CPU% real-time + ctx switches),
-		// /proc como fallback. eBPF coletor já lê /proc internamente, então não
-		// precisamos rodar os dois em paralelo.
+		// Threads: eBPF preferred (sched_switch gives real-time CPU% + ctx switches),
+		// /proc as fallback. eBPF collector already reads /proc internally, so we
+		// don't need to run both in parallel.
 		if !cfg.NoEBPF {
 			c := collector.NewThreadsEBPFCollector()
 			if err := c.Start(cfg.PID); err == nil {
@@ -261,7 +261,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockThreads = false
 				m.threadsSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF threads collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF threads collector unavailable: %v\n", err)
 			}
 		}
 		if m.threadsEBPF == nil {
@@ -271,9 +271,9 @@ func NewModel(cfg Config) Model {
 				m.threadsSource = "/proc"
 			}
 		}
-		// Memory: eBPF preferred (allocs/s reais via mmap+brk syscalls,
-		// page_faults real-time via kprobe handle_mm_fault). /proc-only
-		// fallback usa /proc/<pid>/stat que cumula minflt+majflt.
+		// Memory: eBPF preferred (real allocs/s via mmap+brk syscalls,
+		// real-time page_faults via kprobe handle_mm_fault). /proc-only
+		// fallback uses /proc/<pid>/stat which accumulates minflt+majflt.
 		if !cfg.NoEBPF {
 			c := collector.NewMemEBPFCollector()
 			if err := c.Start(cfg.PID); err == nil {
@@ -281,7 +281,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockMem = false
 				m.memSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF memory collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF memory collector unavailable: %v\n", err)
 			}
 		}
 		if m.memEBPF == nil {
@@ -299,8 +299,8 @@ func NewModel(cfg Config) Model {
 			m.ioThroughputCollector = c
 			m.usingMockIOThrough = false
 		}
-		// Coletor eBPF: só funciona em build com -tags=ebpf, kernel >= 5.8
-		// e CAP_BPF/CAP_PERFMON. Erro vai pra stderr pra usuário ver.
+		// eBPF collector: only works with -tags=ebpf build, kernel >= 5.8
+		// and CAP_BPF/CAP_PERFMON. Error goes to stderr so the user sees it.
 		if !cfg.NoEBPF {
 			c := collector.NewSyscallsEBPFCollector()
 			if err := c.Start(cfg.PID); err == nil {
@@ -308,7 +308,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockSyscalls = false
 				m.syscallsSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF syscalls collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF syscalls collector unavailable: %v\n", err)
 			}
 
 			c2 := collector.NewIOEBPFCollector()
@@ -317,7 +317,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockIOFiles = false
 				m.ioFilesSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF io collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF io collector unavailable: %v\n", err)
 			}
 
 			c3 := collector.NewNetworkEBPFCollector()
@@ -326,7 +326,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockNet = false
 				m.netSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF network collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF network collector unavailable: %v\n", err)
 			}
 
 			c4 := collector.NewFutexEBPFCollector()
@@ -334,19 +334,19 @@ func NewModel(cfg Config) Model {
 				m.futexEBPF = c4
 				m.locksSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: eBPF futex collector indisponível: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: eBPF futex collector unavailable: %v\n", err)
 			}
 		}
 	}
 
-	// --export: abre o arquivo JSONL desde já. Se falhar, apenas avisa
-	// (não bloqueia o launch — usuário ainda usa a TUI normalmente).
+	// --export: open the JSONL file right away. If it fails, just warn
+	// (doesn't block launch — user can still use the TUI normally).
 	if cfg.Export {
 		if f, err := openExportFile(); err == nil {
 			m.exportFile = f
 			m.toast = fmt.Sprintf("✓ export: %s", f.Name())
 		} else {
-			fmt.Fprintf(os.Stderr, "aviso: --export falhou: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: --export failed: %v\n", err)
 		}
 	}
 
@@ -418,10 +418,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return next, cmd
 
 	case TickMsg:
-		// Render no FPS configurado (clock/uptime ficam suaves), mas a simulação
-		// só avança a cada simInterval — evita o "tudo pulando" por overshoot
-		// de mudanças por segundo. Quando o frame fica idêntico, bubbletea
-		// detecta diff vazio e nem repinta.
+		// Render at configured FPS (clock/uptime stay smooth), but the simulation
+		// only advances every simInterval — avoids the "everything jumping" effect
+		// from too many changes per second. When the frame is identical, bubbletea
+		// detects an empty diff and doesn't even repaint.
 		if !m.Paused && time.Since(m.lastSimAt) >= simInterval {
 			m.tick()
 			m.lastSimAt = time.Now()
@@ -435,8 +435,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForFD(m.fdCollector)
 
 	case TimelineMsg:
-		// Timeline é prepend; mais recente em cima. Cap em 120 (mesmo limite
-		// usado pela simulação).
+		// Timeline is prepended; most recent on top. Cap at 120 (same limit
+		// used by the simulation).
 		m.Timeline = append([]collector.TimelineEvent{collector.TimelineEvent(v)}, m.Timeline...)
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
@@ -454,7 +454,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s := collector.CpuSample(v)
 		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
 		m.usingMockCPU = false
-		// Reagenda na source ativa: eBPF tem prioridade quando disponível.
+		// Reschedule on the active source: eBPF takes priority when available.
 		if m.cpuEBPF != nil {
 			return m, waitForCPUEBPF(m.cpuEBPF)
 		}
@@ -463,7 +463,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ThreadsMsg:
 		m.Threads = []collector.ThreadInfo(v)
 		m.usingMockThreads = false
-		// ThreadsMsg pode vir do eBPF ou do /proc — reagenda a fonte ativa.
+		// ThreadsMsg can come from eBPF or /proc — reschedule on the active source.
 		if m.threadsEBPF != nil {
 			return m, waitForThreadsEBPF(m.threadsEBPF)
 		}
@@ -472,7 +472,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MemMsg:
 		m.MemStats = collector.MemStats(v)
 		m.usingMockMem = false
-		// Reagenda na fonte ativa.
+		// Reschedule on the active source.
 		if m.memEBPF != nil {
 			return m, waitForMemEBPF(m.memEBPF)
 		}
@@ -488,8 +488,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case exportTickMsg:
-		// Export contínuo: escreve uma linha JSONL por tick. Se a escrita falhar,
-		// fecha o arquivo e mostra toast de erro — não trava a TUI.
+		// Continuous export: writes one JSONL line per tick. If the write fails,
+		// closes the file and shows an error toast — doesn't hang the TUI.
 		if m.exportFile != nil {
 			if err := writeSnapshotLine(m.exportFile, m); err != nil {
 				_ = m.exportFile.Close()
@@ -502,8 +502,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case SyscallsMsg:
-		// Snapshot completo do map syscall_count vindo do tracer eBPF.
-		// Sobrescrevemos o counts inteiro: o tracer mantém o cumulativo per-pid.
+		// Full snapshot of the syscall_count map coming from the eBPF tracer.
+		// We overwrite the entire counts: the tracer keeps the per-pid cumulative.
 		m.SyscallCounts = map[string]uint64(v)
 		m.usingMockSyscalls = false
 		return m, waitForSyscalls(m.syscallsEBPF)
@@ -528,8 +528,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case IOEBPFMsg:
 		s := collector.IOEBPFSnapshot(v)
 		m.IOStats.TopFiles = s.TopFiles
-		// Buckets agora vêm da janela atual (read+write counts deste intervalo).
-		// Mesclamos com os labels existentes pra preservar a ordem.
+		// Buckets now come from the current window (read+write counts of this interval).
+		// We merge with existing labels to preserve order.
 		if len(s.Buckets) == len(m.IOStats.LatencyBuckets) {
 			for i, b := range s.Buckets {
 				m.IOStats.LatencyBuckets[i].Read = b.Read
@@ -565,13 +565,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) View() string {
 	if m.Width == 0 || m.Height == 0 {
-		return "iniciando..."
+		return "starting..."
 	}
 
 	header := renderHeader(m)
 	tabbar := renderTabBar(m)
 
-	// Statusbar é substituído pelo input box quando inputMode == filter
+	// Statusbar is replaced by the input box when inputMode == filter
 	var statusbar string
 	if m.inputMode == InputModeFilter {
 		statusbar = renderFilterInput(m, m.Width)
@@ -586,7 +586,7 @@ func (m Model) View() string {
 	}
 	contentW := m.Width
 
-	// Help overlay tem prioridade sobre o conteúdo da view
+	// Help overlay takes priority over the view content
 	if m.showHelp {
 		overlay := renderHelpOverlayWithStatus(m, contentW, contentH)
 		return header + "\n" + tabbar + "\n" + overlay + "\n" + statusbar
@@ -610,7 +610,7 @@ func (m Model) View() string {
 		content = renderOverviewView(m, contentW, contentH)
 	}
 
-	// Garante altura exata para o content (lipgloss truncará se exceder)
+	// Ensures exact height for the content (lipgloss will truncate if it exceeds)
 	contentBox := lipgloss.NewStyle().
 		Width(contentW).
 		Height(contentH).
@@ -621,7 +621,7 @@ func (m Model) View() string {
 	return header + "\n" + tabbar + "\n" + contentBox + "\n" + statusbar
 }
 
-// ─── Simulação ───────────────────────────────────────────────────────────────
+// ─── Simulation ──────────────────────────────────────────────────────────────
 
 var simSyscalls = []string{
 	"epoll_wait", "read", "write", "futex", "recvmsg", "sendmsg",
@@ -771,16 +771,16 @@ func (m *Model) seedMockData() {
 		m.FDCountHistory[i] = float64(len(m.FDs)) + r.Float64()*4 - 2
 	}
 
-	// Timeline (semeada vazia — vai sendo preenchida pelo tick)
+	// Timeline (seeded empty — gets filled by tick)
 	m.Timeline = make([]collector.TimelineEvent, 0, 120)
 	m.FDEvents = make([]collector.FDEvent, 0, 60)
 
-	// Inicializa caches estáveis e máximos com decay
+	// Initialize stable caches and decaying maxima
 	m.refreshTopN()
 	m.lastTopRefresh = time.Now()
 	m.lastSimAt = time.Now()
 
-	// Estima máximos iniciais a partir do histórico semeado
+	// Estimate initial maxima from the seeded history
 	for _, v := range m.IOReadHist {
 		if v > m.ioMaxRead {
 			m.ioMaxRead = v
@@ -792,16 +792,16 @@ func (m *Model) seedMockData() {
 		}
 	}
 
-	// Pré-popula com alguns eventos para a UI não começar vazia
+	// Pre-populate with a few events so the UI doesn't start empty
 	for i := 0; i < 12; i++ {
 		m.pushTimeline()
 		m.maybePushFDEvent()
 	}
 }
 
-// refreshTopN recomputa quais syscalls/arquivos aparecem no top — em ordem
-// alfabética para que entre refreshes a posição visual não mude. Os counts
-// continuam atualizados a cada tick; só o conjunto+ordem é congelado.
+// refreshTopN recomputes which syscalls/files appear in the top — in
+// alphabetical order so that visual position doesn't change between refreshes.
+// Counts keep updating every tick; only the set+order is frozen.
 func (m *Model) refreshTopN() {
 	all := sortedSyscalls(m.SyscallCounts)
 	if len(all) > 8 {
@@ -829,15 +829,15 @@ func (m *Model) refreshTopN() {
 	m.topFilesPaths = paths
 }
 
-// tick avança a simulação um passo. Chamado pelo TickMsg quando não está em pause.
-// Em modo eBPF real, esta função coexistirá com mensagens dos collectors:
-// os campos atualizados aqui são sobrescritos quando uma mensagem real chegar.
+// tick advances the simulation by one step. Called by TickMsg when not paused.
+// In real eBPF mode, this function coexists with collector messages:
+// fields updated here are overwritten when a real message arrives.
 func (m *Model) tick() {
 	m.tickN++
 	r := m.rng
 
-	// CPU — só simula se collector real não está rodando.
-	// Quando real, o campo é alimentado via CpuMsg.
+	// CPU — only simulates if the real collector isn't running.
+	// When real, the field is fed via CpuMsg.
 	if m.usingMockCPU {
 		prev := 20.0
 		if len(m.CPUHistory) > 0 {
@@ -848,7 +848,7 @@ func (m *Model) tick() {
 		m.CPUHistory = appendCapped(m.CPUHistory, cpu, 60)
 	}
 
-	// Syscalls — só simula se o eBPF tracer não está rodando.
+	// Syscalls — only simulates if the eBPF tracer isn't running.
 	if m.usingMockSyscalls {
 		for i := 0; i < 3; i++ {
 			k := simSyscalls[r.Intn(len(simSyscalls))]
@@ -856,7 +856,7 @@ func (m *Model) tick() {
 		}
 	}
 
-	// Memory — só simula se collector real não está rodando
+	// Memory — only simulates if the real collector isn't running
 	if m.usingMockMem {
 		if r.Float64() > 0.7 {
 			m.MemStats.RSSBytes += uint64(r.Intn(2 << 20))
@@ -868,8 +868,8 @@ func (m *Model) tick() {
 		m.MemStats.AllocsPerS = uint64(clamp(float64(m.MemStats.AllocsPerS)+r.Float64()*8-3, 50, 2000))
 	}
 
-	// Network — jitter de latência + estado oscilante. Só simulamos quando
-	// o eBPF network collector não está rodando.
+	// Network — latency jitter + oscillating state. We only simulate when
+	// the eBPF network collector isn't running.
 	if m.usingMockNet {
 		for i := range m.NetConns {
 			c := &m.NetConns[i]
@@ -884,7 +884,7 @@ func (m *Model) tick() {
 		}
 	}
 
-	// Threads — só simula se collector real não está rodando
+	// Threads — only simulates if the real collector isn't running
 	if m.usingMockThreads {
 		states := []string{"running", "blocked", "sleeping"}
 		for i := range m.Threads {
@@ -900,7 +900,7 @@ func (m *Model) tick() {
 		}
 	}
 
-	// I/O throughput — só simula se collector real não está rodando
+	// I/O throughput — only simulates if the real collector isn't running
 	if m.usingMockIOThrough {
 		nr := r.Float64() * 1200 * 1024
 		if r.Float64() > 0.85 {
@@ -915,13 +915,13 @@ func (m *Model) tick() {
 		m.IOStats.ReadBytesPerS = nr
 		m.IOStats.WriteBytesPerS = nw
 
-		// Máximo "decay": cresce no instante do pico e cai 3% por tick.
-		// Isso evita rescale brusco do sparkline cada vez que aparece um valor
-		// alto isolado e depois some.
+		// "Decay" maximum: grows at the peak instant and drops 3% per tick.
+		// This avoids harsh sparkline rescaling whenever an isolated high value
+		// appears and then disappears.
 		const decayPerTick = 0.97
 		m.ioMaxRead = math.Max(m.ioMaxRead*decayPerTick, nr)
 		m.ioMaxWrite = math.Max(m.ioMaxWrite*decayPerTick, nw)
-		if m.ioMaxRead < 100*1024 { // piso visual: 100KB/s
+		if m.ioMaxRead < 100*1024 { // visual floor: 100KB/s
 			m.ioMaxRead = 100 * 1024
 		}
 		if m.ioMaxWrite < 100*1024 {
@@ -940,8 +940,8 @@ func (m *Model) tick() {
 		m.IOStats.IOWaitPct = clamp(m.IOStats.IOWaitPct+(r.Float64()-0.5)*2, 0, 40)
 	}
 
-	// TopFiles + LatencyBuckets só simulam quando o eBPF io collector
-	// não está rodando — quando rodando, IOEBPFMsg substitui esses campos.
+	// TopFiles + LatencyBuckets only simulate when the eBPF io collector
+	// isn't running — when running, IOEBPFMsg replaces these fields.
 	if m.usingMockIOFiles {
 		for i := range m.IOStats.TopFiles {
 			f := &m.IOStats.TopFiles[i]
@@ -968,12 +968,12 @@ func (m *Model) tick() {
 		}
 	}
 
-	// FDs — só simulamos quando não há collector real plugado
+	// FDs — we only simulate when there's no real collector plugged in
 	if m.usingMockFDs {
 		m.simulateFDs()
 	}
 
-	// Timeline + FD events — empilha 1 a cada tick (em média)
+	// Timeline + FD events — pushes 1 each tick (on average)
 	if r.Float64() > 0.3 {
 		m.pushTimeline()
 	}
@@ -981,7 +981,7 @@ func (m *Model) tick() {
 		m.maybePushFDEvent()
 	}
 
-	// Top-N: re-ordena raramente para evitar reorder visual a cada tick
+	// Top-N: reorder rarely to avoid visual reordering every tick
 	if time.Since(m.lastTopRefresh) >= topRefreshInterval {
 		m.refreshTopN()
 		m.lastTopRefresh = time.Now()
@@ -991,7 +991,7 @@ func (m *Model) tick() {
 func (m *Model) simulateFDs() {
 	r := m.rng
 
-	// Atualiza idade + bytes
+	// Update age + bytes
 	for i := range m.FDs {
 		f := &m.FDs[i]
 		f.AgeMs += int64(time.Second / time.Duration(maxInt(m.cfg.FPS, 1)) / time.Millisecond)
@@ -1003,7 +1003,7 @@ func (m *Model) simulateFDs() {
 		}
 	}
 
-	// Ocasionalmente abre um novo FD
+	// Occasionally open a new FD
 	if r.Float64() > 0.85 && len(m.FDs) < 22 {
 		types := []string{"file", "socket", "pipe"}
 		descs := []string{
@@ -1024,7 +1024,7 @@ func (m *Model) simulateFDs() {
 		})
 	}
 
-	// Ocasionalmente fecha um FD descartável (fd > 10)
+	// Occasionally close a disposable FD (fd > 10)
 	if r.Float64() > 0.88 && len(m.FDs) > 8 {
 		victims := []int{}
 		for i, f := range m.FDs {
@@ -1051,7 +1051,7 @@ func (m *Model) pushTimeline() {
 		Category:  cat,
 		Message:   msg,
 	}
-	// prepend (mais recente primeiro)
+	// prepend (most recent first)
 	m.Timeline = append([]collector.TimelineEvent{ev}, m.Timeline...)
 	if len(m.Timeline) > 120 {
 		m.Timeline = m.Timeline[:120]
@@ -1087,33 +1087,33 @@ func tick(fps int) tea.Cmd {
 	return tea.Tick(d, func(t time.Time) tea.Msg { return TickMsg(t) })
 }
 
-// exportInterval define quão frequentemente o export contínuo grava uma
-// linha JSONL. simInterval (700ms) seria muito barulhento — 2s é um
-// compromise entre granularidade e tamanho do arquivo gerado.
+// exportInterval defines how frequently continuous export writes a
+// JSONL line. simInterval (700ms) would be too noisy — 2s is a
+// compromise between granularity and generated file size.
 const exportInterval = 2 * time.Second
 
 func exportTick() tea.Cmd {
 	return tea.Tick(exportInterval, func(t time.Time) tea.Msg { return exportTickMsg(t) })
 }
 
-// toastTTL é quanto tempo a mensagem temporária no statusbar fica visível.
+// toastTTL is how long the temporary statusbar message stays visible.
 const toastTTL = 2 * time.Second
 
 func clearToastAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return clearToastMsg{} })
 }
 
-// Close libera recursos abertos pelo model — atualmente o arquivo de export.
-// main.go chama isso após p.Run() retornar pra garantir flush.
+// Close releases resources opened by the model — currently the export file.
+// main.go calls this after p.Run() returns to ensure flush.
 func (m Model) Close() {
 	if m.exportFile != nil {
 		_ = m.exportFile.Close()
 	}
 }
 
-// waitForFD bloqueia até receber uma mensagem do FD collector e a entrega ao Update.
-// O FDCollector publica 3 tipos diferentes na mesma channel; demuxamos via
-// type-switch e mapeamos pra tea.Msg específica.
+// waitForFD blocks until receiving a message from the FD collector and delivers it to Update.
+// FDCollector publishes 3 different types on the same channel; we demux via
+// type-switch and map to specific tea.Msg.
 func waitForFD(c *collector.FDCollector) tea.Cmd {
 	if c == nil {
 		return nil
@@ -1337,9 +1337,9 @@ func clamp(v, lo, hi float64) float64 {
 	return v
 }
 
-// detectProcessName lê /proc/<pid>/comm pra obter o nome curto do processo
-// (kernel TASK_COMM_LEN = 16 chars). Em macOS/Windows, fallback pra "(?)" —
-// indica claramente que estamos em modo simulado.
+// detectProcessName reads /proc/<pid>/comm to get the short process name
+// (kernel TASK_COMM_LEN = 16 chars). On macOS/Windows, falls back to "(?)" —
+// clearly indicates we're in simulated mode.
 func detectProcessName(pid int) string {
 	if pid <= 0 {
 		return "(?)"

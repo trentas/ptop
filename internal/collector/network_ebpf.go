@@ -11,16 +11,16 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// NetworkEBPFCollector combina:
-//   - tracepoint sock:inet_sock_set_state — descobre 5-tuple + state +
-//     RTT do handshake (SYN_SENT → ESTABLISHED).
-//   - kprobes em tcp_sendmsg/tcp_cleanup_rbuf — bytes Tx/Rx por conexão,
-//     correlacionados via map auxiliar sock_to_key (skaddr → 5-tuple)
-//     populado pelo próprio tracepoint.
+// NetworkEBPFCollector combines:
+//   - tracepoint sock:inet_sock_set_state — discovers 5-tuple + state +
+//     handshake RTT (SYN_SENT → ESTABLISHED).
+//   - kprobes on tcp_sendmsg/tcp_cleanup_rbuf — Tx/Rx bytes per connection,
+//     correlated via the auxiliary sock_to_key map (skaddr → 5-tuple)
+//     populated by the tracepoint itself.
 //
-// Publica []NetConn a cada 500ms. Conexões pré-existentes (abertas antes
-// do attach) não aparecem — limitação do tracepoint, que só dispara em
-// transitions de estado.
+// Publishes []NetConn every 500ms. Pre-existing connections (opened before
+// attach) don't appear — a tracepoint limitation, since it only fires on
+// state transitions.
 type NetworkEBPFCollector struct {
 	tracer   *bpf.NetTracer
 	pid      int
@@ -44,9 +44,9 @@ func (c *NetworkEBPFCollector) Start(pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
-	// Bootstrap síncrono: popula o map com conexões TCP já existentes
-	// no /proc/<pid>/net/tcp{,6} antes do primeiro snapshot. Sem isso,
-	// processos com keep-alive aparecem vazios até alguma transição.
+	// Synchronous bootstrap: populates the map with TCP connections that
+	// already exist in /proc/<pid>/net/tcp{,6} before the first snapshot.
+	// Without this, processes with keep-alive look empty until some transition.
 	c.bootstrapFromProc()
 	go c.publishLoop()
 	return nil
@@ -67,8 +67,8 @@ func (c *NetworkEBPFCollector) Subscribe() <-chan interface{} {
 func (c *NetworkEBPFCollector) publishLoop() {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
-	// Re-seed a cada 5s pra capturar conexões long-lived que não passaram
-	// por nenhuma transição de estado durante o lifetime do xray.
+	// Re-seed every 5s to catch long-lived connections that didn't go through
+	// any state transition during xray's lifetime.
 	const reseedEvery = 10 // 10 × 500ms = 5s
 	tick := 0
 	for {
@@ -89,14 +89,14 @@ func (c *NetworkEBPFCollector) publishLoop() {
 	}
 }
 
-// bootstrapFromProc enumera /proc/<pid>/fd/, identifica socket FDs do
-// processo, resolve seus inodes via /proc/net/tcp{,6} (SocketResolver)
-// e seedea o eBPF net_conn_map com BPF_NOEXIST — entries existentes
-// (vindas do tracepoint) são preservadas com seu state/RTT/bytes reais.
+// bootstrapFromProc enumerates /proc/<pid>/fd/, identifies the process's
+// socket FDs, resolves their inodes via /proc/net/tcp{,6} (SocketResolver)
+// and seeds the eBPF net_conn_map with BPF_NOEXIST — existing entries
+// (coming from the tracepoint) are preserved with their real state/RTT/bytes.
 //
-// Conexões pre-existentes seedadas têm tx/rx zerados e RTT zero — sem
-// skaddr não dá pra correlacionar com os kprobes. É o trade-off do
-// approach (alternativa seria iterar sock objects via vmlinux.h).
+// Pre-existing seeded connections have zeroed tx/rx and zero RTT — without
+// skaddr we can't correlate them with the kprobes. That's the trade-off of
+// this approach (the alternative would be iterating sock objects via vmlinux.h).
 func (c *NetworkEBPFCollector) bootstrapFromProc() {
 	if c.tracer == nil || c.pid <= 0 {
 		return
@@ -105,7 +105,7 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 	if err != nil {
 		return
 	}
-	// Coleta inodes de socket FDs do processo.
+	// Collect inodes of the process's socket FDs.
 	inodes := make(map[uint64]struct{}, 16)
 	for _, e := range fds {
 		link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%s", c.pid, e.Name()))
@@ -119,8 +119,8 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 	if len(inodes) == 0 {
 		return
 	}
-	// Resolve via SocketResolver. Resolver tem cache 2s, mas chamamos
-	// uma vez aqui — força refresh se stale.
+	// Resolve via SocketResolver. The resolver has a 2s cache, but we call it
+	// once here — forces a refresh if stale.
 	for inode := range inodes {
 		info, ok := c.resolver.Resolve(inode)
 		if !ok {
@@ -143,9 +143,9 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 	}
 }
 
-// snapshot lê o map e converte cada entry em NetConn. Filtra estados
-// CLOSE (7) — conexões fechadas não interessam pra view "Active
-// Connections". Ordena por mais recente atividade primeiro.
+// snapshot reads the map and converts each entry into a NetConn. Filters
+// out CLOSE (7) — closed connections aren't relevant to the "Active
+// Connections" view. Sorts by most recent activity first.
 func (c *NetworkEBPFCollector) snapshot() []NetConn {
 	if c.tracer == nil {
 		return nil
@@ -170,15 +170,15 @@ func (c *NetworkEBPFCollector) snapshot() []NetConn {
 			RxBytes:   s.RxBytes,
 		})
 	}
-	// Ordem estável: mais recente primeiro pra não pular linhas no terminal.
+	// Stable order: most recent first to avoid jumping rows in the terminal.
 	sort.SliceStable(out, func(i, j int) bool {
 		return snaps[i].LastNs > snaps[j].LastNs
 	})
 	return out
 }
 
-// TCP states do kernel (linux/tcp.h) — também usado em sockets.go pro
-// /proc/net/tcp parser, mas lá os valores vêm em hex string.
+// Kernel TCP states (linux/tcp.h) — also used in sockets.go for the
+// /proc/net/tcp parser, but there the values come in as hex strings.
 const (
 	tcpStateESTABLISHED uint32 = 1
 	tcpStateSYN_SENT    uint32 = 2
@@ -220,10 +220,10 @@ func mapTCPState(s uint32) string {
 	}
 }
 
-// directionFromBytes infere a "direção" predominante da conexão pelo
-// volume de tx vs rx. "→" outbound (tx >> rx), "←" inbound (rx >> tx),
-// "↔" balanceado ou ambos zero. É só um indicador visual — não muda
-// o que o usuário vê do remote.
+// directionFromBytes infers the connection's predominant "direction" from
+// tx vs rx volume. "→" outbound (tx >> rx), "←" inbound (rx >> tx),
+// "↔" balanced or both zero. It's just a visual indicator — doesn't change
+// what the user sees of the remote.
 func directionFromBytes(tx, rx uint64) string {
 	switch {
 	case tx == 0 && rx == 0:

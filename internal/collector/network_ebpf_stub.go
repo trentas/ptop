@@ -4,9 +4,9 @@ package collector
 
 import "errors"
 
-// NetworkEBPFCollector é um stub no-op em builds sem -tags=ebpf
-// (não-Linux ou sem libbpf). Mantém a API igual pra que o model.go
-// possa instanciar sem branch por OS.
+// NetworkEBPFCollector is a no-op stub in builds without -tags=ebpf
+// (non-Linux or no libbpf). Keeps the API the same so model.go can
+// instantiate it without branching by OS.
 type NetworkEBPFCollector struct{}
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
@@ -14,7 +14,7 @@ func NewNetworkEBPFCollector() *NetworkEBPFCollector {
 }
 
 func (c *NetworkEBPFCollector) Start(pid int) error {
-	return errors.New("network eBPF não disponível neste build")
+	return errors.New("network eBPF not available in this build")
 }
 
 func (c *NetworkEBPFCollector) Stop() {}

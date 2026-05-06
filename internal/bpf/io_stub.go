@@ -7,7 +7,7 @@ import (
 	"io"
 )
 
-var errIOStub = errors.New("eBPF io tracer não disponível neste build")
+var errIOStub = errors.New("eBPF io tracer not available in this build")
 
 const (
 	IOOpRead  uint32 = 0

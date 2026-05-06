@@ -9,7 +9,7 @@ import (
 
 // renderNetworkView (F3) — assets/mockup.jsx → NetworkView
 //
-//   ┌── Active Connections (esq) ─────────┬── Network Events (1/3) ─┐
+//   ┌── Active Connections (left) ────────┬── Network Events (1/3) ─┐
 //   │ TYPE REMOTE         STATE   LAT     │ 12:34 NET TCP SYN  …    │
 //   │ ...                                  │                          │
 //   ├── Latency Trend ────────────────────┤                          │
@@ -17,7 +17,7 @@ import (
 //   └─────────────────────────────────────┴──────────────────────────┘
 func renderNetworkView(m Model, w, h int) string {
 	if w < 40 || h < 10 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+		return MutedStyle.Render("(terminal too small)")
 	}
 	leftW := w * 2 / 3
 	rightW := w - leftW
@@ -42,7 +42,7 @@ func renderNetworkView(m Model, w, h int) string {
 
 func renderNetLatencyTrend(m Model, w int) string {
 	if len(m.NetConns) == 0 {
-		return MutedStyle.Render("(sem conexões)")
+		return MutedStyle.Render("(no connections)")
 	}
 	const labelW = 28
 	barW := w - labelW - 10
@@ -65,5 +65,5 @@ func renderNetLatencyTrend(m Model, w int) string {
 		lines = append(lines, panelRow(left, bar, val))
 
 	}
-	return strings.Join(lines, "\n\n") // espaçamento entre linhas
+	return strings.Join(lines, "\n\n") // spacing between rows
 }

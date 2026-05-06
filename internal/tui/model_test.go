@@ -15,9 +15,9 @@ func ansiStrip(s string) int {
 	return len([]rune(ansiRe.ReplaceAllString(s, "")))
 }
 
-// TestRenderAllTabs garante que cada aba renderiza algo não-vazio em diversos
-// tamanhos de terminal sem panicar — vital porque a TUI faz muita aritmética
-// de larguras e qualquer overflow vira corruption visual.
+// TestRenderAllTabs ensures each tab renders something non-empty at various
+// terminal sizes without panicking — vital because the TUI does a lot of
+// width arithmetic and any overflow turns into visual corruption.
 func TestRenderAllTabs(t *testing.T) {
 	sizes := []struct{ w, h int }{
 		{120, 40},
@@ -33,17 +33,17 @@ func TestRenderAllTabs(t *testing.T) {
 			m.ActiveTab = tab
 			out := m.View()
 			if out == "" {
-				t.Errorf("size=%dx%d tab=%d: vazio", sz.w, sz.h, tab)
+				t.Errorf("size=%dx%d tab=%d: empty", sz.w, sz.h, tab)
 			}
 			if !strings.Contains(out, "xray") {
-				t.Errorf("size=%dx%d tab=%d: header ausente", sz.w, sz.h, tab)
+				t.Errorf("size=%dx%d tab=%d: header missing", sz.w, sz.h, tab)
 			}
 		}
 	}
 }
 
-// TestTickAdvances confirma que o tick avança o histórico de CPU sem panicar
-// e que o len do histórico está limitado ao cap.
+// TestTickAdvances confirms that the tick advances the CPU history without
+// panicking and that the history len is capped.
 func TestTickAdvances(t *testing.T) {
 	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
 	m.Width = 120
@@ -54,17 +54,17 @@ func TestTickAdvances(t *testing.T) {
 		m = nm.(Model)
 	}
 	if len(m.CPUHistory) > 60 {
-		t.Errorf("CPUHistory cresceu sem limite: %d", len(m.CPUHistory))
+		t.Errorf("CPUHistory grew unbounded: %d", len(m.CPUHistory))
 	}
 	if len(m.IOReadHist) > 60 {
-		t.Errorf("IOReadHist cresceu sem limite: %d", len(m.IOReadHist))
+		t.Errorf("IOReadHist grew unbounded: %d", len(m.IOReadHist))
 	}
 	if len(m.Timeline) > 120 {
-		t.Errorf("Timeline cresceu sem limite: %d", len(m.Timeline))
+		t.Errorf("Timeline grew unbounded: %d", len(m.Timeline))
 	}
 }
 
-// TestKeyHandling verifica que F1-F7 navegam entre abas e q quita.
+// TestKeyHandling verifies F1-F7 navigate between tabs and q quits.
 func TestKeyHandling(t *testing.T) {
 	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
 
@@ -73,21 +73,21 @@ func TestKeyHandling(t *testing.T) {
 		nm, _ := m.Update(key)
 		m = nm.(Model)
 		if m.ActiveTab != i-1 {
-			t.Errorf("após '%d' esperava tab=%d, got=%d", i, i-1, m.ActiveTab)
+			t.Errorf("after '%d' expected tab=%d, got=%d", i, i-1, m.ActiveTab)
 		}
 	}
 
 	q := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}
 	_, cmd := m.Update(q)
 	if cmd == nil {
-		t.Fatal("'q' deveria emitir tea.Quit cmd")
+		t.Fatal("'q' should emit tea.Quit cmd")
 	}
 }
 
-// TestChromeFitsWidth — regressão da causa raiz do "tudo pulando":
-// o tabbar tinha 129 chars num terminal de 120, o terminal wrappa, e a próxima
-// tela inteira monta-se 1 linha mais embaixo. Garante que header/tabbar/
-// statusbar nunca passam de m.Width em larguras razoáveis.
+// TestChromeFitsWidth — regression for the root cause of "everything jumping":
+// the tabbar had 129 chars in a 120-wide terminal, the terminal wraps, and the
+// next screen builds 1 line lower. Ensures header/tabbar/statusbar never go
+// past m.Width at reasonable widths.
 func TestChromeFitsWidth(t *testing.T) {
 	widths := []int{60, 80, 100, 110, 120, 140, 200}
 	for _, w := range widths {
@@ -110,16 +110,16 @@ func TestChromeFitsWidth(t *testing.T) {
 	}
 }
 
-// visibleWidth é a largura "ocupada" no terminal — desconta sequências ANSI.
+// visibleWidth is the "occupied" width in the terminal — strips ANSI sequences.
 func visibleWidth(s string) int {
-	// reaproveita a mesma lógica do lipgloss
-	// aqui usamos uma medição simples: lipgloss.Width já desconta ANSI
+	// reuses the same logic as lipgloss
+	// here we use a simple measurement: lipgloss.Width already strips ANSI
 	return ansiStrip(s)
 }
 
-// TestStableTopOrdering — sim avança 60 ticks (~10s); o top-syscall list
-// só pode mudar ordem no máximo umas 3x (refresh a cada 4s) — não a cada tick
-// como antes.
+// TestStableTopOrdering — sim advances 60 ticks (~10s); the top-syscall list
+// can only change order at most ~3x (refresh every 4s) — not every tick
+// like before.
 func TestStableTopOrdering(t *testing.T) {
 	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
 	m.Width = 180
@@ -128,7 +128,7 @@ func TestStableTopOrdering(t *testing.T) {
 	prev := append([]string{}, m.topSyscallNames...)
 	changes := 0
 	for i := 0; i < 60; i++ {
-		// força sim a avançar (testes não esperam time.Sleep)
+		// force sim to advance (tests don't wait for time.Sleep)
 		m.lastSimAt = time.Time{}
 		nm, _ := m.Update(TickMsg(time.Now()))
 		m = nm.(Model)
@@ -137,11 +137,11 @@ func TestStableTopOrdering(t *testing.T) {
 			prev = append([]string{}, m.topSyscallNames...)
 		}
 	}
-	// como o teste rodou rápido, o relógio real só avançou alguns ms — mas
-	// o refresh dispara em "a cada N segundos REAIS". Quando rodamos rápido,
-	// o refresh nunca acontece. Aceitamos 0..2 mudanças.
+	// since the test ran fast, the real clock only advanced a few ms — but
+	// the refresh fires "every N REAL seconds". When we run fast,
+	// the refresh never happens. We accept 0..2 changes.
 	if changes > 2 {
-		t.Errorf("topSyscallNames mudou %d vezes em 60 ticks (esperado <=2)", changes)
+		t.Errorf("topSyscallNames changed %d times in 60 ticks (expected <=2)", changes)
 	}
 }
 
@@ -157,25 +157,25 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
-// TestSeed garante que NewModel popula campos visíveis sem nil panic.
+// TestSeed ensures NewModel populates visible fields without nil panic.
 func TestSeed(t *testing.T) {
 	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
 	if len(m.CPUHistory) == 0 {
-		t.Error("CPUHistory vazio após seed")
+		t.Error("CPUHistory empty after seed")
 	}
 	if len(m.SyscallCounts) == 0 {
-		t.Error("SyscallCounts vazio após seed")
+		t.Error("SyscallCounts empty after seed")
 	}
 	if len(m.FDs) == 0 {
-		t.Error("FDs vazio após seed")
+		t.Error("FDs empty after seed")
 	}
 	if len(m.NetConns) == 0 {
-		t.Error("NetConns vazio após seed")
+		t.Error("NetConns empty after seed")
 	}
 	if len(m.Threads) == 0 {
-		t.Error("Threads vazio após seed")
+		t.Error("Threads empty after seed")
 	}
 	if len(m.IOStats.TopFiles) == 0 {
-		t.Error("IOStats.TopFiles vazio após seed")
+		t.Error("IOStats.TopFiles empty after seed")
 	}
 }

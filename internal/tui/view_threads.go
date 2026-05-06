@@ -12,12 +12,12 @@ import (
 // renderThreadsView (F4) — assets/mockup.jsx → ThreadView
 func renderThreadsView(m Model, w, h int) string {
 	if w < 40 || h < 10 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+		return MutedStyle.Render("(terminal too small)")
 	}
 	leftW := w * 2 / 3
 	rightW := w - leftW
 
-	// Reserva ~5 linhas pro lock graph (título + 3-4 linhas)
+	// Reserve ~5 lines for the lock graph (title + 3-4 lines)
 	lockH := 5
 	if len(m.LockGraph) > 4 {
 		lockH = 6
@@ -35,18 +35,18 @@ func renderThreadsView(m Model, w, h int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, threads, stream)
 }
 
-// renderLockGraph: lista compacta dos futexes mais contestados na janela
-// atual. Quando LockGraph está vazio (sem eBPF futex collector ou sem
-// contestação detectada), mostra placeholder discreto.
+// renderLockGraph: compact list of the most contended futexes in the current
+// window. When LockGraph is empty (no eBPF futex collector or no contention
+// detected), shows a discrete placeholder.
 func renderLockGraph(m Model, w int) string {
 	title := MutedStyle.Render("lock graph (futex)")
 	if len(m.LockGraph) == 0 {
-		return title + "\n" + MutedStyle.Render("(sem contestação detectada)")
+		return title + "\n" + MutedStyle.Render("(no contention detected)")
 	}
 
 	lines := []string{title}
 	for i, e := range m.LockGraph {
-		if i >= 4 { // 4 entries cabem confortavelmente
+		if i >= 4 { // 4 entries fit comfortably
 			break
 		}
 		lines = append(lines, renderLockLine(e, w))

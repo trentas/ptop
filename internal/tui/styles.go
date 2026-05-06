@@ -2,7 +2,7 @@ package tui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Paleta — espelha exatamente o mockup React (assets/mockup.jsx)
+// Palette — exactly mirrors the React mockup (assets/mockup.jsx)
 var (
 	ColorBG     = lipgloss.Color("#0e1014")
 	ColorPanel  = lipgloss.Color("#13161c")
@@ -22,7 +22,7 @@ var (
 	ColorTeal   = lipgloss.Color("#2dd4bf")
 )
 
-// Estilos de painel
+// Panel styles
 var (
 	PanelStyle = lipgloss.NewStyle().
 			Background(ColorPanel).
@@ -46,15 +46,15 @@ var (
 			PaddingLeft(1).PaddingRight(1)
 )
 
-// Estilos de texto semânticos.
+// Semantic text styles.
 //
-// IMPORTANTE: todos têm Background(ColorPanel) explícito. Sem isso, células
-// renderizadas inside panels ficam com o background default do terminal
-// (que é o mauve do Ubuntu, ou qualquer cor do tema do user) — vazando
-// pelos espaços entre segmentos coloridos.
+// IMPORTANT: all have an explicit Background(ColorPanel). Without it, cells
+// rendered inside panels get the terminal's default background
+// (which is Ubuntu's mauve, or whatever the user's theme color is) — leaking
+// through gaps between colored segments.
 //
-// Header/tabbar/statusbar usam estilos inline com seus próprios backgrounds
-// e NÃO consomem estes; ver header.go, tabbar.go, statusbar.go.
+// Header/tabbar/statusbar use inline styles with their own backgrounds
+// and DO NOT consume these; see header.go, tabbar.go, statusbar.go.
 var (
 	BrightStyle = lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel)
 	MutedStyle  = lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel)
@@ -69,19 +69,19 @@ var (
 	TealStyle   = lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel)
 )
 
-// PanelStyleBase devolve um base style com ColorPanel como background.
-// Use pra construir estilos inline dentro de panels:
+// PanelStyleBase returns a base style with ColorPanel as background.
+// Use to build inline styles inside panels:
 //
 //	name := PanelStyleBase().Foreground(c).Width(nameW).Render(s)
 //
-// É só açúcar pra `lipgloss.NewStyle().Background(ColorPanel)` mas torna
-// claro a intenção.
+// Just sugar for `lipgloss.NewStyle().Background(ColorPanel)` but makes
+// the intent clear.
 func PanelStyleBase() lipgloss.Style {
 	return lipgloss.NewStyle().Background(ColorPanel)
 }
 
-// Badge: pequeno label colorido inline (ex: "PID 18423", "RUNNING").
-// Single-line por design — usado em headers e tabs onde altura > 1 quebra layout.
+// Badge: small inline colored label (e.g. "PID 18423", "RUNNING").
+// Single-line by design — used in headers and tabs where height > 1 breaks layout.
 func Badge(label string, color lipgloss.Color) string {
 	return lipgloss.NewStyle().
 		Foreground(color).
@@ -91,7 +91,7 @@ func Badge(label string, color lipgloss.Color) string {
 		Render(label)
 }
 
-// CategoryColor retorna a cor da categoria de evento no timeline
+// CategoryColor returns the color of the event category in the timeline
 func CategoryColor(cat string) lipgloss.Color {
 	switch cat {
 	case "syscall":
@@ -113,7 +113,7 @@ func CategoryColor(cat string) lipgloss.Color {
 	}
 }
 
-// CategoryLabel retorna o label curto da categoria (3 chars)
+// CategoryLabel returns the short category label (3 chars)
 func CategoryLabel(cat string) string {
 	switch cat {
 	case "syscall":
@@ -135,7 +135,7 @@ func CategoryLabel(cat string) string {
 	}
 }
 
-// FDTypeColor retorna a cor do tipo de FD
+// FDTypeColor returns the color for the FD type
 func FDTypeColor(fdType string) lipgloss.Color {
 	switch fdType {
 	case "file":
@@ -153,7 +153,7 @@ func FDTypeColor(fdType string) lipgloss.Color {
 	}
 }
 
-// FDTypeIcon retorna o ícone Unicode do tipo de FD
+// FDTypeIcon returns the Unicode icon for the FD type
 func FDTypeIcon(fdType string) string {
 	switch fdType {
 	case "file":

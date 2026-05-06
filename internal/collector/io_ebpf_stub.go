@@ -12,7 +12,7 @@ type IOEBPFSnapshot struct {
 
 func NewIOEBPFCollector() *IOEBPFCollector { return &IOEBPFCollector{} }
 func (*IOEBPFCollector) Start(int) error {
-	return errors.New("eBPF io collector não disponível neste build")
+	return errors.New("eBPF io collector not available in this build")
 }
 func (*IOEBPFCollector) Stop()                          {}
 func (*IOEBPFCollector) Subscribe() <-chan interface{}  { return nil }

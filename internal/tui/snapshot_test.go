@@ -16,29 +16,29 @@ func TestBuildSnapshot_includesAllFields(t *testing.T) {
 	snap := buildSnapshot(m)
 
 	if snap.Version != snapshotSchemaVersion {
-		t.Errorf("version=%d, esperado %d", snap.Version, snapshotSchemaVersion)
+		t.Errorf("version=%d, expected %d", snap.Version, snapshotSchemaVersion)
 	}
 	if snap.PID != 1 {
 		t.Errorf("PID=%d", snap.PID)
 	}
 	if snap.Process == "" {
-		t.Error("Process vazio")
+		t.Error("Process empty")
 	}
-	// Critério da issue: deve incluir CPU, syscalls, FDs, threads, mem, IO, timeline
+	// Issue criterion: must include CPU, syscalls, FDs, threads, mem, IO, timeline
 	if len(snap.Data.CPUHistory) == 0 {
-		t.Error("CPUHistory vazio")
+		t.Error("CPUHistory empty")
 	}
 	if len(snap.Data.SyscallCounts) == 0 {
-		t.Error("SyscallCounts vazio")
+		t.Error("SyscallCounts empty")
 	}
 	if len(snap.Data.FDs) == 0 {
-		t.Error("FDs vazio")
+		t.Error("FDs empty")
 	}
 	if len(snap.Data.Threads) == 0 {
-		t.Error("Threads vazio")
+		t.Error("Threads empty")
 	}
 	if snap.Data.MemStats.RSSBytes == 0 {
-		t.Error("MemStats.RSSBytes zerado")
+		t.Error("MemStats.RSSBytes zero")
 	}
 }
 
@@ -47,7 +47,7 @@ func TestSaveSnapshot_roundtrip(t *testing.T) {
 	m.Width = 120
 	m.Height = 40
 
-	// SaveSnapshot cria no cwd; isolamos via TempDir
+	// SaveSnapshot creates in the cwd; isolate via TempDir
 	dir := t.TempDir()
 	wd, _ := os.Getwd()
 	defer os.Chdir(wd) //nolint:errcheck
@@ -60,7 +60,7 @@ func TestSaveSnapshot_roundtrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 	if !strings.HasPrefix(path, "xray-snapshot-") {
-		t.Errorf("path inesperado: %s", path)
+		t.Errorf("unexpected path: %s", path)
 	}
 	full := filepath.Join(dir, path)
 	data, err := os.ReadFile(full)
@@ -108,12 +108,12 @@ func TestExportFile_jsonlLine(t *testing.T) {
 	data, _ := os.ReadFile(f.Name())
 	lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
 	if len(lines) != 2 {
-		t.Fatalf("esperava 2 linhas, got %d", len(lines))
+		t.Fatalf("expected 2 lines, got %d", len(lines))
 	}
 	for i, line := range lines {
 		var s Snapshot
 		if err := json.Unmarshal([]byte(line), &s); err != nil {
-			t.Errorf("linha %d não é JSON válido: %v", i, err)
+			t.Errorf("line %d is not valid JSON: %v", i, err)
 		}
 	}
 }

@@ -10,15 +10,15 @@ import (
 	"time"
 )
 
-// FDCollector lê /proc/<pid>/fd e /proc/<pid>/fdinfo a cada 500ms.
-// Funciona sem root, sem eBPF — primeiro collector implementado.
+// FDCollector reads /proc/<pid>/fd and /proc/<pid>/fdinfo every 500ms.
+// Works without root, without eBPF — first collector implemented.
 //
-// Publica três tipos de mensagem na mesma channel (consumidor faz
+// Publishes three message types on the same channel (consumer does
 // type-switch):
 //
-//   - []FDEntry           — snapshot completo do estado atual (cada poll)
-//   - TimelineEvent       — evento "openat fd=N <desc>" / "close fd=N" pra timeline global
-//   - FDEvent             — versão compacta dedicada à F6 ▸ FD Events
+//   - []FDEntry           — full snapshot of current state (every poll)
+//   - TimelineEvent       — "openat fd=N <desc>" / "close fd=N" event for the global timeline
+//   - FDEvent             — compact version dedicated to the F6 ▸ FD Events panel
 type FDCollector struct {
 	pid      int
 	ch       chan interface{}
@@ -26,14 +26,14 @@ type FDCollector struct {
 	mu       sync.Mutex
 	resolver *SocketResolver
 
-	// estado entre polls
-	baseline map[int]fdState // fd → estado da última observação
+	// state between polls
+	baseline map[int]fdState // fd → state at last observation
 }
 
 type fdState struct {
 	openedAt time.Time
-	pos      uint64 // /proc/<pid>/fdinfo/<fd> campo "pos:" — usado pra detectar atividade
-	desc     string // descrição estável (path do file ou TCP IP:port resolvido)
+	pos      uint64 // /proc/<pid>/fdinfo/<fd> "pos:" field — used to detect activity
+	desc     string // stable description (file path or resolved TCP IP:port)
 	fdType   string
 }
 
@@ -49,7 +49,7 @@ func NewFDCollector() *FDCollector {
 func (c *FDCollector) Start(pid int) error {
 	c.pid = pid
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/fd", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -66,7 +66,7 @@ func (c *FDCollector) Subscribe() <-chan interface{} {
 func (c *FDCollector) loop() {
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
-	// Primeira coleta imediata pra UI não esperar 500ms pra mostrar nada
+	// First collection happens immediately so the UI doesn't wait 500ms to show anything
 	c.collectAndEmit()
 	for {
 		select {
@@ -78,9 +78,9 @@ func (c *FDCollector) loop() {
 	}
 }
 
-// collectAndEmit faz um snapshot e emite os 3 tipos de mensagem na channel.
-// Eventos (open/close) são emitidos ANTES do snapshot para que a UI tenha o
-// histórico antes de re-renderizar a tabela com o estado novo.
+// collectAndEmit takes a snapshot and emits the 3 message types on the
+// channel. Events (open/close) are emitted BEFORE the snapshot so the UI
+// has the history before re-rendering the table with the new state.
 func (c *FDCollector) collectAndEmit() {
 	fds, events, err := c.collect()
 	if err != nil {
@@ -96,12 +96,12 @@ func (c *FDCollector) emit(msg interface{}) {
 	select {
 	case c.ch <- msg:
 	default:
-		// canal cheio; descarta. UI vai pegar a próxima rodada.
+		// channel full; drop. UI will pick up the next round.
 	}
 }
 
-// collect retorna o snapshot atual + eventos (open/close) detectados desde o
-// último poll.
+// collect returns the current snapshot + events (open/close) detected
+// since the last poll.
 func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 	fdDir := fmt.Sprintf("/proc/%d/fd", c.pid)
 	entries, err := os.ReadDir(fdDir)
@@ -131,8 +131,8 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 		pos := readFDPos(c.pid, fdNum)
 
 		prev, hadPrev := c.baseline[fdNum]
-		// Detecta nova abertura (FD não estava no baseline OU mudou de descrição
-		// — caso de dup2 que reusa o número)
+		// Detect new opens (FD wasn't in baseline OR description changed
+		// — case of dup2 reusing the number)
 		if !hadPrev {
 			openedAt := now
 			c.baseline[fdNum] = fdState{
@@ -147,7 +147,7 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 				TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("openat → fd=%d %s", fdNum, desc)},
 			)
 		} else if prev.desc != desc {
-			// FD foi reusado (dup2/openat depois de close) — emit close+open
+			// FD got reused (dup2/openat after close) — emit close+open
 			events = append(events,
 				FDEvent{Timestamp: now, Message: fmt.Sprintf("reuse fd=%d %s → %s", fdNum, prev.desc, desc)},
 				TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("dup/reuse fd=%d → %s", fdNum, desc)},
@@ -161,9 +161,9 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 			prev = c.baseline[fdNum]
 		}
 
-		// Active = mudança de pos desde último poll. Faz sentido pra files;
-		// pra sockets/pipes pos é constante 0, então Active fica false.
-		// (eBPF futura via #11 vai dar Active correto pra qualquer fd type.)
+		// Active = pos changed since last poll. Makes sense for files;
+		// for sockets/pipes pos is always 0, so Active stays false.
+		// (Future eBPF via #11 will give correct Active for any fd type.)
 		active := pos != prev.pos
 		c.baseline[fdNum] = fdState{
 			openedAt: prev.openedAt,
@@ -172,7 +172,7 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 			fdType:   fdType,
 		}
 
-		bytes := pos // pra sockets/pipes ignora-se; pra files é cumulative pos
+		bytes := pos // for sockets/pipes ignored; for files it's cumulative pos
 
 		result = append(result, FDEntry{
 			FD:     fdNum,
@@ -185,7 +185,7 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 		})
 	}
 
-	// Detecta closes (FDs que estavam no baseline e sumiram)
+	// Detect closes (FDs that were in baseline and disappeared)
 	for fd, prev := range c.baseline {
 		if !seen[fd] {
 			events = append(events,
@@ -218,9 +218,9 @@ func inferType(fd int, link string) string {
 	}
 }
 
-// describeLink resolve o link de /proc/<pid>/fd/<n> em uma descrição legível.
-// Sockets viram "TCP 127.0.0.1:8080" via SocketResolver. Outros casos passam
-// direto.
+// describeLink resolves the /proc/<pid>/fd/<n> link into a human-readable
+// description. Sockets become "TCP 127.0.0.1:8080" via SocketResolver.
+// Other cases pass through directly.
 func (c *FDCollector) describeLink(link string) string {
 	if link == "" {
 		return "(unknown)"
@@ -229,7 +229,7 @@ func (c *FDCollector) describeLink(link string) string {
 		if info, ok := c.resolver.Resolve(inode); ok {
 			return fmt.Sprintf("%s %s", info.Family, info.Remote)
 		}
-		// fallback enquanto socket não está resolvido (cache stale ou inode estranho)
+		// fallback while the socket isn't resolved (cache stale or weird inode)
 		return link
 	}
 	return link
@@ -257,9 +257,10 @@ func readFlags(pid, fd int) string {
 	return ""
 }
 
-// readFDPos extrai o campo "pos:" de /proc/<pid>/fdinfo/<fd>.
-// Para arquivos seekable é o offset cumulativo do file pointer; pra
-// sockets/pipes é 0 e não muda. Usado pelo collector pra inferir Active.
+// readFDPos extracts the "pos:" field from /proc/<pid>/fdinfo/<fd>.
+// For seekable files it's the cumulative file pointer offset; for
+// sockets/pipes it's 0 and doesn't change. Used by the collector to
+// infer Active.
 func readFDPos(pid, fd int) uint64 {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/fdinfo/%d", pid, fd))
 	if err != nil {

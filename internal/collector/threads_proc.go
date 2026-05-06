@@ -10,9 +10,9 @@ import (
 	"time"
 )
 
-// ThreadsCollector enumera /proc/<pid>/task/* a cada 1s e produz []ThreadInfo
-// com state, CPU% (via delta de utime+stime) e wchan (kernel function em que
-// está bloqueada).
+// ThreadsCollector enumerates /proc/<pid>/task/* every 1s and produces
+// []ThreadInfo with state, CPU% (via delta of utime+stime) and wchan
+// (kernel function the thread is blocked on).
 type ThreadsCollector struct {
 	pid  int
 	ch   chan interface{}
@@ -34,7 +34,7 @@ func NewThreadsCollector() *ThreadsCollector {
 func (c *ThreadsCollector) Start(pid int) error {
 	c.pid = pid
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/task", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -119,7 +119,7 @@ func (c *ThreadsCollector) collect() ([]ThreadInfo, error) {
 		}
 		c.prev[tid] = totalTicks
 
-		// wchan = kernel function em que está dormindo (vazio se running)
+		// wchan = kernel function the thread is sleeping in (empty if running)
 		wchan := ""
 		if w, err := os.ReadFile(filepath.Join(taskDir, e.Name(), "wchan")); err == nil {
 			wchan = strings.TrimSpace(string(w))
@@ -137,7 +137,7 @@ func (c *ThreadsCollector) collect() ([]ThreadInfo, error) {
 		})
 	}
 
-	// purga cache de threads que sumiram
+	// purge cache of threads that disappeared
 	for tid := range c.prev {
 		if !seen[tid] {
 			delete(c.prev, tid)
@@ -148,8 +148,8 @@ func (c *ThreadsCollector) collect() ([]ThreadInfo, error) {
 	return out, nil
 }
 
-// parseThreadStat extrai (comm, state, utime+stime) de /proc/<pid>/task/<tid>/stat.
-// Mesmo cuidado com o `)` final do campo comm que em parseProcStatTimes.
+// parseThreadStat extracts (comm, state, utime+stime) from /proc/<pid>/task/<tid>/stat.
+// Same care with the trailing `)` of the comm field as in parseProcStatTimes.
 func parseThreadStat(data []byte) (comm string, state byte, totalTicks uint64, ok bool) {
 	s := string(data)
 	commStart := strings.Index(s, "(")

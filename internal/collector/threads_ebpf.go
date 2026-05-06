@@ -14,22 +14,22 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// ThreadsEBPFCollector é um collector híbrido /proc + eBPF:
+// ThreadsEBPFCollector is a hybrid /proc + eBPF collector:
 //
-//   - /proc/<pid>/task/<tid>/{stat,wchan} → state textual, comm, wchan
-//     (informação que só /proc tem em formato canônico)
-//   - eBPF tid_state via tracepoint sched:sched_switch → CPU% baseado em
-//     on-CPU time real + contagem de context switches por TID na janela
+//   - /proc/<pid>/task/<tid>/{stat,wchan} → textual state, comm, wchan
+//     (info that only /proc has in canonical form)
+//   - eBPF tid_state via tracepoint sched:sched_switch → CPU% based on
+//     real on-CPU time + per-TID context switch count in the window
 //
-// Resultado: ThreadInfo com tudo que o /proc dava + ctx_switches da
-// janela + CPU% mais preciso (window-based em vez de cumulativo).
+// Result: ThreadInfo with everything /proc gave + window ctx_switches +
+// more accurate CPU% (window-based instead of cumulative).
 //
 // Lifecycle:
-//   - tick a cada 1s
-//   - lê /proc/<pid>/task/ → coleta state/wchan/name + lista de TIDs vivos
-//   - sincroniza tracked_tids no BPF map (add novos, remove órfãos)
-//   - lê tid_state do BPF, calcula deltas vs snapshot anterior
-//   - publica []ThreadInfo
+//   - tick every 1s
+//   - read /proc/<pid>/task/ → collect state/wchan/name + list of live TIDs
+//   - sync tracked_tids in the BPF map (add new ones, remove stragglers)
+//   - read tid_state from BPF, compute deltas vs previous snapshot
+//   - publish []ThreadInfo
 type ThreadsEBPFCollector struct {
 	tracer *bpf.ThreadsTracer
 	pid    int
@@ -37,8 +37,8 @@ type ThreadsEBPFCollector struct {
 	stop   chan struct{}
 
 	mu          sync.Mutex
-	prevOnNs    map[uint32]uint64 // tid → on_cpu_ns_total na última amostra
-	prevSwitch  map[uint32]uint64 // tid → ctx_switches na última amostra
+	prevOnNs    map[uint32]uint64 // tid → on_cpu_ns_total at last sample
+	prevSwitch  map[uint32]uint64 // tid → ctx_switches at last sample
 	lastSampleAt time.Time
 }
 
@@ -53,7 +53,7 @@ func NewThreadsEBPFCollector() *ThreadsEBPFCollector {
 
 func (c *ThreadsEBPFCollector) Start(pid int) error {
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/task", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	tracer, err := bpf.OpenThreadsTracer(pid)
 	if err != nil {
@@ -111,7 +111,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		elapsed = now.Sub(c.lastSampleAt).Seconds()
 	}
 
-	// 1ª passada: lê /proc/task/* e monta lista de TIDs + metadata.
+	// 1st pass: read /proc/task/* and build TID list + metadata.
 	type procData struct {
 		comm    string
 		state   byte
@@ -143,13 +143,13 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		tidList = append(tidList, tid)
 	}
 
-	// Sincroniza tracked_tids no BPF map.
+	// Sync tracked_tids in the BPF map.
 	if err := c.tracer.UpdateTrackedTIDs(tidList); err != nil {
-		// Não fatal: continua publicando dados de /proc mesmo se o sync falhar.
+		// Not fatal: keep publishing /proc data even if the sync fails.
 		_ = err
 	}
 
-	// 2ª passada: lê tid_state e calcula deltas.
+	// 2nd pass: read tid_state and compute deltas.
 	stats, err := c.tracer.Stats()
 	if err != nil {
 		stats = nil
@@ -165,7 +165,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 			deltaOn := s.OnCpuNsTotal - c.prevOnNs[tid]
 			cpuPct = (float64(deltaOn) / 1e9) / elapsed * 100
 			if cpuPct > 100 {
-				cpuPct = 100 // ceil — multi-core single thread não passa de 100%
+				cpuPct = 100 // ceiling — single thread on multi-core can't exceed 100%
 			}
 			switches = s.CtxSwitches - c.prevSwitch[tid]
 		}
@@ -182,7 +182,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		})
 	}
 
-	// Garbage collect prev maps de TIDs que sumiram.
+	// Garbage collect prev maps for TIDs that disappeared.
 	for tid := range c.prevOnNs {
 		if _, alive := procByTID[tid]; !alive {
 			delete(c.prevOnNs, tid)

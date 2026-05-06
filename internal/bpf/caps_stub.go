@@ -2,8 +2,8 @@
 
 package bpf
 
-// CapStatus em OSes não-Linux: sempre indica que eBPF não pode rodar.
-// Mantemos a mesma shape pra que main.go não precise de build tag.
+// CapStatus on non-Linux OSes: always indicates eBPF cannot run.
+// We keep the same shape so main.go doesn't need a build tag.
 type CapStatus struct {
 	IsRoot       bool
 	HasBPF       bool
@@ -25,8 +25,8 @@ func (CapStatus) KernelSupportsBPF() bool  { return false }
 
 func (CapStatus) Diagnose() string {
 	return "" +
-		"eBPF requer Linux 5.8+. Você está rodando em OS não suportado.\n" +
+		"eBPF requires Linux 5.8+. You are running on an unsupported OS.\n" +
 		"\n" +
-		"Use --no-ebpf pra rodar a TUI em modo simulado/dev:\n" +
+		"Use --no-ebpf to run the TUI in simulated/dev mode:\n" +
 		"  ./bin/xray --pid <PID> --no-ebpf\n"
 }

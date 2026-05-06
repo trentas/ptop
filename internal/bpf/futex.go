@@ -16,7 +16,7 @@ import (
 //go:embed programs/futex.bpf.o
 var futexBPFObj []byte
 
-// FutexStat espelha 1:1 `struct futex_stat` em programs/futex.bpf.c.
+// FutexStat mirrors `struct futex_stat` in programs/futex.bpf.c 1:1.
 // 40 bytes (4 × u64 + 2 × u32).
 type FutexStat struct {
 	WaitCount   uint64
@@ -27,8 +27,8 @@ type FutexStat struct {
 	LastWakeTID uint32
 }
 
-// FutexTracer carrega futex.bpf.o, attacha sys_enter/exit_futex e expõe
-// Stats() pra ler o map futex_stats keyed por uaddr.
+// FutexTracer loads futex.bpf.o, attaches sys_enter/exit_futex and exposes
+// Stats() to read the futex_stats map keyed by uaddr.
 type FutexTracer struct {
 	coll  *ebpf.Collection
 	links []link.Link
@@ -37,7 +37,7 @@ type FutexTracer struct {
 
 func OpenFutexTracer(pid int) (*FutexTracer, error) {
 	if pid <= 0 {
-		return nil, errors.New("pid inválido")
+		return nil, errors.New("invalid pid")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -56,7 +56,7 @@ func OpenFutexTracer(pid int) (*FutexTracer, error) {
 	targetMap := coll.Maps["futex_target_pid"]
 	if targetMap == nil {
 		t.Close()
-		return nil, errors.New("futex_target_pid map ausente")
+		return nil, errors.New("futex_target_pid map missing")
 	}
 	var key uint32 = 0
 	val := uint32(pid)
@@ -68,7 +68,7 @@ func OpenFutexTracer(pid int) (*FutexTracer, error) {
 	t.smap = coll.Maps["futex_stats"]
 	if t.smap == nil {
 		t.Close()
-		return nil, errors.New("futex_stats map ausente")
+		return nil, errors.New("futex_stats map missing")
 	}
 
 	tracepoints := []struct{ group, name, prog string }{
@@ -79,7 +79,7 @@ func OpenFutexTracer(pid int) (*FutexTracer, error) {
 		p := coll.Programs[tp.prog]
 		if p == nil {
 			t.Close()
-			return nil, fmt.Errorf("program %s ausente", tp.prog)
+			return nil, fmt.Errorf("program %s missing", tp.prog)
 		}
 		l, err := link.Tracepoint(tp.group, tp.name, p, nil)
 		if err != nil {
@@ -92,10 +92,10 @@ func OpenFutexTracer(pid int) (*FutexTracer, error) {
 	return t, nil
 }
 
-// Stats devolve um snapshot completo do map futex_stats: uaddr → stat.
+// Stats returns a complete snapshot of the futex_stats map: uaddr → stat.
 func (t *FutexTracer) Stats() (map[uint64]FutexStat, error) {
 	if t == nil || t.smap == nil {
-		return nil, errors.New("tracer não inicializado")
+		return nil, errors.New("tracer not initialized")
 	}
 	out := make(map[uint64]FutexStat, 64)
 	var k uint64

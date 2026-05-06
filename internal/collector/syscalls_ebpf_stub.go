@@ -4,8 +4,9 @@ package collector
 
 import "errors"
 
-// Stub: builds sem -tags=ebpf ou em macOS/Windows recebem este SyscallsEBPFCollector
-// que sempre falha em Start. Model trata isso fazendo fallback pra simulação.
+// Stub: builds without -tags=ebpf or on macOS/Windows get this
+// SyscallsEBPFCollector that always fails Start. Model handles this by
+// falling back to simulation.
 
 type SyscallsEBPFCollector struct{}
 
@@ -14,7 +15,7 @@ func NewSyscallsEBPFCollector() *SyscallsEBPFCollector {
 }
 
 func (*SyscallsEBPFCollector) Start(pid int) error {
-	return errors.New("eBPF syscalls não disponível neste build")
+	return errors.New("eBPF syscalls not available in this build")
 }
 
 func (*SyscallsEBPFCollector) Stop() {}

@@ -1,38 +1,38 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// threads.bpf.c — rastreia transições de scheduler (on-CPU ↔ off-CPU)
-// das threads do PID alvo via tracepoint sched:sched_switch.
+// threads.bpf.c — tracks scheduler transitions (on-CPU ↔ off-CPU) of the
+// target PID's threads via the sched:sched_switch tracepoint.
 //
-// Por que sched_switch e não /proc/<pid>/task/<tid>/stat?
-//   /proc dá utime+stime cumulativos amostrados a 1Hz — granularidade
-//   ruim pra threads que oscilam rápido entre running/blocked. O
-//   tracepoint dispara em CADA context switch, então on_cpu_ns reflete
-//   exatamente o que o kernel mediu, em tempo real.
+// Why sched_switch and not /proc/<pid>/task/<tid>/stat?
+//   /proc gives cumulative utime+stime sampled at 1Hz — bad granularity
+//   for threads that oscillate quickly between running/blocked. The
+//   tracepoint fires on EVERY context switch, so on_cpu_ns reflects
+//   exactly what the kernel measured, in real time.
 //
 // Maps:
-//   threads_target_pid  ARRAY[1]  pid alvo (escrito pelo loader Go)
-//   tracked_tids        HASH      TID → 1, populado periodicamente pelo
+//   threads_target_pid  ARRAY[1]  target pid (written by the Go loader)
+//   tracked_tids        HASH      TID → 1, populated periodically by
 //                                 user-space (Go walks /proc/<pid>/task/).
-//                                 Necessário porque sched_switch dispara
-//                                 GLOBALMENTE — filtrar só pelo prev_pid
-//                                 perderia o evento "next ON-CPU".
+//                                 Required because sched_switch fires
+//                                 GLOBALLY — filtering only by prev_pid
+//                                 would miss the "next ON-CPU" event.
 //   tid_state           HASH      TID → {last_on_ns, last_off_ns,
 //                                 on_cpu_ns_total, off_cpu_ns_total,
 //                                 ctx_switches}
 //
-// Filtragem:
-//   Em vez de bpf_get_current_pid_tgid() (que é confiável em syscall
-//   context, mas em sched_switch o `current` é o prev e nem sempre é o
-//   alvo), usamos uma whitelist de TIDs (`tracked_tids`) atualizada
-//   pelo Go side a cada ~1s. Threads que nascem/morrem dentro desse
-//   intervalo podem perder switches; aceitável pra UI.
+// Filtering:
+//   Instead of bpf_get_current_pid_tgid() (which is reliable in syscall
+//   context, but in sched_switch `current` is prev and isn't always the
+//   target), we use a TID whitelist (`tracked_tids`) updated by the Go
+//   side every ~1s. Threads that are born/die within that interval may
+//   miss switches; acceptable for the UI.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
-// Layout estável do tracepoint sched:sched_switch.
+// Stable layout of the sched:sched_switch tracepoint.
 // /sys/kernel/debug/tracing/events/sched/sched_switch/format
 struct sched_switch_args {
     unsigned long long _pad;     // common_type/flags/preempt_count/pid (8B)
@@ -79,8 +79,8 @@ static __always_inline int is_tracked(__u32 tid)
     return bpf_map_lookup_elem(&tracked_tids, &tid) != NULL;
 }
 
-// Pega-ou-cria entry no tid_state. Devolve ptr (sempre não-null em sucesso).
-// Em falha de update (caso patológico), devolve NULL.
+// Get-or-create entry in tid_state. Returns ptr (always non-null on success).
+// On update failure (pathological case), returns NULL.
 static __always_inline struct thread_state *get_or_create_state(__u32 tid)
 {
     struct thread_state *s = bpf_map_lookup_elem(&tid_state, &tid);
@@ -96,7 +96,7 @@ int handle_sched_switch(struct sched_switch_args *ctx)
 {
     __u64 now = bpf_ktime_get_ns();
 
-    // prev_pid está saindo de CPU
+    // prev_pid is leaving CPU
     __u32 prev_tid = (__u32)ctx->prev_pid;
     if (prev_tid != 0 && is_tracked(prev_tid)) {
         struct thread_state *s = get_or_create_state(prev_tid);
@@ -110,7 +110,7 @@ int handle_sched_switch(struct sched_switch_args *ctx)
         }
     }
 
-    // next_pid está entrando em CPU
+    // next_pid is entering CPU
     __u32 next_tid = (__u32)ctx->next_pid;
     if (next_tid != 0 && is_tracked(next_tid)) {
         struct thread_state *s = get_or_create_state(next_tid);

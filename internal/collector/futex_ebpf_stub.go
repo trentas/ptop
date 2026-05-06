@@ -11,7 +11,7 @@ func NewFutexEBPFCollector() *FutexEBPFCollector {
 }
 
 func (c *FutexEBPFCollector) Start(pid int) error {
-	return errors.New("futex eBPF não disponível neste build")
+	return errors.New("futex eBPF not available in this build")
 }
 
 func (c *FutexEBPFCollector) Stop() {}

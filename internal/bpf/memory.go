@@ -16,7 +16,7 @@ import (
 //go:embed programs/memory.bpf.o
 var memoryBPFObj []byte
 
-// MemCounters espelha 1:1 `struct mem_counters` em programs/memory.bpf.c.
+// MemCounters mirrors `struct mem_counters` in programs/memory.bpf.c 1:1.
 // 32 bytes (4 × u64).
 type MemCounters struct {
 	PageFaults  uint64
@@ -25,8 +25,8 @@ type MemCounters struct {
 	BrkCount    uint64
 }
 
-// MemoryTracer carrega memory.bpf.o, attacha kprobe handle_mm_fault +
-// tracepoints sys_enter_{mmap,munmap,brk}, expõe Stats() pra ler counters.
+// MemoryTracer loads memory.bpf.o, attaches kprobe handle_mm_fault +
+// sys_enter_{mmap,munmap,brk} tracepoints, and exposes Stats() to read counters.
 type MemoryTracer struct {
 	coll  *ebpf.Collection
 	links []link.Link
@@ -35,7 +35,7 @@ type MemoryTracer struct {
 
 func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
 	if pid <= 0 {
-		return nil, errors.New("pid inválido")
+		return nil, errors.New("invalid pid")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -54,7 +54,7 @@ func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
 	targetMap := coll.Maps["mem_target_pid"]
 	if targetMap == nil {
 		t.Close()
-		return nil, errors.New("mem_target_pid map ausente")
+		return nil, errors.New("mem_target_pid map missing")
 	}
 	var key uint32 = 0
 	val := uint32(pid)
@@ -66,21 +66,21 @@ func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
 	t.cmap = coll.Maps["mem_counters"]
 	if t.cmap == nil {
 		t.Close()
-		return nil, errors.New("mem_counters map ausente")
+		return nil, errors.New("mem_counters map missing")
 	}
 
-	// kprobe: pode falhar em kernels esquisitos (handle_mm_fault inlined ou
-	// renomeado). Logamos warning e seguimos sem fault tracking — allocs
-	// continuam funcionando via syscall tracepoints.
+	// kprobe: may fail on quirky kernels (handle_mm_fault inlined or
+	// renamed). We log a warning and proceed without fault tracking — allocs
+	// keep working via syscall tracepoints.
 	if prog := coll.Programs["kp_handle_mm_fault"]; prog != nil {
 		if l, err := link.Kprobe("handle_mm_fault", prog, nil); err == nil {
 			t.links = append(t.links, l)
 		} else {
-			fmt.Printf("aviso: kprobe handle_mm_fault falhou: %v (page faults via /proc fallback)\n", err)
+			fmt.Printf("warning: kprobe handle_mm_fault failed: %v (page faults via /proc fallback)\n", err)
 		}
 	}
 
-	// Syscall tracepoints — devem sempre funcionar em Linux >= 4.x.
+	// Syscall tracepoints — should always work on Linux >= 4.x.
 	tracepoints := []struct{ group, name, prog string }{
 		{"syscalls", "sys_enter_mmap", "tp_sys_enter_mmap"},
 		{"syscalls", "sys_enter_munmap", "tp_sys_enter_munmap"},
@@ -90,7 +90,7 @@ func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
 		p := coll.Programs[tp.prog]
 		if p == nil {
 			t.Close()
-			return nil, fmt.Errorf("program %s ausente", tp.prog)
+			return nil, fmt.Errorf("program %s missing", tp.prog)
 		}
 		l, err := link.Tracepoint(tp.group, tp.name, p, nil)
 		if err != nil {
@@ -103,10 +103,10 @@ func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
 	return t, nil
 }
 
-// Stats lê o slot 0 do mem_counters ARRAY (sempre presente).
+// Stats reads slot 0 of the mem_counters ARRAY (always present).
 func (t *MemoryTracer) Stats() (MemCounters, error) {
 	if t == nil || t.cmap == nil {
-		return MemCounters{}, errors.New("tracer não inicializado")
+		return MemCounters{}, errors.New("tracer not initialized")
 	}
 	var key uint32 = 0
 	var c MemCounters

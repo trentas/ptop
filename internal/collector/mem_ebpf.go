@@ -13,14 +13,14 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// MemEBPFCollector é um collector híbrido /proc + eBPF:
+// MemEBPFCollector is a hybrid /proc + eBPF collector:
 //
-//   - /proc/<pid>/statm  → RSS, heap-aprox (data segment, inclui heap+anon)
+//   - /proc/<pid>/statm  → RSS, approximate heap (data segment, includes heap+anon)
 //   - eBPF mem_counters  → page_faults, mmap+brk count
 //
-// Substitui o proxy de "allocs/s = delta(page_faults)" do MemCollector
-// /proc-only por contagem real de mmap+brk syscalls — métrica que
-// reflete alocações de fato no userspace, não falhas do TLB.
+// Replaces the "allocs/s = delta(page_faults)" proxy of the /proc-only
+// MemCollector with a real count of mmap+brk syscalls — a metric that
+// reflects actual userspace allocations, not TLB faults.
 type MemEBPFCollector struct {
 	tracer *bpf.MemoryTracer
 	pid    int
@@ -41,7 +41,7 @@ func NewMemEBPFCollector() *MemEBPFCollector {
 
 func (c *MemEBPFCollector) Start(pid int) error {
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/statm", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	tracer, err := bpf.OpenMemoryTracer(pid)
 	if err != nil {
@@ -84,20 +84,20 @@ func (c *MemEBPFCollector) loop() {
 }
 
 func (c *MemEBPFCollector) sample() (MemStats, error) {
-	// /proc/<pid>/statm: size resident shared text lib data dirty (em pages)
+	// /proc/<pid>/statm: size resident shared text lib data dirty (in pages)
 	statmData, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", c.pid))
 	if err != nil {
 		return MemStats{}, err
 	}
 	fields := strings.Fields(string(statmData))
 	if len(fields) < 7 {
-		return MemStats{}, fmt.Errorf("malformed /proc/.../statm: %d campos", len(fields))
+		return MemStats{}, fmt.Errorf("malformed /proc/.../statm: %d fields", len(fields))
 	}
 	pageSize := uint64(os.Getpagesize())
 	resident, _ := strconv.ParseUint(fields[1], 10, 64)
 	dataPages, _ := strconv.ParseUint(fields[5], 10, 64)
 
-	// Counters do eBPF
+	// eBPF counters
 	cnt, err := c.tracer.Stats()
 	if err != nil {
 		return MemStats{}, err
@@ -121,7 +121,7 @@ func (c *MemEBPFCollector) sample() (MemStats, error) {
 
 	return MemStats{
 		RSSBytes:   resident * pageSize,
-		HeapBytes:  dataPages * pageSize, // aproximação: data segment ~ heap+anon
+		HeapBytes:  dataPages * pageSize, // approximation: data segment ~ heap+anon
 		PageFaults: cnt.PageFaults,
 		AllocsPerS: allocsPerS,
 	}, nil

@@ -13,13 +13,13 @@ func TestParseIPv4Hex(t *testing.T) {
 	}
 	for hex, want := range cases {
 		if got := parseIPv4Hex(hex); got != want {
-			t.Errorf("parseIPv4Hex(%q)=%q, esperado %q", hex, got, want)
+			t.Errorf("parseIPv4Hex(%q)=%q, expected %q", hex, got, want)
 		}
 	}
 }
 
 func TestParseIPv6Hex_loopback(t *testing.T) {
-	// ::1 em little-endian por grupo de 4 bytes
+	// ::1 in little-endian per 4-byte group
 	hex := "00000000000000000000000001000000"
 	got := parseIPv6Hex(hex)
 	if got != "::1" {
@@ -35,7 +35,7 @@ func TestParsePortStr(t *testing.T) {
 	}
 	for hex, want := range cases {
 		if got := parsePortStr(hex); got != want {
-			t.Errorf("parsePortStr(%q)=%q, esperado %q", hex, got, want)
+			t.Errorf("parsePortStr(%q)=%q, expected %q", hex, got, want)
 		}
 	}
 }
@@ -55,7 +55,7 @@ func TestExtractSocketInode(t *testing.T) {
 	for _, c := range cases {
 		got, ok := extractSocketInode(c.link)
 		if got != c.want || ok != c.wantOk {
-			t.Errorf("extractSocketInode(%q)=(%d,%v), esperado (%d,%v)",
+			t.Errorf("extractSocketInode(%q)=(%d,%v), expected (%d,%v)",
 				c.link, got, ok, c.want, c.wantOk)
 		}
 	}
@@ -75,19 +75,19 @@ func TestParseInetFile_tcp(t *testing.T) {
 	parseInetFile(tmp, "TCP", true, out)
 
 	if len(out) != 2 {
-		t.Fatalf("esperava 2 entradas, got %d", len(out))
+		t.Fatalf("expected 2 entries, got %d", len(out))
 	}
 	if est := out[11111]; est.Family != "TCP" || est.State != "ESTABLISHED" {
-		t.Errorf("inode 11111 esperado ESTABLISHED TCP, got %+v", est)
+		t.Errorf("inode 11111 expected ESTABLISHED TCP, got %+v", est)
 	}
 	if est := out[11111]; est.Remote != "127.0.0.1:59754" {
 		t.Errorf("remote inode 11111: got %q", est.Remote)
 	}
 	if lst := out[22222]; lst.State != "LISTEN" {
-		t.Errorf("inode 22222 esperado LISTEN, got %+v", lst)
+		t.Errorf("inode 22222 expected LISTEN, got %+v", lst)
 	}
 	if !contains(out[22222].Remote, "8000") {
-		t.Errorf("LISTEN deve mostrar porta local 8000, got %q", out[22222].Remote)
+		t.Errorf("LISTEN must show local port 8000, got %q", out[22222].Remote)
 	}
 }
 
@@ -105,13 +105,13 @@ func TestParseUnixFile(t *testing.T) {
 	parseUnixFile(tmp, out)
 
 	if len(out) != 2 {
-		t.Fatalf("esperava 2 entradas, got %d", len(out))
+		t.Fatalf("expected 2 entries, got %d", len(out))
 	}
 	if got := out[33333]; got.Family != "UNIX" || got.Remote != "/var/run/docker.sock" {
 		t.Errorf("inode 33333: %+v", got)
 	}
 	if got := out[44444]; got.Remote != "(anon)" {
-		t.Errorf("inode anônimo: esperava (anon), got %q", got.Remote)
+		t.Errorf("anon inode: expected (anon), got %q", got.Remote)
 	}
 }
 
@@ -119,18 +119,18 @@ func TestFillRawAddr_ipv4(t *testing.T) {
 	var addr [16]byte
 	var port uint16
 	fillRawAddr(&addr, &port, "0100007F:1F90", true)
-	// 127.0.0.1 em network order: [7F, 00, 00, 01]
+	// 127.0.0.1 in network order: [7F, 00, 00, 01]
 	want := [4]byte{0x7F, 0x00, 0x00, 0x01}
 	if [4]byte(addr[:4]) != want {
-		t.Errorf("saddr esperado %v, got %v", want, addr[:4])
+		t.Errorf("saddr expected %v, got %v", want, addr[:4])
 	}
 	if port != 8080 {
-		t.Errorf("port esperado 8080, got %d", port)
+		t.Errorf("port expected 8080, got %d", port)
 	}
-	// Resto deve ficar zero
+	// Rest must stay zero
 	for i := 4; i < 16; i++ {
 		if addr[i] != 0 {
-			t.Errorf("addr[%d] esperado 0, got %d", i, addr[i])
+			t.Errorf("addr[%d] expected 0, got %d", i, addr[i])
 		}
 	}
 }
@@ -147,16 +147,16 @@ func TestParseInetFile_rawFields(t *testing.T) {
 	// 127.0.0.1:E96A → DAddr [7F,00,00,01], DPort 0xE96A=59754
 	wantDAddr := [4]byte{0x7F, 0x00, 0x00, 0x01}
 	if [4]byte(est.DAddr[:4]) != wantDAddr {
-		t.Errorf("DAddr esperado %v, got %v", wantDAddr, est.DAddr[:4])
+		t.Errorf("DAddr expected %v, got %v", wantDAddr, est.DAddr[:4])
 	}
 	if est.DPort != 59754 {
-		t.Errorf("DPort esperado 59754, got %d", est.DPort)
+		t.Errorf("DPort expected 59754, got %d", est.DPort)
 	}
 	if est.AF != 2 {
-		t.Errorf("AF esperado 2 (AF_INET), got %d", est.AF)
+		t.Errorf("AF expected 2 (AF_INET), got %d", est.AF)
 	}
 	if est.StateNum != 1 {
-		t.Errorf("StateNum esperado 1 (ESTABLISHED), got %d", est.StateNum)
+		t.Errorf("StateNum expected 1 (ESTABLISHED), got %d", est.StateNum)
 	}
 }
 

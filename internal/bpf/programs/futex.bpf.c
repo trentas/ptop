@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// futex.bpf.c — rastreia operações de futex do PID alvo via tracepoints
-// syscalls:sys_enter_futex / sys_exit_futex.
+// futex.bpf.c — traces target PID's futex operations via the
+// syscalls:sys_enter_futex / sys_exit_futex tracepoints.
 //
-// Pra que serve:
-//   Toda primitiva de sincronização do userspace em Linux (pthread_mutex,
-//   sem_t, std::mutex, sync.Mutex do Go, …) cai em futex(2) quando há
-//   contestação. Contar WAITs por uaddr revela onde o programa está
-//   serializando.
+// Purpose:
+//   Every userspace synchronization primitive on Linux (pthread_mutex,
+//   sem_t, std::mutex, Go's sync.Mutex, …) falls into futex(2) under
+//   contention. Counting WAITs per uaddr reveals where the program is
+//   serializing.
 //
 // Maps:
-//   futex_target_pid    ARRAY[1]  pid alvo (escrito pelo loader Go)
+//   futex_target_pid    ARRAY[1]  target pid (written by the Go loader)
 //   futex_inflight      HASH      tgid_pid → {uaddr, op, ts_ns}
-//                                 correlaciona enter→exit pra calcular
-//                                 latência por chamada
+//                                 correlates enter→exit to compute
+//                                 per-call latency
 //   futex_stats         HASH      uaddr → {wait_count, wake_count,
 //                                 lat_sum_ns, lat_count, last_wait_tid,
 //                                 last_wake_tid}
 //
-// Filtragem de ops:
-//   FUTEX_CMD_MASK = 0x7F retira FUTEX_PRIVATE_FLAG (0x80) e
-//   FUTEX_CLOCK_REALTIME (0x100). Classificamos cada base op em
-//   "wait" (espera dormindo) ou "wake" (acorda alguém).
+// Op filtering:
+//   FUTEX_CMD_MASK = 0x7F strips FUTEX_PRIVATE_FLAG (0x80) and
+//   FUTEX_CLOCK_REALTIME (0x100). We classify each base op as
+//   "wait" (thread sleeps) or "wake" (wakes others).
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -30,13 +30,13 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define FUTEX_CMD_MASK 0x7F
 
-// Wait-class ops (thread vai dormir no uaddr)
+// Wait-class ops (thread sleeps on the uaddr)
 #define FUTEX_WAIT             0
 #define FUTEX_LOCK_PI          6
 #define FUTEX_WAIT_BITSET      9
 #define FUTEX_WAIT_REQUEUE_PI 11
 
-// Wake-class ops (thread acorda outras)
+// Wake-class ops (thread wakes others)
 #define FUTEX_WAKE         1
 #define FUTEX_REQUEUE      3
 #define FUTEX_CMP_REQUEUE  4
@@ -44,7 +44,7 @@ char LICENSE[] SEC("license") = "GPL";
 #define FUTEX_UNLOCK_PI    7
 #define FUTEX_WAKE_BITSET 10
 
-// Layout do tracepoint syscalls:sys_enter_futex.
+// Layout of the syscalls:sys_enter_futex tracepoint.
 // /sys/kernel/debug/tracing/events/syscalls/sys_enter_futex/format
 struct sys_enter_futex_args {
     unsigned long long _pad;

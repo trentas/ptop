@@ -6,8 +6,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// renderStatusBar desenha o rodapé com keybindings e info de overhead.
-// Igual ao header/tabbar: nunca pode estourar m.Width.
+// renderStatusBar draws the footer with keybindings and overhead info.
+// Like the header/tabbar: must never overflow m.Width.
 func renderStatusBar(m Model) string {
 	barBg := lipgloss.Color("#0a0d11")
 	keyStyle := lipgloss.NewStyle().Foreground(ColorCyan).Background(barBg).Bold(true)
@@ -17,7 +17,7 @@ func renderStatusBar(m Model) string {
 		return keyStyle.Render(key) + lblStyle.Render(" "+label)
 	}
 
-	// versões longa e curta dos keybindings
+	// long and short versions of the keybindings
 	longParts := []string{
 		hint("F1-F7", "tabs"),
 		hint("q", "quit"),
@@ -40,13 +40,13 @@ func renderStatusBar(m Model) string {
 	left := strings.Join(longParts, lblStyle.Render("  ·  "))
 
 	rightParts := []string{}
-	// Toast tem prioridade — substitui o info da direita por 2s
+	// Toast has priority — replaces the right info for 2s
 	if m.toast != "" {
 		toastStyle := lipgloss.NewStyle().
 			Foreground(ColorTeal).
 			Background(barBg).
 			Bold(true)
-		// Se toast começa com ⚠, troca pra cor de aviso
+		// If toast starts with ⚠, switch to warning color
 		if strings.HasPrefix(m.toast, "⚠") {
 			toastStyle = toastStyle.Foreground(ColorAmber)
 		}
@@ -75,7 +75,7 @@ func renderStatusBar(m Model) string {
 	}
 	right := strings.Join(rightParts, lblStyle.Render("  "))
 
-	// degrada progressivamente: drop info → keybindings curtos → drop right inteiro
+	// degrade progressively: drop info → short keybindings → drop right entirely
 	if lipgloss.Width(left)+lipgloss.Width(right)+3 > m.Width {
 		right = strings.Join(rightParts, lblStyle.Render("  "))
 	}

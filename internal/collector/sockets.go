@@ -11,21 +11,21 @@ import (
 	"time"
 )
 
-// SocketInfo descreve um socket resolvido a partir de /proc/net/*.
-// Family: "TCP", "UDP", "UNIX". Remote: "10.0.1.5:5432" para inet,
-// "/var/run/docker.sock" para unix.
+// SocketInfo describes a socket resolved from /proc/net/*.
+// Family: "TCP", "UDP", "UNIX". Remote: "10.0.1.5:5432" for inet,
+// "/var/run/docker.sock" for unix.
 //
-// Os campos Raw* só são populados pra TCP/UDP (não UNIX) e existem
-// pra permitir seed de eBPF maps que usam o 5-tuple como chave —
-// ver NetTracer.SeedConnection. Endereços ficam em network byte
-// order (saddr[0] é o high byte) e portas em host order, batendo
-// com o layout que o tracepoint sock:inet_sock_set_state produz.
+// The Raw* fields are only populated for TCP/UDP (not UNIX) and exist to
+// allow seeding eBPF maps that use the 5-tuple as key — see
+// NetTracer.SeedConnection. Addresses are in network byte order
+// (saddr[0] is the high byte) and ports in host order, matching the
+// layout the sock:inet_sock_set_state tracepoint produces.
 type SocketInfo struct {
 	Family string
 	Remote string
-	State  string // "ESTABLISHED" | "LISTEN" | ... | "" para UNIX
+	State  string // "ESTABLISHED" | "LISTEN" | ... | "" for UNIX
 
-	SAddr    [16]byte // 4 bytes válidos pra IPv4, resto zero
+	SAddr    [16]byte // 4 valid bytes for IPv4, rest zero
 	DAddr    [16]byte
 	SPort    uint16
 	DPort    uint16
@@ -33,12 +33,12 @@ type SocketInfo struct {
 	StateNum uint32 // raw kernel state (1=ESTABLISHED, 2=SYN_SENT, ...)
 }
 
-// SocketResolver mantém um map inode→SocketInfo populado dos arquivos
-// /proc/net/*. Chamadas a Resolve com cache stale acionam refresh.
+// SocketResolver maintains an inode→SocketInfo map populated from the
+// /proc/net/* files. Calls to Resolve with a stale cache trigger a refresh.
 //
-// Não é exposto como collector — é usado dentro do FDCollector.
-// Cache TTL: 2s. Sob alta rotatividade de conexões pode aparecer
-// "(socket:[N])" no lugar de TCP IP:port nos primeiros 1-2 polls.
+// Not exposed as a collector — used inside the FDCollector. Cache TTL: 2s.
+// Under high connection churn "(socket:[N])" may show up instead of TCP
+// IP:port for the first 1-2 polls.
 type SocketResolver struct {
 	mu       sync.Mutex
 	cache    map[uint64]SocketInfo
@@ -53,8 +53,8 @@ func NewSocketResolver() *SocketResolver {
 	}
 }
 
-// Resolve devolve a SocketInfo do inode, atualizando o cache se stale.
-// Se o inode não está no map, retorna SocketInfo{} e ok=false.
+// Resolve returns the SocketInfo for the inode, refreshing the cache if stale.
+// If the inode isn't in the map, returns SocketInfo{} and ok=false.
 func (r *SocketResolver) Resolve(inode uint64) (SocketInfo, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -78,12 +78,12 @@ func (r *SocketResolver) refreshLocked() {
 
 // ─── /proc/net/{tcp,tcp6,udp,udp6} ───────────────────────────────────────────
 //
-// Formato (header + 1 conexão por linha):
+// Format (header + 1 connection per line):
 //   sl  local_address       rem_address         st  ...  inode  ...
 //   0:  0100007F:1F90       00000000:0000       0A  ...  12345  ...
 //
-// Address: hex IP em little-endian (IPv4) ou 4×u32 little-endian (IPv6),
-// seguido de `:` e porta em hex.
+// Address: hex IP in little-endian (IPv4) or 4×u32 little-endian (IPv6),
+// followed by `:` and port in hex.
 
 var tcpStates = map[string]string{
 	"01": "ESTABLISHED",
@@ -106,15 +106,15 @@ func parseInetFile(path, family string, ipv4 bool, out map[uint64]SocketInfo) {
 	}
 	lines := strings.Split(string(data), "\n")
 	for i, line := range lines {
-		if i == 0 || line == "" { // pula header
+		if i == 0 || line == "" { // skip header
 			continue
 		}
 		fields := strings.Fields(line)
-		// Mínimo: sl local rem st tx:rx tr:retr uid timeout inode
+		// Minimum: sl local rem st tx:rx tr:retr uid timeout inode
 		if len(fields) < 10 {
 			continue
 		}
-		// fields[0] = "0:" — ignorado
+		// fields[0] = "0:" — ignored
 		localAddr := fields[1]
 		remAddr := fields[2]
 		stHex := strings.ToUpper(fields[3])
@@ -122,18 +122,18 @@ func parseInetFile(path, family string, ipv4 bool, out map[uint64]SocketInfo) {
 		if err != nil {
 			continue
 		}
-		// Pula sockets sem inode (estados intermediários do kernel)
+		// Skip sockets without inode (intermediate kernel states)
 		if inode == 0 {
 			continue
 		}
 
 		state := tcpStates[stHex]
 		if family == "UDP" {
-			state = "" // UDP não tem state TCP — deixa em branco
+			state = "" // UDP has no TCP state — leave blank
 		}
 
-		// Remote priorizado; LISTEN não tem remote válido, então mostramos
-		// o local com prefixo "*:" para sinalizar bind.
+		// Remote prioritized; LISTEN has no valid remote, so we show the
+		// local with a "*:" prefix to signal bind.
 		var remote string
 		switch {
 		case stHex == "0A": // LISTEN
@@ -141,12 +141,12 @@ func parseInetFile(path, family string, ipv4 bool, out map[uint64]SocketInfo) {
 		default:
 			remote = parseInetAddr(remAddr, ipv4)
 			if remote == "0.0.0.0:0" || remote == "[::]:0" {
-				// Sem peer ainda; mostra local
+				// No peer yet; show local
 				remote = parseInetAddr(localAddr, ipv4)
 			}
 		}
 
-		// Popula campos raw (apenas inet — UNIX não tem 5-tuple).
+		// Populate raw fields (inet only — UNIX has no 5-tuple).
 		stateNum, _ := strconv.ParseUint(stHex, 16, 32)
 		af := uint16(2) // AF_INET
 		if !ipv4 {
@@ -171,14 +171,14 @@ func parseInetFile(path, family string, ipv4 bool, out map[uint64]SocketInfo) {
 	}
 }
 
-// fillRawAddr converte "0100007F:1F90" em bytes (network order) + port (host
-// order) populando os campos raw do SocketInfo.
+// fillRawAddr converts "0100007F:1F90" into bytes (network order) + port
+// (host order), populating the raw fields of SocketInfo.
 //
-// Kernel imprime cada 4-byte chunk do address como o uint32 em host order
-// (printf("%08X", *(u32 *)addr)), então o hex "0100007F" é o uint32
-// 0x0100007F que em memória little-endian está como [7F,00,00,01] —
-// que coincide com a network order do address 127.0.0.1. Por isso fazemos
-// byteswap de cada grupo de 4 bytes pra recuperar a ordem de rede.
+// Kernel prints each 4-byte chunk of the address as the uint32 in host order
+// (printf("%08X", *(u32 *)addr)), so the hex "0100007F" is the uint32
+// 0x0100007F which in little-endian memory is [7F,00,00,01] — which
+// happens to coincide with the network-order bytes of address 127.0.0.1.
+// That's why we byteswap each 4-byte group to recover network order.
 func fillRawAddr(dst *[16]byte, port *uint16, hexAddr string, ipv4 bool) {
 	colon := strings.LastIndexByte(hexAddr, ':')
 	if colon < 0 {
@@ -199,15 +199,15 @@ func fillRawAddr(dst *[16]byte, port *uint16, hexAddr string, ipv4 bool) {
 		if err != nil || len(raw) != 4 {
 			return
 		}
-		// Byteswap: hex MSB-first → memory bytes na ordem inversa do
-		// que o printf imprimiu, que dá network order.
+		// Byteswap: hex MSB-first → memory bytes in the reverse order
+		// of what printf printed, which gives network order.
 		dst[0] = raw[3]
 		dst[1] = raw[2]
 		dst[2] = raw[1]
 		dst[3] = raw[0]
 		return
 	}
-	// IPv6: 4 grupos de u32; mesmo byteswap por grupo.
+	// IPv6: 4 groups of u32; same per-group byteswap.
 	if len(addrPart) != 32 {
 		return
 	}
@@ -223,8 +223,8 @@ func fillRawAddr(dst *[16]byte, port *uint16, hexAddr string, ipv4 bool) {
 	}
 }
 
-// parseInetAddr converte "0100007F:1F90" → "127.0.0.1:8080" (ipv4)
-// ou um endereço hexa de 32 chars + ":" + porta para ipv6.
+// parseInetAddr converts "0100007F:1F90" → "127.0.0.1:8080" (ipv4)
+// or a 32-char hex address + ":" + port for ipv6.
 func parseInetAddr(s string, ipv4 bool) string {
 	colon := strings.LastIndexByte(s, ':')
 	if colon < 0 {
@@ -257,7 +257,7 @@ func parsePortStr(hexStr string) string {
 	return strconv.FormatUint(port, 10)
 }
 
-// parseIPv4Hex: 0100007F → 127.0.0.1 (kernel escreve em little-endian byte order)
+// parseIPv4Hex: 0100007F → 127.0.0.1 (kernel writes in little-endian byte order)
 func parseIPv4Hex(s string) string {
 	if len(s) != 8 {
 		return s
@@ -266,11 +266,11 @@ func parseIPv4Hex(s string) string {
 	if err != nil || len(bytes) != 4 {
 		return s
 	}
-	// inverte byte order
+	// invert byte order
 	return fmt.Sprintf("%d.%d.%d.%d", bytes[3], bytes[2], bytes[1], bytes[0])
 }
 
-// parseIPv6Hex: 4×u32 little-endian em sequência → IPv6 canônico
+// parseIPv6Hex: 4×u32 little-endian in sequence → canonical IPv6
 func parseIPv6Hex(s string) string {
 	if len(s) != 32 {
 		return s
@@ -279,7 +279,7 @@ func parseIPv6Hex(s string) string {
 	if err != nil || len(bytes) != 16 {
 		return s
 	}
-	// Reverte cada grupo de 4 bytes para big-endian
+	// Reverse each group of 4 bytes into big-endian
 	swapped := make([]byte, 16)
 	for i := 0; i < 4; i++ {
 		swapped[i*4+0] = bytes[i*4+3]
@@ -292,7 +292,7 @@ func parseIPv6Hex(s string) string {
 
 // ─── /proc/net/unix ──────────────────────────────────────────────────────────
 //
-// Formato:
+// Format:
 //   Num       RefCount Protocol Flags    Type St Inode Path
 //   00000000: 00000002 00000000 00010000 0001 01 12345 /var/run/docker.sock
 
@@ -315,7 +315,7 @@ func parseUnixFile(path string, out map[uint64]SocketInfo) {
 			continue
 		}
 		fields := strings.Fields(line)
-		// Pode ter 7 (sem path) ou 8 (com path) campos
+		// May have 7 (no path) or 8 (with path) fields
 		if len(fields) < 7 {
 			continue
 		}
@@ -342,10 +342,10 @@ func parseUnixFile(path string, out map[uint64]SocketInfo) {
 	}
 }
 
-// ─── helper exposto pro FDCollector ──────────────────────────────────────────
+// ─── helper exposed to FDCollector ───────────────────────────────────────────
 
-// extractSocketInode extrai o inode de um link "socket:[12345]".
-// Retorna 0 e false se o formato não bate.
+// extractSocketInode extracts the inode from a "socket:[12345]" link.
+// Returns 0 and false if the format doesn't match.
 func extractSocketInode(link string) (uint64, bool) {
 	const prefix = "socket:["
 	if !strings.HasPrefix(link, prefix) {

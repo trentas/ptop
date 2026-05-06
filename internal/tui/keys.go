@@ -7,16 +7,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// fdFilters define a ordem de ciclagem ao apertar '/' na FD view (modo legado
-// quando o filtro substring está vazio — `/` apertar de novo entra em input mode).
+// fdFilters defines the cycling order when pressing '/' in the FD view (legacy mode
+// when the substring filter is empty — pressing `/` again enters input mode).
 var fdFilters = []string{"all", "file", "socket", "pipe", "epoll", "timer"}
 
-// handleKey processa entrada do teclado.
+// handleKey processes keyboard input.
 //
-// Ordem de prioridade:
-//  1. Help overlay aberto: qualquer tecla fecha
-//  2. Input mode (filtro) ativo: forwarding pra inputBuf, com Enter/Esc/Backspace especiais
-//  3. Comandos globais (F1-F7, q, p, etc)
+// Priority order:
+//  1. Help overlay open: any key closes
+//  2. Input mode (filter) active: forwarding to inputBuf, with special Enter/Esc/Backspace
+//  3. Global commands (F1-F7, q, p, etc)
 func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	key := msg.String()
 
@@ -28,7 +28,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 				m.helpScroll--
 			}
 		case "down", "j":
-			m.helpScroll++ // capado pela view se passar do total
+			m.helpScroll++ // capped by the view if it goes past the total
 		case "pgup":
 			m.helpScroll -= 10
 			if m.helpScroll < 0 {
@@ -39,23 +39,23 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		case "home", "g":
 			m.helpScroll = 0
 		case "end", "G":
-			m.helpScroll = 9999 // capado pela view
+			m.helpScroll = 9999 // capped by the view
 		case "?", "esc", "q":
 			m.showHelp = false
 			m.helpScroll = 0
 		default:
-			// outras teclas: ignora (mantém help aberto pro user scrollar
-			// sem fechar acidentalmente). `?` ou esc/q pra sair.
+			// other keys: ignore (keep help open so the user can scroll
+			// without closing accidentally). `?` or esc/q to exit.
 		}
 		return m, nil
 	}
 
-	// 2. Input mode (filtro substring)
+	// 2. Input mode (substring filter)
 	if m.inputMode == InputModeFilter {
 		return m.handleFilterInput(msg, key)
 	}
 
-	// 3. Comandos globais
+	// 3. Global commands
 	switch key {
 	case "q", "ctrl+c":
 		return m, tea.Quit
@@ -88,16 +88,16 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 		return m, nil
 
 	case "esc":
-		// Esc fora de input/help limpa filtro ativo (se houver)
+		// Esc outside input/help clears the active filter (if any)
 		if m.filter != "" {
 			m.filter = ""
 		}
 		return m, nil
 
 	case "/":
-		// Em F6, se o filtro substring está vazio, primeiro `/` cicla os tipos
-		// (comportamento legado pra ergonomia rápida). Quando há filtro ativo
-		// ou em outras views, abre input mode.
+		// In F6, if the substring filter is empty, first `/` cycles types
+		// (legacy behavior for quick ergonomics). When a filter is active
+		// or in other views, opens input mode.
 		if m.ActiveTab == TabFD && m.filter == "" {
 			for i, f := range fdFilters {
 				if f == m.FDFilter {
@@ -108,7 +108,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			m.FDFilter = fdFilters[0]
 			return m, nil
 		}
-		// Entra em modo de input com o valor atual pré-preenchido
+		// Enters input mode with the current value pre-filled
 		m.inputMode = InputModeFilter
 		m.inputBuf = m.filter
 		return m, nil
@@ -141,9 +141,9 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 	return m, nil
 }
 
-// handleFilterInput processa teclas em modo de input. Enter confirma, Esc
-// cancela mantendo o filtro anterior, Backspace apaga, runas printáveis são
-// concatenadas.
+// handleFilterInput processes keys in input mode. Enter confirms, Esc
+// cancels keeping the previous filter, Backspace deletes, printable runes
+// are concatenated.
 func (m Model) handleFilterInput(msg tea.KeyMsg, key string) (Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
@@ -153,7 +153,7 @@ func (m Model) handleFilterInput(msg tea.KeyMsg, key string) (Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyEsc, tea.KeyCtrlC:
-		// Cancela: fecha input sem alterar o filtro vigente
+		// Cancel: closes input without changing the current filter
 		m.inputMode = InputModeNone
 		m.inputBuf = ""
 		return m, nil
@@ -170,8 +170,8 @@ func (m Model) handleFilterInput(msg tea.KeyMsg, key string) (Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyRunes:
-		// Concatena os runas do evento — geralmente 1 rune por keystroke,
-		// mas paste pode entregar vários de uma vez
+		// Concatenate event runes — usually 1 rune per keystroke,
+		// but paste can deliver several at once
 		m.inputBuf += string(msg.Runes)
 		return m, nil
 
@@ -180,14 +180,14 @@ func (m Model) handleFilterInput(msg tea.KeyMsg, key string) (Model, tea.Cmd) {
 		return m, nil
 	}
 
-	// Fallback: alguns terminais entregam printáveis como string única
+	// Fallback: some terminals deliver printables as a single string
 	if len(key) == 1 && unicode.IsPrint(rune(key[0])) {
 		m.inputBuf += key
 	}
 	return m, nil
 }
 
-// fmtToast wrapper de fmt.Sprintf — deixa o switch acima legível.
+// fmtToast wrapper for fmt.Sprintf — keeps the switch above readable.
 func fmtToast(format string, args ...interface{}) string {
 	return fmt.Sprintf(format, args...)
 }

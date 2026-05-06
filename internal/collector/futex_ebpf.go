@@ -11,10 +11,10 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// FutexEBPFCollector consome o map futex_stats periodicamente e publica
-// um []LockEntry ranqueado por contestação na janela atual (delta de
-// waits no último intervalo). Emite TimelineEvent category="lock"
-// quando algum uaddr passa do threshold de contestação no intervalo.
+// FutexEBPFCollector consumes the futex_stats map periodically and publishes
+// a []LockEntry ranked by contention in the current window (delta of
+// waits in the last interval). Emits TimelineEvent category="lock" when
+// some uaddr passes the contention threshold for the interval.
 type FutexEBPFCollector struct {
 	tracer *bpf.FutexTracer
 	ch     chan interface{}
@@ -24,14 +24,13 @@ type FutexEBPFCollector struct {
 	prev map[uint64]bpf.FutexStat
 }
 
-// contentionThreshold define quantos novos waits no intervalo (1s) são
-// suficientes pra gerar um TimelineEvent. Valor pequeno o bastante pra
-// detectar locks problemáticos, grande o bastante pra ignorar mutexes
-// "ok" que travam ocasionalmente.
+// contentionThreshold defines how many new waits in the interval (1s) are
+// enough to emit a TimelineEvent. Small enough to detect problematic
+// locks, large enough to ignore "ok" mutexes that occasionally block.
 const contentionThreshold = 20
 
-// topLockEntries é quantas linhas o LockGraph publica. F4 tem espaço
-// pequeno; manter compacto.
+// topLockEntries is how many rows the LockGraph publishes. F4 has a small
+// footprint; keep it compact.
 const topLockEntries = 8
 
 func NewFutexEBPFCollector() *FutexEBPFCollector {
@@ -77,8 +76,8 @@ func (c *FutexEBPFCollector) loop() {
 			case c.ch <- snap:
 			default:
 			}
-			// Eventos de timeline: um por uaddr "quente" no intervalo.
-			// Limita a 3 por tick pra não inundar.
+			// Timeline events: one per "hot" uaddr in the interval.
+			// Cap at 3 per tick to avoid flooding.
 			emitted := 0
 			for _, e := range hot {
 				if emitted >= 3 {
@@ -101,9 +100,9 @@ func (c *FutexEBPFCollector) loop() {
 	}
 }
 
-// snapshot lê futex_stats, calcula delta vs prev, devolve top-N por
-// contestação na janela e a lista "hot" (passou do threshold pra emitir
-// timeline).
+// snapshot reads futex_stats, computes delta vs prev, returns the top-N
+// by window contention and the "hot" list (those past the threshold for
+// emitting timeline events).
 func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 	if c.tracer == nil {
 		return nil, nil
@@ -140,7 +139,7 @@ func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 	}
 	c.prev = stats
 
-	// Ranking: por WaitDelta desc, com Waiters total como desempate.
+	// Ranking: by WaitDelta desc, with total Waiters as tiebreaker.
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].WaitDelta != all[j].WaitDelta {
 			return all[i].WaitDelta > all[j].WaitDelta
@@ -150,7 +149,7 @@ func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 	if len(all) > topLockEntries {
 		all = all[:topLockEntries]
 	}
-	// Hot lista também ordenada por delta desc.
+	// Hot list also sorted by delta desc.
 	sort.Slice(hot, func(i, j int) bool {
 		return hot[i].WaitDelta > hot[j].WaitDelta
 	})

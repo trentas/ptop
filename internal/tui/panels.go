@@ -12,9 +12,9 @@ import (
 
 // ─── CPU ─────────────────────────────────────────────────────────────────────
 
-// renderCPU desenha um sparkline + valor atual à direita.
-// Usa escala FIXA 0-100% — sem isso o sparkline rescalaria a cada tick e
-// causaria o efeito "tudo pulando".
+// renderCPU draws a sparkline + current value on the right.
+// Uses a FIXED 0-100% scale — without this the sparkline would rescale every
+// tick and cause the "everything jumping" effect.
 func renderCPU(history []float64, w int) string {
 	if w < 12 {
 		return MutedStyle.Render("…")
@@ -74,11 +74,11 @@ func sortedSyscalls(counts map[string]uint64) []syscallEntry {
 	return out
 }
 
-// renderSyscallBars: tabela compacta para o overview (até 8 linhas).
-// Recebe a lista de nomes em ordem ESTÁVEL (vinda de m.topSyscallNames) e
-// só renderiza esses; counts são lidos do mapa (atualizados a cada tick).
-// Quando names é nil ou vazio, cai no comportamento dinâmico (top-N por count
-// reordenado a cada chamada — útil só pra primeiro frame antes do refresh).
+// renderSyscallBars: compact table for the overview (up to 8 rows).
+// Receives the list of names in STABLE order (from m.topSyscallNames) and
+// only renders those; counts are read from the map (updated every tick).
+// When names is nil or empty, falls back to dynamic behavior (top-N by count
+// reordered each call — useful only for the first frame before the refresh).
 func renderSyscallBars(counts map[string]uint64, names []string, w, h int) string {
 	entries := stableSyscallEntries(counts, names)
 	if h > 0 && len(entries) > h {
@@ -116,8 +116,8 @@ func renderSyscallBars(counts map[string]uint64, names []string, w, h int) strin
 	return strings.Join(lines, "\n")
 }
 
-// stableSyscallEntries constrói a lista de entries respeitando `names` se
-// fornecida; senão pega top-8 por count.
+// stableSyscallEntries builds the list of entries respecting `names` if
+// provided; otherwise takes the top-8 by count.
 func stableSyscallEntries(counts map[string]uint64, names []string) []syscallEntry {
 	if len(names) > 0 {
 		out := make([]syscallEntry, 0, len(names))
@@ -133,14 +133,14 @@ func stableSyscallEntries(counts map[string]uint64, names []string) []syscallEnt
 	return all
 }
 
-// renderSyscallTable: versão completa para o F2 (todos os syscalls + percentual + total).
-// Mostra TODOS os syscalls — em F2 a reordenação por count é desejável (a tela
-// inteira é dedicada). Para reduzir oscilação, usamos um max acumulativo (o
-// pico já visto) em vez do max corrente.
+// renderSyscallTable: full version for F2 (all syscalls + percentage + total).
+// Shows ALL syscalls — in F2 reordering by count is desirable (the whole
+// screen is dedicated). To reduce oscillation, we use a cumulative max (the
+// peak ever seen) instead of the current max.
 func renderSyscallTable(counts map[string]uint64, w, h int) string {
 	all := sortedSyscalls(counts)
 	if len(all) == 0 {
-		return MutedStyle.Render("(sem dados)")
+		return MutedStyle.Render("(no data)")
 	}
 	var total uint64
 	for _, s := range all {
@@ -213,7 +213,7 @@ func threadStateGlyph(state string) (string, lipgloss.Color) {
 	}
 }
 
-// renderThreadList: lista compacta para overview.
+// renderThreadList: compact list for the overview.
 func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 	const nameW = 11
 	const cpuW = 5
@@ -257,7 +257,7 @@ func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderThreadTable: versão completa para F4 (mais larga, com STATE textual).
+// renderThreadTable: full version for F4 (wider, with textual STATE).
 func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 	const nameW = 14
 	const stateW = 10
@@ -314,9 +314,9 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 
 // ─── I/O Throughput mini (overview) ──────────────────────────────────────────
 
-// renderIOMini: read/write sparklines + stats compactos.
-// maxRead/maxWrite vêm do model com decay lento — sem isso o sparkline rescala
-// a cada tick e dá impressão de instabilidade.
+// renderIOMini: read/write sparklines + compact stats.
+// maxRead/maxWrite come from the model with slow decay — without this the
+// sparkline rescales every tick and gives an impression of instability.
 func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWrite float64, w int) string {
 	if w < 24 {
 		return MutedStyle.Render("…")
@@ -361,8 +361,8 @@ func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWri
 	return header + "\n" + bottom
 }
 
-// renderIOLargeThroughput: dual sparkline maior para a F5.
-// Usa max com decay (mesmo do mini) para manter escala estável.
+// renderIOLargeThroughput: larger dual sparkline for F5.
+// Uses decaying max (same as mini) to keep the scale stable.
 func renderIOLargeThroughput(io collector.IOStats, readH, writeH []float64, maxRead, maxWrite float64, w, h int) string {
 	if w < 30 {
 		return MutedStyle.Render("…")
@@ -563,7 +563,7 @@ func renderTimelineCompact(events []collector.TimelineEvent, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-// ─── helpers visuais ─────────────────────────────────────────────────────────
+// ─── visual helpers ──────────────────────────────────────────────────────────
 
 func colorByThreshold(value uint64, warn uint64) lipgloss.Style {
 	switch {

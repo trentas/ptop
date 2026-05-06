@@ -11,7 +11,7 @@ func NewThreadsEBPFCollector() *ThreadsEBPFCollector {
 }
 
 func (c *ThreadsEBPFCollector) Start(pid int) error {
-	return errors.New("threads eBPF não disponível neste build")
+	return errors.New("threads eBPF not available in this build")
 }
 
 func (c *ThreadsEBPFCollector) Stop() {}

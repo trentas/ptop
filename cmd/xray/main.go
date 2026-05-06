@@ -10,8 +10,8 @@ import (
 	"github.com/trentas/xray/internal/tui"
 )
 
-// Variáveis injetadas via -ldflags no build de release (goreleaser).
-// Em dev (`go build`/`go run`), ficam com "dev"/"none"/"unknown".
+// Variables injected via -ldflags in the release build (goreleaser).
+// In dev (`go build`/`go run`), they stay as "dev"/"none"/"unknown".
 var (
 	version   = "dev"
 	commit    = "none"
@@ -19,11 +19,11 @@ var (
 )
 
 func main() {
-	pid := flag.Int("pid", 0, "PID do processo a inspecionar (obrigatório)")
-	fps := flag.Int("fps", 5, "Taxa de atualização da TUI (frames por segundo)")
-	noEBPF := flag.Bool("no-ebpf", false, "Modo degradado: usa apenas /proc, sem eBPF (útil para desenvolvimento)")
-	export := flag.Bool("export", false, "Salvar snapshot JSON ao sair (equivalente à tecla 'e')")
-	showVer := flag.Bool("version", false, "Imprime versão e sai")
+	pid := flag.Int("pid", 0, "PID of the process to inspect (required)")
+	fps := flag.Int("fps", 5, "TUI refresh rate (frames per second)")
+	noEBPF := flag.Bool("no-ebpf", false, "Degraded mode: use only /proc, no eBPF (useful for development)")
+	export := flag.Bool("export", false, "Save JSON snapshot on exit (equivalent to the 'e' key)")
+	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
 	if *showVer {
@@ -32,32 +32,32 @@ func main() {
 	}
 
 	if *pid == 0 {
-		fmt.Fprintln(os.Stderr, "erro: --pid é obrigatório")
-		fmt.Fprintln(os.Stderr, "uso:  xray --pid <PID> [--fps 5] [--no-ebpf] [--export]")
-		fmt.Fprintln(os.Stderr, "      xray --version")
+		fmt.Fprintln(os.Stderr, "error: --pid is required")
+		fmt.Fprintln(os.Stderr, "usage: xray --pid <PID> [--fps 5] [--no-ebpf] [--export]")
+		fmt.Fprintln(os.Stderr, "       xray --version")
 		os.Exit(1)
 	}
 
 	if !*noEBPF {
-		// Diagnóstico de build vs runtime:
-		//   - Available = false → binário foi compilado SEM `-tags=ebpf`.
-		//     Não é erro de permissão; é build errado. Cai pra /proc.
-		//   - Available = true mas caps insuficientes → erro fatal antes
-		//     do TUI subir, com mensagem detalhada de Diagnose().
+		// Build vs runtime diagnostic:
+		//   - Available = false → binary was built WITHOUT `-tags=ebpf`.
+		//     Not a permission error; it's the wrong build. Falls back to /proc.
+		//   - Available = true but insufficient caps → fatal error before
+		//     the TUI starts, with detailed message from Diagnose().
 		if !bpf.Available {
-			fmt.Fprintln(os.Stderr, "[xray] eBPF não está embarcado neste binário")
-			fmt.Fprintln(os.Stderr, "       Rode `make build-ebpf` (Linux + libbpf-dev) pra ativar.")
-			fmt.Fprintln(os.Stderr, "       Continuando em modo /proc-only.")
+			fmt.Fprintln(os.Stderr, "[xray] eBPF is not embedded in this binary")
+			fmt.Fprintln(os.Stderr, "       Run `make build-ebpf` (Linux + libbpf-dev) to enable it.")
+			fmt.Fprintln(os.Stderr, "       Continuing in /proc-only mode.")
 			fmt.Fprintln(os.Stderr, "")
 		} else {
 			caps := bpf.GetCapStatus()
 			if diag := caps.Diagnose(); diag != "" {
-				fmt.Fprintln(os.Stderr, "erro: eBPF não disponível")
+				fmt.Fprintln(os.Stderr, "error: eBPF not available")
 				fmt.Fprintln(os.Stderr, "")
 				fmt.Fprint(os.Stderr, diag)
 				os.Exit(1)
 			}
-			fmt.Fprintln(os.Stderr, "[xray] eBPF embarcado, kernel suporta. Iniciando tracers...")
+			fmt.Fprintln(os.Stderr, "[xray] eBPF embedded, kernel supports it. Starting tracers...")
 		}
 	}
 
@@ -73,18 +73,18 @@ func main() {
 
 	finalModel, err := p.Run()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "erro fatal: %v\n", err)
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Cleanup + snapshot final no modo --export
+	// Cleanup + final snapshot in --export mode
 	if fm, ok := finalModel.(tui.Model); ok {
 		fm.Close()
 		if cfg.Export {
 			if path, err := tui.SaveSnapshot(fm); err == nil {
-				fmt.Fprintf(os.Stderr, "snapshot final salvo: %s\n", path)
+				fmt.Fprintf(os.Stderr, "final snapshot saved: %s\n", path)
 			} else {
-				fmt.Fprintf(os.Stderr, "aviso: snapshot final falhou: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: final snapshot failed: %v\n", err)
 			}
 		}
 	}

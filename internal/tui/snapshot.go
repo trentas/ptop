@@ -9,12 +9,12 @@ import (
 	"github.com/trentas/xray/internal/collector"
 )
 
-// snapshotSchemaVersion bate semver no formato JSON. Bumping requer
-// migração no consumidor; campos adicionados em backward-compat não bumpam.
+// snapshotSchemaVersion matches semver in the JSON format. Bumping requires
+// migration in the consumer; fields added in backward-compat don't bump it.
 const snapshotSchemaVersion = 1
 
-// Snapshot é o formato canônico de export — usado tanto pelo `s` (one-shot)
-// quanto pelo `e` (continuous JSONL). Apenas dados do model, não estado de UI.
+// Snapshot is the canonical export format — used both by `s` (one-shot)
+// and by `e` (continuous JSONL). Model data only, no UI state.
 type Snapshot struct {
 	Version    int          `json:"version"`
 	CapturedAt time.Time    `json:"captured_at"`
@@ -24,8 +24,8 @@ type Snapshot struct {
 	Data       SnapshotData `json:"data"`
 }
 
-// SnapshotData é toda a telemetria capturada — apenas campos com fonte real
-// ou simulada que reflete dados a serem analisados off-line.
+// SnapshotData is all the captured telemetry — only fields with a real or
+// simulated source that reflect data to be analyzed offline.
 type SnapshotData struct {
 	CPUHistory     []float64                 `json:"cpu_history"`
 	SyscallCounts  map[string]uint64         `json:"syscall_counts"`
@@ -41,7 +41,7 @@ type SnapshotData struct {
 	Timeline       []collector.TimelineEvent `json:"timeline"`
 }
 
-// buildSnapshot extrai um Snapshot a partir do estado atual do model.
+// buildSnapshot extracts a Snapshot from the current model state.
 func buildSnapshot(m Model) Snapshot {
 	return Snapshot{
 		Version:    snapshotSchemaVersion,
@@ -66,10 +66,10 @@ func buildSnapshot(m Model) Snapshot {
 	}
 }
 
-// SaveSnapshot serializa um snapshot em JSON formatado num arquivo
-// xray-snapshot-<timestamp>.json no cwd. Retorna o path criado.
+// SaveSnapshot serializes a snapshot as formatted JSON to a file
+// xray-snapshot-<timestamp>.json in the cwd. Returns the created path.
 //
-// Exposto pra o main.go usar no fluxo de --export-on-quit.
+// Exposed for main.go to use in the --export-on-quit flow.
 func SaveSnapshot(m Model) (string, error) {
 	snap := buildSnapshot(m)
 	path := fmt.Sprintf("xray-snapshot-%s.json", snap.CapturedAt.Format("20060102-150405"))
@@ -83,14 +83,14 @@ func SaveSnapshot(m Model) (string, error) {
 	return path, nil
 }
 
-// openExportFile cria/trunca xray-export-<timestamp>.jsonl pra modo contínuo.
+// openExportFile creates/truncates xray-export-<timestamp>.jsonl for continuous mode.
 func openExportFile() (*os.File, error) {
 	path := fmt.Sprintf("xray-export-%s.jsonl", time.Now().Format("20060102-150405"))
 	return os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 }
 
-// writeSnapshotLine grava uma linha JSONL (snapshot serializado + \n).
-// Usa Marshal (não Indent) pra economizar espaço — JSONL espera uma linha por entrada.
+// writeSnapshotLine writes a JSONL line (serialized snapshot + \n).
+// Uses Marshal (not Indent) to save space — JSONL expects one line per entry.
 func writeSnapshotLine(f *os.File, m Model) error {
 	if f == nil {
 		return nil

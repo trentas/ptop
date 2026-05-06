@@ -16,8 +16,8 @@ import (
 //go:embed programs/threads.bpf.o
 var threadsBPFObj []byte
 
-// ThreadState espelha 1:1 `struct thread_state` em programs/threads.bpf.c.
-// 40 bytes alinhados (5 × u64).
+// ThreadState mirrors `struct thread_state` in programs/threads.bpf.c 1:1.
+// 40 bytes aligned (5 × u64).
 type ThreadState struct {
 	LastOnCpuNs   uint64
 	LastOffCpuNs  uint64
@@ -26,9 +26,9 @@ type ThreadState struct {
 	CtxSwitches   uint64
 }
 
-// ThreadsTracer carrega threads.bpf.o, attacha sched:sched_switch e
-// expõe Stats() pra ler tid_state + UpdateTrackedTIDs() pra atualizar
-// o set de TIDs que o programa BPF deve rastrear.
+// ThreadsTracer loads threads.bpf.o, attaches sched:sched_switch, and
+// exposes Stats() to read tid_state + UpdateTrackedTIDs() to update the
+// set of TIDs the BPF program should track.
 type ThreadsTracer struct {
 	coll        *ebpf.Collection
 	link        link.Link
@@ -38,7 +38,7 @@ type ThreadsTracer struct {
 
 func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 	if pid <= 0 {
-		return nil, errors.New("pid inválido")
+		return nil, errors.New("invalid pid")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -57,7 +57,7 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 	targetMap := coll.Maps["threads_target_pid"]
 	if targetMap == nil {
 		t.Close()
-		return nil, errors.New("threads_target_pid map ausente")
+		return nil, errors.New("threads_target_pid map missing")
 	}
 	var key uint32 = 0
 	val := uint32(pid)
@@ -70,13 +70,13 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 	t.trackedMap = coll.Maps["tracked_tids"]
 	if t.stateMap == nil || t.trackedMap == nil {
 		t.Close()
-		return nil, errors.New("tid_state / tracked_tids map ausente")
+		return nil, errors.New("tid_state / tracked_tids map missing")
 	}
 
 	prog := coll.Programs["handle_sched_switch"]
 	if prog == nil {
 		t.Close()
-		return nil, errors.New("program handle_sched_switch ausente")
+		return nil, errors.New("handle_sched_switch program missing")
 	}
 	l, err := link.Tracepoint("sched", "sched_switch", prog, nil)
 	if err != nil {
@@ -88,13 +88,13 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 	return t, nil
 }
 
-// UpdateTrackedTIDs sincroniza o map tracked_tids com o slice fornecido.
-// Adiciona TIDs novos e remove os que sumiram. Chamado periodicamente
-// pelo collector (Go side) — ele já anda /proc/<pid>/task/ pra coletar
+// UpdateTrackedTIDs syncs the tracked_tids map with the supplied slice.
+// Adds new TIDs and removes ones that disappeared. Called periodically by
+// the collector (Go side) — it already walks /proc/<pid>/task/ to collect
 // state/wchan.
 func (t *ThreadsTracer) UpdateTrackedTIDs(tids []int) error {
 	if t == nil || t.trackedMap == nil {
-		return errors.New("tracer não inicializado")
+		return errors.New("tracer not initialized")
 	}
 	desired := make(map[uint32]struct{}, len(tids))
 	for _, tid := range tids {
@@ -103,7 +103,7 @@ func (t *ThreadsTracer) UpdateTrackedTIDs(tids []int) error {
 		}
 	}
 
-	// Lista existentes
+	// List existing
 	existing := make(map[uint32]struct{}, len(desired))
 	var k uint32
 	var v uint8
@@ -112,7 +112,7 @@ func (t *ThreadsTracer) UpdateTrackedTIDs(tids []int) error {
 		existing[k] = struct{}{}
 	}
 
-	// Adiciona ausentes
+	// Add missing
 	for tid := range desired {
 		if _, ok := existing[tid]; !ok {
 			one := uint8(1)
@@ -121,21 +121,21 @@ func (t *ThreadsTracer) UpdateTrackedTIDs(tids []int) error {
 			}
 		}
 	}
-	// Remove órfãos
+	// Remove orphans
 	for tid := range existing {
 		if _, ok := desired[tid]; !ok {
 			_ = t.trackedMap.Delete(&tid)
-			// Também limpa estado pra que TIDs reciclados não herdem contadores.
+			// Also clear state so recycled TIDs don't inherit counters.
 			_ = t.stateMap.Delete(&tid)
 		}
 	}
 	return nil
 }
 
-// Stats devolve um snapshot completo do map tid_state.
+// Stats returns a complete snapshot of the tid_state map.
 func (t *ThreadsTracer) Stats() (map[uint32]ThreadState, error) {
 	if t == nil || t.stateMap == nil {
-		return nil, errors.New("tracer não inicializado")
+		return nil, errors.New("tracer not initialized")
 	}
 	out := make(map[uint32]ThreadState, 64)
 	var k uint32

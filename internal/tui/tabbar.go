@@ -6,10 +6,10 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// renderTabBar desenha a linha de abas F1-F7 com a aba ativa destacada em ciano.
-// Crítico: nunca pode estourar m.Width (caso contrário o terminal wrappa e
-// destrói a layout abaixo). Em larguras apertadas a hint da direita some,
-// e em larguras muito apertadas usamos labels curtos (F1, F2…).
+// renderTabBar draws the F1-F7 tab line with the active tab highlighted in cyan.
+// Critical: must never overflow m.Width (otherwise the terminal wraps and
+// destroys the layout below). At tight widths the right hint disappears,
+// and at very tight widths we use short labels (F1, F2…).
 func renderTabBar(m Model) string {
 	tabBg := lipgloss.Color("#0d1017")
 
@@ -19,8 +19,8 @@ func renderTabBar(m Model) string {
 		Padding(0, 2).
 		Render("q quit · / filter · p pause")
 
-	// tenta a versão completa; se não couber, derrubamos a hint;
-	// se ainda assim não couber, abreviamos os labels.
+	// try the full version; if it doesn't fit, drop the hint;
+	// if it still doesn't fit, abbreviate the labels.
 	tabs := buildTabs(m, tabNames)
 	if lipgloss.Width(tabs)+lipgloss.Width(hint) > m.Width {
 		hint = ""
@@ -32,7 +32,7 @@ func renderTabBar(m Model) string {
 
 	gap := m.Width - lipgloss.Width(tabs) - lipgloss.Width(hint)
 	if gap < 0 {
-		// último recurso: trunca os tabs (não deveria acontecer com short labels)
+		// last resort: truncate the tabs (shouldn't happen with short labels)
 		return truncate(tabs, m.Width)
 	}
 	pad := lipgloss.NewStyle().Background(tabBg).Render(strings.Repeat(" ", gap))

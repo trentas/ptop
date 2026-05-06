@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Capability bits do uapi/linux/capability.h relevantes pro xray.
+// Capability bits from uapi/linux/capability.h relevant to xray.
 const (
 	capBPF       = 39
 	capPerfmon   = 38
@@ -18,8 +18,8 @@ const (
 	capSysPtrace = 19
 )
 
-// CapStatus descreve quais privilégios o processo atual tem em runtime,
-// mais info de kernel/sysctl que afetam disponibilidade de eBPF.
+// CapStatus describes which privileges the current process has at runtime,
+// plus kernel/sysctl info that affects eBPF availability.
 type CapStatus struct {
 	IsRoot       bool
 	HasBPF       bool
@@ -27,19 +27,19 @@ type CapStatus struct {
 	HasSysAdmin  bool
 	HasSysPtrace bool
 
-	// KernelMajor e KernelMinor são parseados de uname.release.
-	// Vazios (=0) se a leitura falhou.
+	// KernelMajor and KernelMinor are parsed from uname.release.
+	// Zero (=0) if the read failed.
 	KernelMajor int
 	KernelMinor int
 
-	// UnprivBPFDisabled é o valor de /proc/sys/kernel/unprivileged_bpf_disabled.
-	// 0 = unprivileged eBPF permitido; 1/2 = bloqueado (default em distros modernas).
-	// -1 = sysctl não pôde ser lido.
+	// UnprivBPFDisabled is the value of /proc/sys/kernel/unprivileged_bpf_disabled.
+	// 0 = unprivileged eBPF allowed; 1/2 = blocked (default on modern distros).
+	// -1 = sysctl could not be read.
 	UnprivBPFDisabled int
 }
 
-// GetCapStatus retorna o snapshot de privilégios do processo. Não falha:
-// campos não-determináveis ficam zerados.
+// GetCapStatus returns a snapshot of the process's privileges. It never fails:
+// fields that can't be determined are left zero.
 func GetCapStatus() CapStatus {
 	s := CapStatus{
 		IsRoot:            os.Geteuid() == 0,
@@ -58,18 +58,18 @@ func GetCapStatus() CapStatus {
 	return s
 }
 
-// CanLoadBPF é true se o processo tem privilégios suficientes pra carregar
-// programas eBPF (root OU CAP_BPF + CAP_PERFMON). Não considera kernel
-// version — só capabilities.
+// CanLoadBPF is true if the process has enough privileges to load eBPF
+// programs (root OR CAP_BPF + CAP_PERFMON). Doesn't consider kernel
+// version — only capabilities.
 func (s CapStatus) CanLoadBPF() bool {
 	return s.IsRoot || (s.HasBPF && s.HasPerfmon)
 }
 
-// KernelSupportsBPF é true se kernel >= 5.8 (BTF + ring buffer + CAP_BPF).
-// Versões anteriores funcionam parcialmente mas o xray assume 5.8+.
+// KernelSupportsBPF is true if kernel >= 5.8 (BTF + ring buffer + CAP_BPF).
+// Earlier versions partially work but xray assumes 5.8+.
 func (s CapStatus) KernelSupportsBPF() bool {
 	if s.KernelMajor == 0 {
-		return true // não sabemos; deixa o load falhar com erro mais específico
+		return true // unknown; let the load fail with a more specific error
 	}
 	if s.KernelMajor > 5 {
 		return true
@@ -77,25 +77,25 @@ func (s CapStatus) KernelSupportsBPF() bool {
 	return s.KernelMajor == 5 && s.KernelMinor >= 8
 }
 
-// Diagnose retorna uma mensagem multi-linha explicando o estado do processo
-// e como obter privilégios eBPF (ou cair pra --no-ebpf). Vazio se está OK.
+// Diagnose returns a multi-line message explaining the process state and
+// how to obtain eBPF privileges (or fall back to --no-ebpf). Empty if OK.
 func (s CapStatus) Diagnose() string {
 	if s.CanLoadBPF() && s.KernelSupportsBPF() {
 		return ""
 	}
 	var b strings.Builder
 
-	// Kernel issue tem prioridade — não adianta sugerir caps se kernel é antigo
+	// Kernel issue takes priority — no point suggesting caps if kernel is old.
 	if !s.KernelSupportsBPF() {
-		fmt.Fprintf(&b, "Kernel %d.%d detectado — xray requer Linux 5.8+ (BTF + CAP_BPF).\n",
+		fmt.Fprintf(&b, "Kernel %d.%d detected — xray requires Linux 5.8+ (BTF + CAP_BPF).\n",
 			s.KernelMajor, s.KernelMinor)
-		fmt.Fprintln(&b, "Em kernels antigos, use --no-ebpf (modo /proc-only).")
+		fmt.Fprintln(&b, "On older kernels, use --no-ebpf (/proc-only mode).")
 		return b.String()
 	}
 
-	fmt.Fprintln(&b, "eBPF não disponível com privilégios atuais.")
+	fmt.Fprintln(&b, "eBPF not available with current privileges.")
 
-	// Quais caps estão faltando?
+	// Which caps are missing?
 	missing := []string{}
 	if !s.HasBPF {
 		missing = append(missing, "CAP_BPF")
@@ -104,30 +104,30 @@ func (s CapStatus) Diagnose() string {
 		missing = append(missing, "CAP_PERFMON")
 	}
 	if len(missing) > 0 && !s.IsRoot {
-		fmt.Fprintf(&b, "Faltando: %s\n", strings.Join(missing, ", "))
+		fmt.Fprintf(&b, "Missing: %s\n", strings.Join(missing, ", "))
 	}
 
 	if s.UnprivBPFDisabled > 0 && !s.IsRoot {
 		fmt.Fprintln(&b, "")
-		fmt.Fprintf(&b, "Aviso: kernel.unprivileged_bpf_disabled=%d — eBPF unprivileged bloqueado.\n",
+		fmt.Fprintf(&b, "Warning: kernel.unprivileged_bpf_disabled=%d — unprivileged eBPF blocked.\n",
 			s.UnprivBPFDisabled)
-		fmt.Fprintln(&b, "Pra reverter (temporariamente): sudo sysctl kernel.unprivileged_bpf_disabled=0")
+		fmt.Fprintln(&b, "To revert (temporarily): sudo sysctl kernel.unprivileged_bpf_disabled=0")
 	}
 
 	fmt.Fprintln(&b, "")
-	fmt.Fprintln(&b, "Opções:")
-	fmt.Fprintln(&b, "  1) Execute com sudo:")
+	fmt.Fprintln(&b, "Options:")
+	fmt.Fprintln(&b, "  1) Run with sudo:")
 	fmt.Fprintln(&b, "       sudo ./bin/xray --pid <PID>")
-	fmt.Fprintln(&b, "  2) Aplique caps no binário (uma vez):")
+	fmt.Fprintln(&b, "  2) Apply caps to the binary (one-time):")
 	fmt.Fprintln(&b, "       sudo setcap cap_bpf,cap_perfmon+ep ./bin/xray")
-	fmt.Fprintln(&b, "  3) Modo /proc-only (sem eBPF, sem privilégios):")
+	fmt.Fprintln(&b, "  3) /proc-only mode (no eBPF, no privileges):")
 	fmt.Fprintln(&b, "       ./bin/xray --pid <PID> --no-ebpf")
 
 	return b.String()
 }
 
-// hasCapability lê /proc/self/status (campo CapEff) e testa o bit do cap.
-// Retorna false em qualquer erro.
+// hasCapability reads /proc/self/status (CapEff field) and tests the cap bit.
+// Returns false on any error.
 func hasCapability(capBit int) bool {
 	f, err := os.Open("/proc/self/status")
 	if err != nil {
@@ -150,14 +150,14 @@ func hasCapability(capBit int) bool {
 	return false
 }
 
-// readKernelVersion parseia "X.Y" do começo de /proc/sys/kernel/osrelease.
+// readKernelVersion parses "X.Y" from the start of /proc/sys/kernel/osrelease.
 func readKernelVersion() (major, minor int) {
 	data, err := os.ReadFile("/proc/sys/kernel/osrelease")
 	if err != nil {
 		return 0, 0
 	}
 	s := strings.TrimSpace(string(data))
-	// Formato: "5.15.0-91-generic" → major=5, minor=15
+	// Format: "5.15.0-91-generic" → major=5, minor=15
 	parts := strings.SplitN(s, ".", 3)
 	if len(parts) < 2 {
 		return 0, 0

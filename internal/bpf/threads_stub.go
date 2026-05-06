@@ -4,7 +4,7 @@ package bpf
 
 import "errors"
 
-var errThreadsStub = errors.New("eBPF threads tracer não disponível neste build")
+var errThreadsStub = errors.New("eBPF threads tracer not available in this build")
 
 type ThreadState struct {
 	LastOnCpuNs   uint64

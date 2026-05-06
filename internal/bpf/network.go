@@ -17,9 +17,9 @@ import (
 //go:embed programs/network.bpf.o
 var networkBPFObj []byte
 
-// NetConnKey espelha 1:1 a `struct net_key` em programs/network.bpf.c.
-// 40 bytes, sem padding além do trailing _pad. cilium/ebpf pode iterar
-// HASH map devolvendo essa struct direto se o tamanho bate.
+// NetConnKey mirrors `struct net_key` in programs/network.bpf.c 1:1.
+// 40 bytes, no padding besides the trailing _pad. cilium/ebpf can iterate
+// a HASH map returning this struct directly when sizes match.
 type NetConnKey struct {
 	DAddr  [16]byte
 	SAddr  [16]byte
@@ -29,7 +29,7 @@ type NetConnKey struct {
 	_      uint16 // pad
 }
 
-// NetConnVal espelha `struct net_val`. 64 bytes.
+// NetConnVal mirrors `struct net_val`. 64 bytes.
 type NetConnVal struct {
 	FirstSeenNs   uint64
 	LastSeenNs    uint64
@@ -42,8 +42,8 @@ type NetConnVal struct {
 	_             uint32 // pad
 }
 
-// NetSnapshot é o formato user-friendly devolvido por Stats() — 5-tuple
-// já decodificada em net.IP + ports em host order, RTT calculado.
+// NetSnapshot is the user-friendly format returned by Stats() — the 5-tuple
+// already decoded into net.IP + ports in host order, with RTT computed.
 type NetSnapshot struct {
 	Family  uint16 // 2=IPv4, 10=IPv6
 	SAddr   net.IP
@@ -57,9 +57,9 @@ type NetSnapshot struct {
 	LastNs  uint64
 }
 
-// NetTracer carrega network.bpf.o, attacha o tracepoint
-// sock:inet_sock_set_state + kprobes em tcp_sendmsg/tcp_cleanup_rbuf,
-// e expõe Stats() pra ler o map.
+// NetTracer loads network.bpf.o, attaches the sock:inet_sock_set_state
+// tracepoint + kprobes on tcp_sendmsg/tcp_cleanup_rbuf, and exposes Stats()
+// to read the map.
 type NetTracer struct {
 	coll  *ebpf.Collection
 	links []link.Link
@@ -68,7 +68,7 @@ type NetTracer struct {
 
 func OpenNetTracer(pid int) (*NetTracer, error) {
 	if pid <= 0 {
-		return nil, errors.New("pid inválido")
+		return nil, errors.New("invalid pid")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -87,7 +87,7 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 	targetMap := coll.Maps["net_target_pid"]
 	if targetMap == nil {
 		t.Close()
-		return nil, errors.New("net_target_pid map ausente")
+		return nil, errors.New("net_target_pid map missing")
 	}
 	var key uint32 = 0
 	val := uint32(pid)
@@ -99,13 +99,13 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 	t.cmap = coll.Maps["net_conn_map"]
 	if t.cmap == nil {
 		t.Close()
-		return nil, errors.New("net_conn_map ausente")
+		return nil, errors.New("net_conn_map missing")
 	}
 
 	tpProg := coll.Programs["handle_inet_set_state"]
 	if tpProg == nil {
 		t.Close()
-		return nil, errors.New("program handle_inet_set_state ausente")
+		return nil, errors.New("handle_inet_set_state program missing")
 	}
 	tpLink, err := link.Tracepoint("sock", "inet_sock_set_state", tpProg, nil)
 	if err != nil {
@@ -114,10 +114,10 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 	}
 	t.links = append(t.links, tpLink)
 
-	// kprobes pra bytes Tx/Rx. Se kprobe falha (kernel sem CONFIG_KPROBES,
-	// símbolo renomeado, etc.), tracer continua funcionando — só perde bytes.
-	// Logamos via warning seria ideal, mas pra simplificar deixamos silencioso:
-	// state/RTT continuam disponíveis. Erros de fato fatais são raros.
+	// kprobes for Tx/Rx bytes. If a kprobe fails (kernel without
+	// CONFIG_KPROBES, symbol renamed, etc.), the tracer keeps working — only
+	// loses byte counts. Logging a warning would be nicer, but for simplicity
+	// we stay silent: state/RTT remain available. Truly fatal errors are rare.
 	kprobes := []struct{ sym, prog string }{
 		{"tcp_sendmsg", "handle_tcp_sendmsg"},
 		{"tcp_cleanup_rbuf", "handle_tcp_cleanup_rbuf"},
@@ -126,7 +126,7 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 		p := coll.Programs[kp.prog]
 		if p == nil {
 			t.Close()
-			return nil, fmt.Errorf("program %s ausente", kp.prog)
+			return nil, fmt.Errorf("program %s missing", kp.prog)
 		}
 		l, err := link.Kprobe(kp.sym, p, nil)
 		if err != nil {
@@ -139,36 +139,35 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 	return t, nil
 }
 
-// SeedConnection insere uma entry em net_conn_map para uma 5-tupla que
-// não foi capturada pelo tracepoint (ex: conexões TCP já estabelecidas
-// quando xray attachou). Usa BPF_NOEXIST: se já existe uma entry (porque
-// o tracepoint disparou em algum momento), preserva o que está lá —
-// dados do tracepoint têm RTT real, bytes acumulados, etc.
+// SeedConnection inserts an entry into net_conn_map for a 5-tuple that was
+// not captured by the tracepoint (e.g. TCP connections already established
+// when xray attached). Uses BPF_NOEXIST: if an entry already exists (because
+// the tracepoint fired at some point), it preserves what's there — data
+// from the tracepoint has real RTT, accumulated bytes, etc.
 //
-// State é o numérico do kernel (1=ESTABLISHED, 2=SYN_SENT, ..., 11=CLOSING).
-// last_seen_ns fica zerado pra que conexões "frescas" do tracepoint
-// fiquem ranqueadas acima.
+// State is the kernel numeric value (1=ESTABLISHED, 2=SYN_SENT, ..., 11=CLOSING).
+// last_seen_ns is left zero so "fresh" connections from the tracepoint rank above.
 func (t *NetTracer) SeedConnection(key NetConnKey, state uint32) error {
 	if t == nil || t.cmap == nil {
-		return errors.New("tracer não inicializado")
+		return errors.New("tracer not initialized")
 	}
 	val := NetConnVal{
 		State: state,
 	}
 	err := t.cmap.Update(&key, &val, ebpf.UpdateNoExist)
 	if err != nil && errors.Is(err, ebpf.ErrKeyExist) {
-		// Já existe (vindo do tracepoint) — mantém o que está, não é erro.
+		// Already exists (from the tracepoint) — keep what's there, not an error.
 		return nil
 	}
 	return err
 }
 
-// Stats itera o map net_conn_map e devolve um snapshot. Iter é seguro
-// concorrente com escritas do programa BPF — pode pular ou repetir
-// entries marginais (aceitável pra UI).
+// Stats iterates net_conn_map and returns a snapshot. Iter is safe to run
+// concurrently with BPF program writes — it may skip or repeat marginal
+// entries (acceptable for the UI).
 func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 	if t == nil || t.cmap == nil {
-		return nil, errors.New("tracer não inicializado")
+		return nil, errors.New("tracer not initialized")
 	}
 	out := make([]NetSnapshot, 0, 32)
 	var k NetConnKey
@@ -194,8 +193,8 @@ func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 	return out, nil
 }
 
-// ipFromKey converte os bytes do addr (já em network order) pra net.IP.
-// Pra IPv4 os bytes 0..3 contêm o address; pra IPv6 todos os 16.
+// ipFromKey converts the addr bytes (already in network order) to net.IP.
+// For IPv4 the bytes 0..3 contain the address; for IPv6 all 16.
 func ipFromKey(b [16]byte, family uint16) net.IP {
 	if family == 2 { // AF_INET
 		return net.IPv4(b[0], b[1], b[2], b[3]).To4()

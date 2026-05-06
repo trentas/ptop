@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// TestDiagnose_emptyWhenOK: quando processo é root + kernel suportado, Diagnose vazio.
+// TestDiagnose_emptyWhenOK: when process is root + kernel supported, Diagnose is empty.
 func TestDiagnose_emptyWhenOK(t *testing.T) {
 	s := CapStatus{
 		IsRoot:      true,
@@ -15,7 +15,7 @@ func TestDiagnose_emptyWhenOK(t *testing.T) {
 		KernelMinor: 0,
 	}
 	if got := s.Diagnose(); got != "" {
-		t.Errorf("esperava vazio, got %q", got)
+		t.Errorf("expected empty, got %q", got)
 	}
 }
 
@@ -27,13 +27,13 @@ func TestDiagnose_kernelTooOld(t *testing.T) {
 	}
 	out := s.Diagnose()
 	if !strings.Contains(out, "5.4") {
-		t.Errorf("mensagem deveria citar versão do kernel: %q", out)
+		t.Errorf("message should mention kernel version: %q", out)
 	}
 	if !strings.Contains(out, "5.8") {
-		t.Errorf("mensagem deveria citar mínimo 5.8: %q", out)
+		t.Errorf("message should mention 5.8 minimum: %q", out)
 	}
 	if !strings.Contains(out, "--no-ebpf") {
-		t.Errorf("mensagem deveria sugerir --no-ebpf: %q", out)
+		t.Errorf("message should suggest --no-ebpf: %q", out)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestDiagnose_missingCaps(t *testing.T) {
 	out := s.Diagnose()
 	for _, want := range []string{"CAP_BPF", "CAP_PERFMON", "sudo", "setcap", "--no-ebpf"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("mensagem não contém %q: %s", want, out)
+			t.Errorf("message does not contain %q: %s", want, out)
 		}
 	}
 }
@@ -63,10 +63,10 @@ func TestDiagnose_unprivilegedDisabled(t *testing.T) {
 	}
 	out := s.Diagnose()
 	if !strings.Contains(out, "unprivileged_bpf_disabled") {
-		t.Errorf("mensagem deveria explicar unprivileged_bpf_disabled: %s", out)
+		t.Errorf("message should explain unprivileged_bpf_disabled: %s", out)
 	}
 	if !strings.Contains(out, "sysctl") {
-		t.Errorf("mensagem deveria sugerir sysctl: %s", out)
+		t.Errorf("message should suggest sysctl: %s", out)
 	}
 }
 
@@ -75,7 +75,7 @@ func TestKernelSupportsBPF(t *testing.T) {
 		major, minor int
 		want         bool
 	}{
-		{0, 0, true}, // desconhecido — assume ok, deixa load falhar
+		{0, 0, true}, // unknown — assume ok, let the load fail
 		{4, 19, false},
 		{5, 4, false},
 		{5, 8, true},
@@ -86,7 +86,7 @@ func TestKernelSupportsBPF(t *testing.T) {
 	for _, c := range cases {
 		s := CapStatus{KernelMajor: c.major, KernelMinor: c.minor}
 		if got := s.KernelSupportsBPF(); got != c.want {
-			t.Errorf("kernel %d.%d: got %v, esperado %v", c.major, c.minor, got, c.want)
+			t.Errorf("kernel %d.%d: got %v, expected %v", c.major, c.minor, got, c.want)
 		}
 	}
 }
@@ -104,7 +104,7 @@ func TestCanLoadBPF(t *testing.T) {
 	}
 	for _, c := range cases {
 		if got := c.s.CanLoadBPF(); got != c.want {
-			t.Errorf("status %+v: got %v, esperado %v", c.s, got, c.want)
+			t.Errorf("status %+v: got %v, expected %v", c.s, got, c.want)
 		}
 	}
 }

@@ -4,7 +4,7 @@ package bpf
 
 import "errors"
 
-var errCPUStub = errors.New("eBPF cpu sampler não disponível neste build (precisa Linux + -tags=ebpf)")
+var errCPUStub = errors.New("eBPF cpu sampler not available in this build (requires Linux + -tags=ebpf)")
 
 type CPUTracer struct{}
 

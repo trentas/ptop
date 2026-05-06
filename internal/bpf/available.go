@@ -2,7 +2,7 @@
 
 package bpf
 
-// Available é true quando o binário foi compilado com `-tags=ebpf` em Linux.
-// Em qualquer outro build (default ou OS não-Linux) é false. main.go usa
-// pra distinguir "eBPF tentou e falhou" de "binário sem eBPF".
+// Available is true when the binary was compiled with `-tags=ebpf` on Linux.
+// In any other build (default or non-Linux OS) it's false. main.go uses it
+// to distinguish "eBPF tried and failed" from "binary built without eBPF".
 const Available = true

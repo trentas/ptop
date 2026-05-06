@@ -46,45 +46,45 @@ type ThreadInfo struct {
 	Name    string
 	State   string  // "running" | "blocked" | "sleeping"
 	CPUPct  float64
-	Waiting string  // nome do lock/syscall bloqueante, vazio se nenhum
-	// CtxSwitches: total de context switches da thread no janela atual
-	// (intervalo entre publishes do collector). Só populado quando o eBPF
-	// threads collector está ativo; via /proc fica zero.
+	Waiting string  // name of the blocking lock/syscall, empty if none
+	// CtxSwitches: total context switches for the thread within the current
+	// window (interval between collector publishes). Only populated when the
+	// eBPF threads collector is active; via /proc this stays zero.
 	CtxSwitches uint64
 }
 
 // ─── Locks (futex) ───────────────────────────────────────────────────────────
 
-// LockEntry descreve um futex contestado: cumulativo de WAITs e WAKEs
-// observados no uaddr (endereço virtual da palavra futex), além de
-// latência média da chamada e quem foi o último a esperar/acordar.
+// LockEntry describes a contended futex: cumulative WAITs and WAKEs observed
+// on the uaddr (virtual address of the futex word), plus average call
+// latency and the last waiter/waker.
 //
-// UAddr é o ponteiro virtual no espaço do processo — não dá pra
-// resolver pra "mutex-A" sem unwind/symbols. Mostramos hex.
+// UAddr is the virtual pointer in the process address space — without
+// unwind/symbols we can't resolve it to "mutex-A". We display it in hex.
 type LockEntry struct {
 	UAddr       uint64
-	Waiters     uint64  // cumulativo wait_count
-	Wakers      uint64  // cumulativo wake_count
-	WaitDelta   uint64  // novos waits na janela atual
-	LatencyMs   float64 // latência média por call (waits + wakes)
+	Waiters     uint64  // cumulative wait_count
+	Wakers      uint64  // cumulative wake_count
+	WaitDelta   uint64  // new waits in the current window
+	LatencyMs   float64 // average latency per call (waits + wakes)
 	LastWaitTID int
 	LastWakeTID int
 }
 
 // ─── I/O ─────────────────────────────────────────────────────────────────────
 
-// IOWaitSample é a fração do wallclock que o processo passou bloqueado em
-// block I/O síncrono no último intervalo. Calculado pelo collector que lê
-// /proc/<pid>/stat campo 42 (delayacct_blkio_ticks).
+// IOWaitSample is the fraction of wallclock the process spent blocked on
+// synchronous block I/O during the last interval. Computed by the collector
+// reading /proc/<pid>/stat field 42 (delayacct_blkio_ticks).
 type IOWaitSample struct {
 	Pct       float64
 	Timestamp time.Time
 }
 
-// IOThroughputSample é o snapshot do throughput de I/O do processo no último
-// intervalo. ReadBytesPerS/WriteBytesPerS são taxas instantâneas; ReadOps/
-// WriteOps são CUMULATIVOS desde o início do processo (mesma semântica de
-// /proc/<pid>/io). Calculado pelo collector que lê /proc/<pid>/io.
+// IOThroughputSample is the snapshot of process I/O throughput in the last
+// interval. ReadBytesPerS/WriteBytesPerS are instantaneous rates; ReadOps/
+// WriteOps are CUMULATIVE since the process started (same semantics as
+// /proc/<pid>/io). Computed by the collector reading /proc/<pid>/io.
 type IOThroughputSample struct {
 	ReadBytesPerS  float64
 	WriteBytesPerS float64
@@ -131,9 +131,9 @@ type LatencyBucket struct {
 
 // ─── File Descriptors ────────────────────────────────────────────────────────
 
-// FDEvent é um evento granular do stream de FDs (openat/close/dup2/...).
-// Diferente do snapshot []FDEntry que é o estado atual completo, FDEvent
-// é uma notificação de mudança — usado pra alimentar a F6 ▸ FD Events.
+// FDEvent is a granular event from the FD stream (openat/close/dup2/...).
+// Unlike the []FDEntry snapshot which is the full current state, FDEvent
+// is a change notification — used to feed the F6 ▸ FD Events panel.
 type FDEvent struct {
 	Timestamp time.Time
 	Message   string
@@ -142,11 +142,11 @@ type FDEvent struct {
 type FDEntry struct {
 	FD     int
 	Type   string // "file" | "socket" | "pipe" | "epoll" | "timer" | "event"
-	Desc   string // path completo ou endereço remoto
+	Desc   string // full path or remote address
 	Flags  string // "O_RDONLY" | "O_WRONLY" | "O_RDWR"
 	Bytes  uint64
 	AgeMs  int64
-	Active bool   // teve atividade no último ciclo
+	Active bool   // had activity in the last cycle
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────
@@ -159,9 +159,9 @@ type TimelineEvent struct {
 
 // ─── Collector interface ─────────────────────────────────────────────────────
 
-// Collector é implementado por cada subsistema de coleta.
-// Subscribe retorna um canal de mensagens tipadas (CpuSample, SyscallEvent, etc).
-// O model Bubbletea faz select em todos os canais via tea.Cmd.
+// Collector is implemented by each collection subsystem.
+// Subscribe returns a channel of typed messages (CpuSample, SyscallEvent, etc).
+// The Bubbletea model selects on all channels via tea.Cmd.
 type Collector interface {
 	Start(pid int) error
 	Stop()

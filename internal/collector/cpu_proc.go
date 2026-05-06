@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-// CPUCollector lê /proc/<pid>/stat polling a cada 500ms para calcular % de uso
-// de CPU do processo via delta de (utime+stime) entre amostras.
+// CPUCollector reads /proc/<pid>/stat polling every 500ms to compute the
+// process CPU usage % via delta of (utime+stime) between samples.
 //
-// Funciona sem root, sem eBPF. Em macOS/Windows o Start falha silenciosamente
-// porque /proc não existe — o model continua usando dados simulados.
+// Works without root, without eBPF. On macOS/Windows Start fails silently
+// because /proc doesn't exist — the model keeps using simulated data.
 type CPUCollector struct {
 	pid  int
 	ch   chan interface{}
@@ -35,7 +35,7 @@ func NewCPUCollector() *CPUCollector {
 func (c *CPUCollector) Start(pid int) error {
 	c.pid = pid
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/stat", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -62,14 +62,14 @@ func (c *CPUCollector) loop() {
 	}
 }
 
-// clkTck é a frequência do relógio do kernel (CONFIG_HZ), em ticks/segundo.
-// Varia por arquitetura/distro:
-//   - x86/x86_64: tipicamente 100 (Ubuntu) ou 250 (RHEL family)
-//   - ARM/ARM64:  tipicamente 250 (Ubuntu/Debian) ou 1000 (Fedora ARM)
+// clkTck is the kernel clock frequency (CONFIG_HZ), in ticks/second.
+// Varies by architecture/distro:
+//   - x86/x86_64: typically 100 (Ubuntu) or 250 (RHEL family)
+//   - ARM/ARM64:  typically 250 (Ubuntu/Debian) or 1000 (Fedora ARM)
 //
-// Detecção via `getconf CLK_TCK` (POSIX, disponível em Linux e Darwin) —
-// uma única invocação no startup, custo desprezível. Antes era hardcoded em
-// 100, o que dava CPU% 2.5x errado em ARM (issue #18 follow-up).
+// Detected via `getconf CLK_TCK` (POSIX, available on Linux and Darwin) —
+// a single invocation at startup, negligible cost. Previously hardcoded to
+// 100, which made CPU% 2.5x wrong on ARM (issue #18 follow-up).
 var clkTck float64 = detectClkTck()
 
 func detectClkTck() float64 {
@@ -79,7 +79,7 @@ func detectClkTck() float64 {
 			return v
 		}
 	}
-	return 100 // fallback razoável
+	return 100 // reasonable fallback
 }
 
 func (c *CPUCollector) sample() (CpuSample, error) {
@@ -103,8 +103,8 @@ func (c *CPUCollector) sample() (CpuSample, error) {
 		elapsed := now.Sub(c.lastSampleAt).Seconds()
 		if elapsed > 0 {
 			deltaTicks := float64(totalTicks - c.lastTicks)
-			// % single-core: deltaTicks/clkTck = segundos de CPU usados
-			// dividido por elapsed = fração do tempo. ×100 = %.
+			// single-core %: deltaTicks/clkTck = seconds of CPU used,
+			// divided by elapsed = fraction of time. ×100 = %.
 			pct = (deltaTicks / clkTck) / elapsed * 100
 		}
 	}
@@ -117,29 +117,29 @@ func (c *CPUCollector) sample() (CpuSample, error) {
 	}, nil
 }
 
-// parseProcStatTimes extrai campos numéricos chave de /proc/<pid>/stat.
+// parseProcStatTimes extracts key numeric fields from /proc/<pid>/stat.
 //
-// O campo 2 (comm) é parentesizado e PODE conter espaços/parens — o parser
-// canônico procura o ÚLTIMO `)` na linha; o que vem depois são os campos 3..N
-// space-separated. Index do post (post[i] = campo i+3):
+// Field 2 (comm) is parenthesized and MAY contain spaces/parens — the
+// canonical parser looks for the LAST `)` on the line; everything after
+// is fields 3..N space-separated. Index of post (post[i] = field i+3):
 //
-//	post[7]  = minflt              (campo 10)
-//	post[9]  = majflt              (campo 12)
-//	post[11] = utime               (campo 14)
-//	post[12] = stime               (campo 15)
-//	post[39] = delayacct_blkio_ticks (campo 42)
+//	post[7]  = minflt              (field 10)
+//	post[9]  = majflt              (field 12)
+//	post[11] = utime               (field 14)
+//	post[12] = stime               (field 15)
+//	post[39] = delayacct_blkio_ticks (field 42)
 //
-// `blkio` retorna 0 se o kernel não exporta o campo (CONFIG_TASK_DELAY_ACCT
-// off, ou kernel 5.14+ sem boot param `delayacct=on`).
+// `blkio` returns 0 if the kernel doesn't export the field
+// (CONFIG_TASK_DELAY_ACCT off, or kernel 5.14+ without `delayacct=on` boot param).
 func parseProcStatTimes(data []byte) (utime, stime, minflt, majflt, blkio uint64, err error) {
 	s := string(data)
 	end := strings.LastIndex(s, ")")
 	if end < 0 {
-		return 0, 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: ')' ausente")
+		return 0, 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: missing ')'")
 	}
 	fields := strings.Fields(strings.TrimSpace(s[end+1:]))
 	if len(fields) < 13 {
-		return 0, 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: %d campos", len(fields))
+		return 0, 0, 0, 0, 0, fmt.Errorf("malformed /proc stat: %d fields", len(fields))
 	}
 	utime, _ = strconv.ParseUint(fields[11], 10, 64)
 	stime, _ = strconv.ParseUint(fields[12], 10, 64)

@@ -18,24 +18,24 @@ import (
 //go:embed programs/cpu.bpf.o
 var cpuBPFObj []byte
 
-// CPUTracer faz sampling do PID alvo via perf_event PERF_COUNT_SW_CPU_CLOCK
-// em SAMPLE_FREQ Hz por CPU. Quando o kernel dispara um sample e o tgid
-// atual é o alvo, o BPF program incrementa um contador. O collector lê o
-// contador a cada N segundos e calcula % de CPU.
+// CPUTracer samples the target PID via perf_event PERF_COUNT_SW_CPU_CLOCK
+// at SAMPLE_FREQ Hz per CPU. When the kernel fires a sample and the current
+// tgid is the target, the BPF program increments a counter. The collector
+// reads the counter every N seconds and computes CPU %.
 type CPUTracer struct {
 	coll       *ebpf.Collection
 	samplesMap *ebpf.Map
-	perfFDs    []int // 1 fd por CPU online
+	perfFDs    []int // 1 fd per online CPU
 }
 
-// SampleFreq é a frequência de sampling em Hz por CPU. 100Hz é o que o
-// `perf record` usa por default e o que Instruments do macOS chama de
-// "Sampler" — granularidade suficiente pra detectar CPU spikes >10ms.
+// SampleFreq is the sampling frequency in Hz per CPU. 100Hz is what
+// `perf record` uses by default and what macOS Instruments calls the
+// "Sampler" — granular enough to detect CPU spikes >10ms.
 const SampleFreq = 100
 
 func OpenCPUTracer(pid int) (*CPUTracer, error) {
 	if pid <= 0 {
-		return nil, errors.New("pid inválido")
+		return nil, errors.New("invalid pid")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock: %w", err)
@@ -55,7 +55,7 @@ func OpenCPUTracer(pid int) (*CPUTracer, error) {
 	targetMap := coll.Maps["cpu_target_pid"]
 	if targetMap == nil {
 		t.Close()
-		return nil, errors.New("cpu_target_pid map não encontrado")
+		return nil, errors.New("cpu_target_pid map not found")
 	}
 	var key uint32 = 0
 	val := uint32(pid)
@@ -67,18 +67,18 @@ func OpenCPUTracer(pid int) (*CPUTracer, error) {
 	t.samplesMap = coll.Maps["cpu_target_samples"]
 	if t.samplesMap == nil {
 		t.Close()
-		return nil, errors.New("cpu_target_samples map não encontrado")
+		return nil, errors.New("cpu_target_samples map not found")
 	}
 
 	prog := coll.Programs["handle_perf_event"]
 	if prog == nil {
 		t.Close()
-		return nil, errors.New("handle_perf_event program não encontrado")
+		return nil, errors.New("handle_perf_event program not found")
 	}
 
-	// perf_event_open + ioctl(PERF_EVENT_IOC_SET_BPF) por CPU.
-	// PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK dispara amostras em
-	// SAMPLE_FREQ Hz por CPU (kernel garante uniformidade).
+	// perf_event_open + ioctl(PERF_EVENT_IOC_SET_BPF) per CPU.
+	// PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK fires samples at
+	// SAMPLE_FREQ Hz per CPU (kernel guarantees uniformity).
 	ncpu := runtime.NumCPU()
 	for cpu := 0; cpu < ncpu; cpu++ {
 		attr := unix.PerfEventAttr{
@@ -86,22 +86,22 @@ func OpenCPUTracer(pid int) (*CPUTracer, error) {
 			Config:      unix.PERF_COUNT_SW_CPU_CLOCK,
 			Sample:      SampleFreq,
 			Sample_type: unix.PERF_SAMPLE_RAW,
-			Bits:        unix.PerfBitFreq, // Sample é taxa (Hz), não período em ns
+			Bits:        unix.PerfBitFreq, // Sample is a rate (Hz), not a period in ns
 		}
 		attr.Size = uint32(unsafe.Sizeof(attr))
-		// pid=-1 (qualquer task), cpu=cpu, group_fd=-1
+		// pid=-1 (any task), cpu=cpu, group_fd=-1
 		fd, err := unix.PerfEventOpen(&attr, -1, cpu, -1, 0)
 		if err != nil {
 			t.Close()
 			return nil, fmt.Errorf("perf_event_open cpu=%d: %w", cpu, err)
 		}
-		// Anexa programa BPF a esse fd
+		// Attach BPF program to this fd
 		if err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_SET_BPF, prog.FD()); err != nil {
 			unix.Close(fd)
 			t.Close()
 			return nil, fmt.Errorf("ioctl SET_BPF cpu=%d: %w", cpu, err)
 		}
-		// Habilita sampling
+		// Enable sampling
 		if err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_ENABLE, 0); err != nil {
 			unix.Close(fd)
 			t.Close()
@@ -113,11 +113,11 @@ func OpenCPUTracer(pid int) (*CPUTracer, error) {
 	return t, nil
 }
 
-// SampleCount retorna o contador atual de samples on-CPU acumulados.
-// O collector usa o delta entre chamadas pra calcular %.
+// SampleCount returns the current accumulated count of on-CPU samples.
+// The collector uses the delta between calls to compute %.
 func (t *CPUTracer) SampleCount() (uint64, error) {
 	if t == nil || t.samplesMap == nil {
-		return 0, errors.New("tracer não inicializado")
+		return 0, errors.New("tracer not initialized")
 	}
 	var key uint32 = 0
 	var val uint64
@@ -127,8 +127,8 @@ func (t *CPUTracer) SampleCount() (uint64, error) {
 	return val, nil
 }
 
-// NumCPU retorna o número de CPUs nas quais o tracer está sampling.
-// Usado pro cálculo de % no collector.
+// NumCPU returns the number of CPUs the tracer is sampling on.
+// Used by the collector for the % computation.
 func (t *CPUTracer) NumCPU() int {
 	return len(t.perfFDs)
 }
@@ -150,4 +150,3 @@ func (t *CPUTracer) Close() error {
 	}
 	return nil
 }
-

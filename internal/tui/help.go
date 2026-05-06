@@ -6,8 +6,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// sourceProcOrEmpty retorna "/proc" quando o collector está rodando real,
-// "" caso contrário. Usado pra anotar a source no help overlay.
+// sourceProcOrEmpty returns "/proc" when the collector is running real,
+// "" otherwise. Used to annotate the source in the help overlay.
 func sourceProcOrEmpty(real bool) string {
 	if real {
 		return "/proc"
@@ -15,16 +15,16 @@ func sourceProcOrEmpty(real bool) string {
 	return ""
 }
 
-// renderHelpOverlay desenha um modal centralizado com todos os keybindings.
-// Recebe as dimensões totais do content area; lipgloss.Place centraliza o card.
+// renderHelpOverlay draws a centered modal with all the keybindings.
+// Receives the total content area dimensions; lipgloss.Place centers the card.
 //
-// O model é passado pra que possamos mostrar status dos collectors em runtime
-// (real vs mock) — issue #19 acceptance: "Tecla ou flag pra ver o status de
-// cada collector em runtime".
+// The model is passed so we can show collector status at runtime
+// (real vs mock) — issue #19 acceptance: "Key or flag to view the status of
+// each collector at runtime".
 func renderHelpOverlayWithStatus(m Model, w, h int) string {
-	// Help overlay vive sobre o ColorPanel do card. Todos os estilos abaixo
-	// setam ColorPanel como bg pra que segmentos não vazem o background do
-	// terminal entre as palavras.
+	// Help overlay lives over the card's ColorPanel. All the styles below
+	// set ColorPanel as bg so segments don't leak the terminal's background
+	// between words.
 	sectionTitle := lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Bold(true)
 	keyStyle := lipgloss.NewStyle().Foreground(ColorTeal).Background(ColorPanel).Bold(true)
 	descStyle := lipgloss.NewStyle().Foreground(ColorText).Background(ColorPanel)
@@ -54,27 +54,27 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 	}
 
 	lines := []string{
-		sectionTitle.Render("Navegação"),
-		row("F1-F7", "Trocar aba"),
-		row("1-7", "Atalho da aba (alternativa ao F1-F7)"),
-		row("Tab", "Próxima aba"),
-		row("Shift+Tab", "Aba anterior"),
+		sectionTitle.Render("Navigation"),
+		row("F1-F7", "Switch tab"),
+		row("1-7", "Tab shortcut (alternative to F1-F7)"),
+		row("Tab", "Next tab"),
+		row("Shift+Tab", "Previous tab"),
 		"",
-		sectionTitle.Render("Filtro"),
-		row("/", "Abre filtro substring (ou cicla tipos em F6 quando vazio)"),
-		row("Enter", "Confirma filtro"),
-		row("Esc", "Cancela input · ou limpa filtro · ou fecha help"),
-		row("Ctrl+U", "Limpa o que está sendo digitado"),
+		sectionTitle.Render("Filter"),
+		row("/", "Open substring filter (or cycle types in F6 when empty)"),
+		row("Enter", "Confirm filter"),
+		row("Esc", "Cancel input · or clear filter · or close help"),
+		row("Ctrl+U", "Clear what's being typed"),
 		"",
-		sectionTitle.Render("Estado"),
-		row("p, Space", "Pausar / retomar simulação"),
-		row("?", "Abre / fecha esta tela"),
-		row("q, Ctrl+C", "Sair"),
+		sectionTitle.Render("State"),
+		row("p, Space", "Pause / resume simulation"),
+		row("?", "Open / close this screen"),
+		row("q, Ctrl+C", "Quit"),
 		"",
 		sectionTitle.Render("Snapshot / Export"),
-		row("s", "Snapshot one-shot (xray-snapshot-<ts>.json)"),
-		row("e", "Toggle export contínuo (xray-export-<ts>.jsonl)"),
-		dimRow("--export", "Flag CLI: export desde o launch + snapshot final ao sair"),
+		row("s", "One-shot snapshot (xray-snapshot-<ts>.json)"),
+		row("e", "Toggle continuous export (xray-export-<ts>.jsonl)"),
+		dimRow("--export", "CLI flag: export from launch + final snapshot on exit"),
 		"",
 		sectionTitle.Render("Collectors"),
 		statusRow("syscalls", m.usingMockSyscalls, m.syscallsSource),
@@ -89,11 +89,11 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		statusRow("fds", m.usingMockFDs, sourceProcOrEmpty(!m.usingMockFDs)),
 	}
 
-	// Scroll: card tem border (2 lines) + padding (2 lines) = 4 overhead;
-	// se ainda assim sobrar pra scroll indicators (2 linhas), maxBody fica
-	// h - 4 - 2 = h - 6. Em terminais 80x24 com chrome ocupando ~3 linhas,
-	// contentH ≈ 21, maxBody ≈ 15 — menor que ~30 linhas do help. Scroll é
-	// realmente necessário.
+	// Scroll: card has border (2 lines) + padding (2 lines) = 4 overhead;
+	// if there's still room for scroll indicators (2 lines), maxBody is
+	// h - 4 - 2 = h - 6. On 80x24 terminals with chrome taking ~3 lines,
+	// contentH ≈ 21, maxBody ≈ 15 — less than the ~30 lines of help. Scroll
+	// is actually necessary.
 	maxBody := h - 4
 	if maxBody < 5 {
 		maxBody = 5
@@ -104,7 +104,7 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 	hasMoreBelow := false
 
 	if len(lines) > maxBody {
-		// reserva 2 linhas pros indicators de scroll
+		// reserves 2 lines for the scroll indicators
 		bodyH := maxBody - 2
 		if bodyH < 3 {
 			bodyH = 3
@@ -131,8 +131,8 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 	}
 
 	if hasMoreAbove || hasMoreBelow {
-		lines = append([]string{scrollIndicator(hasMoreAbove, "↑", "mais acima (↑/PgUp)")}, lines...)
-		lines = append(lines, scrollIndicator(hasMoreBelow, "↓", "mais abaixo (↓/PgDn)"))
+		lines = append([]string{scrollIndicator(hasMoreAbove, "↑", "more above (↑/PgUp)")}, lines...)
+		lines = append(lines, scrollIndicator(hasMoreBelow, "↓", "more below (↓/PgDn)"))
 	}
 
 	body := strings.Join(lines, "\n")
@@ -144,8 +144,8 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		Padding(1, 3).
 		Render(body)
 
-	// Centraliza o card sobre fundo escurecido. lipgloss.Place pinta a área
-	// total com a cor base e posiciona o card no centro.
+	// Centers the card over a darkened background. lipgloss.Place paints the
+	// total area with the base color and positions the card in the center.
 	return lipgloss.Place(w, h,
 		lipgloss.Center, lipgloss.Center,
 		card,
@@ -153,8 +153,8 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 	)
 }
 
-// renderFilterInput desenha o widget de input ativo em vez do statusbar.
-// Mostra o cursor como bloco ▏ no fim do buffer. width = m.Width.
+// renderFilterInput draws the active input widget instead of the statusbar.
+// Shows the cursor as a ▏ block at the end of the buffer. width = m.Width.
 func renderFilterInput(m Model, w int) string {
 	barBg := lipgloss.Color("#0a0d11")
 	prompt := lipgloss.NewStyle().
@@ -165,7 +165,7 @@ func renderFilterInput(m Model, w int) string {
 	hint := lipgloss.NewStyle().
 		Foreground(ColorDim).
 		Background(barBg).
-		Render(" Enter confirma · Esc cancela · Ctrl+U limpa")
+		Render(" Enter confirms · Esc cancels · Ctrl+U clears")
 
 	cursor := lipgloss.NewStyle().Foreground(ColorBright).Background(barBg).Render("▏")
 	value := lipgloss.NewStyle().Foreground(ColorBright).Background(barBg).Render(m.inputBuf)

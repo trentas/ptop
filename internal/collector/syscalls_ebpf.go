@@ -11,12 +11,12 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// SyscallsEBPFCollector consome o map syscall_count do programa eBPF de
-// syscalls (internal/bpf/syscalls.go) e publica um snapshot map[name]Stat
-// a cada 500ms para o Model.
+// SyscallsEBPFCollector consumes the syscall_count map from the eBPF
+// syscalls program (internal/bpf/syscalls.go) and publishes a
+// map[name]Stat snapshot every 500ms to the Model.
 //
-// Roda só em Linux com -tags=ebpf. Em outros builds, o Stub não-Linux retorna
-// nil em New e Start sempre falha.
+// Runs only on Linux with -tags=ebpf. In other builds, the non-Linux Stub
+// returns nil from New and Start always fails.
 type SyscallsEBPFCollector struct {
 	tracer *bpf.SyscallTracer
 	ch     chan interface{}
@@ -74,14 +74,14 @@ func (c *SyscallsEBPFCollector) loop() {
 	}
 }
 
-// snapshot lê o map syscall_count e devolve {name → contagem}.
-// Latência fica disponível mas não é exportada por enquanto — o Model só
-// consome contagens hoje. Quando F2 ganhar coluna LAT/MED, voltamos aqui.
+// snapshot reads the syscall_count map and returns {name → count}.
+// Latency is available but not exported for now — the Model only consumes
+// counts today. When F2 grows a LAT/MED column, we revisit this.
 func (c *SyscallsEBPFCollector) snapshot() (map[string]uint64, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.tracer == nil {
-		return nil, fmt.Errorf("tracer não aberto")
+		return nil, fmt.Errorf("tracer not open")
 	}
 	stats, err := c.tracer.Stats()
 	if err != nil {

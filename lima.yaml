@@ -1,21 +1,21 @@
-# lima.yaml — VM de desenvolvimento Linux ARM64 para testar xray com eBPF.
+# lima.yaml — Linux ARM64 development VM for testing xray with eBPF.
 #
-# Uso:
+# Usage:
 #   limactl start --name=xray-dev ./lima.yaml
 #   limactl shell xray-dev
-#   cd /Users/<você>/src/github.com/trentas/xray
-#   make build-ebpf       # quando os .bpf.c entrarem (issues #9-#14)
+#   cd /Users/<you>/src/github.com/trentas/xray
+#   make build-ebpf       # once the .bpf.c files land (issues #9-#14)
 #   sudo ./bin/xray --pid 1
 #
-# Limpeza:
+# Cleanup:
 #   limactl stop xray-dev && limactl delete xray-dev
 
-# Apple Virtualization Framework — performance quase nativa em Apple Silicon.
-# Em Macs Intel, troque para "qemu" (Lima detecta automaticamente também).
+# Apple Virtualization Framework — near-native performance on Apple Silicon.
+# On Intel Macs, switch to "qemu" (Lima also detects this automatically).
 vmType: vz
 
 # Ubuntu 24.04 LTS Server cloudimg arm64.
-# Kernel 6.8 vem com BTF, ring buffer, CAP_BPF — tudo que precisamos.
+# Kernel 6.8 ships with BTF, ring buffer, CAP_BPF — everything we need.
 images:
   - location: "https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
     arch: aarch64
@@ -24,25 +24,25 @@ cpus: 4
 memory: "4GiB"
 disk: "20GiB"
 
-# Compartilha o home do Mac com o VM. Edita no Mac, roda dentro do VM.
-# `writable: true` permite que builds dentro do VM (bin/, *.o) apareçam no Mac.
+# Share the Mac home with the VM. Edit on the Mac, run inside the VM.
+# `writable: true` lets builds done inside the VM (bin/, *.o) show up on the Mac.
 mounts:
   - location: "~"
     writable: true
 mountType: virtiofs
 
-# Provisioning: roda uma vez no primeiro start.
+# Provisioning: runs once on first start.
 provision:
   - mode: system
-    description: "Instala toolchain Go + eBPF (clang, libbpf, bpftool)"
+    description: "Install Go + eBPF toolchain (clang, libbpf, bpftool)"
     script: |
       #!/bin/bash
       set -eux
       export DEBIAN_FRONTEND=noninteractive
       apt-get update
-      # Ubuntu 22.04 não tem `bpftool` como pacote standalone — ele vem
-      # dentro de linux-tools-$(uname -r). Em 24.04 existe, mas usar
-      # linux-tools-* é compatível com ambos.
+      # Ubuntu 22.04 doesn't have `bpftool` as a standalone package — it ships
+      # inside linux-tools-$(uname -r). On 24.04 it exists, but using
+      # linux-tools-* is compatible with both.
       apt-get install -y \
         build-essential \
         clang \
@@ -56,8 +56,8 @@ provision:
         ca-certificates \
         pkg-config
 
-      # Go 1.22+ — apt do Ubuntu 24.04 ainda traz 1.22 mas em path estranho.
-      # Baixar diretamente do go.dev é mais determinístico.
+      # Go 1.22+ — Ubuntu 24.04's apt still ships 1.22 but at a weird path.
+      # Downloading directly from go.dev is more deterministic.
       GOVER=1.22.10
       if ! command -v go >/dev/null 2>&1 || ! go version | grep -q "go1.2[2-9]"; then
         curl -sL "https://go.dev/dl/go${GOVER}.linux-arm64.tar.gz" | tar -C /usr/local -xz
@@ -66,7 +66,7 @@ provision:
       fi
 
   - mode: user
-    description: "PATH + variáveis convenientes para o usuário default (lima)"
+    description: "PATH + convenient variables for the default user (lima)"
     script: |
       #!/bin/bash
       set -eux
@@ -77,30 +77,30 @@ provision:
       export PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
       EOF
 
-# Probes: validam que o setup terminou. lima espera todos passarem antes de
-# devolver controle ao terminal.
+# Probes: validate that setup finished. lima waits for all to pass before
+# handing control back to the terminal.
 probes:
-  - description: "Go instalado"
+  - description: "Go installed"
     script: |
       #!/bin/bash
       command -v go >/dev/null 2>&1
       go version | grep -q "go1.2[2-9]"
-  - description: "libbpf-dev instalado"
+  - description: "libbpf-dev installed"
     script: |
       #!/bin/bash
       pkg-config --exists libbpf
-  - description: "clang disponível"
+  - description: "clang available"
     script: |
       #!/bin/bash
       command -v clang >/dev/null 2>&1
 
-# Ao terminar provisioning, imprime hints úteis no log (`limactl logs xray-dev`).
+# When provisioning finishes, prints useful hints to the log (`limactl logs xray-dev`).
 message: |
-  ✓ VM xray-dev pronta.
+  ✓ VM xray-dev ready.
 
-  Próximos passos:
+  Next steps:
     limactl shell xray-dev
-    cd /Users/$(whoami)/src/github.com/trentas/xray   # ajuste pro seu user
-    make test                                          # roda os testes Linux
-    make build-ebpf                                    # quando .bpf.c entrarem (#9+)
-    sudo ./bin/xray --pid 1 --no-ebpf                  # já funciona com a MVP atual
+    cd /Users/$(whoami)/src/github.com/trentas/xray   # adjust for your user
+    make test                                          # runs the Linux tests
+    make build-ebpf                                    # once .bpf.c lands (#9+)
+    sudo ./bin/xray --pid 1 --no-ebpf                  # already works with the current MVP

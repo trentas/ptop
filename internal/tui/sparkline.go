@@ -6,16 +6,16 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Braille block characters para sparkline (8 níveis de altura por coluna).
-// Cada rune representa um nível de preenchimento vertical: vazio → cheio.
+// Braille block characters for sparkline (8 height levels per column).
+// Each rune represents a vertical fill level: empty → full.
 var brailleRamp = []rune{
 	' ', '⡀', '⡄', '⡆', '⡇', '⡏', '⡟', '⡿',
 }
 
-// Sparkline renderiza uma série de dados como gráfico braille colorido,
-// auto-escalando pela maior valor da janela. ATENÇÃO: usar esta variante
-// faz a escala mudar a cada tick — o que causa "tudo pulando" visual.
-// Para escala fixa (CPU em 0-100, IO com decay) prefira SparklineWithMax.
+// Sparkline renders a data series as a colored braille chart,
+// auto-scaling to the window's largest value. NOTE: using this variant
+// causes the scale to change every tick — producing visual "everything jumping".
+// For fixed scale (CPU at 0-100, IO with decay) prefer SparklineWithMax.
 func Sparkline(data []float64, width int, color lipgloss.Color) string {
 	max := 0.0
 	for _, v := range data {
@@ -26,9 +26,9 @@ func Sparkline(data []float64, width int, color lipgloss.Color) string {
 	return SparklineWithMax(data, width, max, color)
 }
 
-// SparklineWithMax usa um máximo externo para normalizar a série.
-// Passe maxScale=100 para CPU%, ou um máximo com decay lento para IO/contadores.
-// maxScale<=0 cai num gráfico em branco com um piso visual.
+// SparklineWithMax uses an external maximum to normalize the series.
+// Pass maxScale=100 for CPU%, or a slow-decay maximum for IO/counters.
+// maxScale<=0 falls back to a blank chart with a visual floor.
 func SparklineWithMax(data []float64, width int, maxScale float64, color lipgloss.Color) string {
 	if width <= 0 {
 		return ""
@@ -47,7 +47,7 @@ func SparklineWithMax(data []float64, width int, maxScale float64, color lipglos
 
 	var sb strings.Builder
 
-	// padding esquerdo quando ainda temos menos amostras do que largura disponível
+	// left padding when we still have fewer samples than available width
 	for i := 0; i < width-len(points); i++ {
 		sb.WriteString(dimStyle.Render(string(brailleRamp[0])))
 	}
@@ -71,20 +71,20 @@ func SparklineWithMax(data []float64, width int, maxScale float64, color lipglos
 	return sb.String()
 }
 
-// DualSparkline renderiza duas séries sobrepostas (ex: read/write).
-// A série `a` usa `colorA`, a série `b` usa `colorB`.
-// Retorna duas linhas separadas por \n.
+// DualSparkline renders two stacked series (e.g. read/write).
+// Series `a` uses `colorA`, series `b` uses `colorB`.
+// Returns two lines separated by \n.
 func DualSparkline(a, b []float64, width int, colorA, colorB lipgloss.Color) string {
 	return Sparkline(a, width, colorA) + "\n" + Sparkline(b, width, colorB)
 }
 
-// HorizontalBar renderiza uma barra horizontal proporcional.
+// HorizontalBar renders a proportional horizontal bar.
 //
-//	value:   valor atual
-//	max:     valor máximo (fixo — passe sempre o mesmo entre frames pra
-//	         evitar barras pulando de tamanho a cada tick)
-//	width:   largura total em colunas
-//	color:   cor da parte preenchida
+//	value:   current value
+//	max:     maximum value (fixed — always pass the same between frames to
+//	         avoid bars jumping size every tick)
+//	width:   total width in columns
+//	color:   color of the filled part
 func HorizontalBar(value, max float64, width int, color lipgloss.Color) string {
 	if width <= 0 {
 		return ""

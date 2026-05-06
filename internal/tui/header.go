@@ -8,13 +8,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// renderHeader desenha a barra superior:
+// renderHeader draws the top bar:
 //
 //	⬡ xray │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
 //
-// O resultado é SEMPRE truncado para caber em m.Width. Se a linha estourar a
-// largura, o terminal faz line-wrap e o resto da TUI vira de ponta-cabeça —
-// daí a obsessão por nunca passar do limite.
+// The result is ALWAYS truncated to fit m.Width. If the line overflows
+// width, the terminal line-wraps and the rest of the TUI gets flipped upside
+// down — hence the obsession with never going over the limit.
 func renderHeader(m Model) string {
 	headerBg := lipgloss.Color("#0a0d11")
 
@@ -48,8 +48,8 @@ func renderHeader(m Model) string {
 
 	fdBadge := Badge(fmt.Sprintf("%d fds", len(m.FDs)), ColorTeal)
 
-	// monta segmentos do "left" em ordem de prioridade decrescente
-	// (seg é declarado ao final do arquivo)
+	// build "left" segments in descending priority order
+	// (seg is declared at the end of the file)
 	leftSegs := []seg{
 		{logo, 0},
 		{sep, 0},
@@ -66,24 +66,24 @@ func renderHeader(m Model) string {
 
 	clock := time.Now().Format("15:04:05")
 	rightFull := fmt.Sprintf("uptime %02d:%02d  │  %s", upMin, upSec, clock)
-	rightShort := clock // versão fallback para terminais estreitos
+	rightShort := clock // fallback version for narrow terminals
 
 	style := lipgloss.NewStyle().Foreground(ColorMuted).Background(headerBg)
 
-	// determina qual versão do "right" cabe
-	// e quais segmentos do "left" cortar
+	// determine which "right" version fits
+	// and which "left" segments to drop
 	left := buildSegments(leftSegs, " ")
 	right := style.Render(rightFull)
 	for budget := 0; budget < 4; budget++ {
 		if lipgloss.Width(left)+lipgloss.Width(right)+3 <= m.Width {
 			break
 		}
-		// 1) tentar versão curta do right
+		// 1) try short version of right
 		if budget == 0 {
 			right = style.Render(rightShort)
 			continue
 		}
-		// 2) descartar segmentos opcionais do left por prioridade
+		// 2) drop optional left segments by priority
 		left = buildSegments(filterSegs(leftSegs, budget), " ")
 	}
 
@@ -97,7 +97,7 @@ func renderHeader(m Model) string {
 	return edge + left + pad + right + edge
 }
 
-// buildSegments concatena seg.text com sep, respeitando ordem.
+// buildSegments concatenates seg.text with sep, respecting order.
 func buildSegments(segs []seg, sep string) string {
 	parts := make([]string, 0, len(segs))
 	for _, s := range segs {
@@ -106,15 +106,15 @@ func buildSegments(segs []seg, sep string) string {
 	return strings.Join(parts, sep)
 }
 
-// filterSegs retorna apenas segmentos com prioridade <= maxPrio.
-// Usado para reduzir o conjunto a caber numa largura menor.
+// filterSegs returns only segments with priority <= maxPrio.
+// Used to shrink the set to fit a narrower width.
 func filterSegs(segs []seg, maxPrio int) []seg {
 	limit := 0
 	switch maxPrio {
 	case 1:
-		limit = 1 // mantém prio 0 e 1
+		limit = 1 // keep prio 0 and 1
 	case 2:
-		limit = 0 // só essenciais
+		limit = 0 // essentials only
 	default:
 		limit = 0
 	}

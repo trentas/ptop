@@ -8,7 +8,7 @@ type CPUEBPFCollector struct{}
 
 func NewCPUEBPFCollector() *CPUEBPFCollector { return &CPUEBPFCollector{} }
 func (*CPUEBPFCollector) Start(int) error {
-	return errors.New("eBPF cpu sampler não disponível neste build")
+	return errors.New("eBPF cpu sampler not available in this build")
 }
 func (*CPUEBPFCollector) Stop()                          {}
 func (*CPUEBPFCollector) Subscribe() <-chan interface{}  { return nil }

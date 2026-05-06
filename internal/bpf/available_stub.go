@@ -2,6 +2,6 @@
 
 package bpf
 
-// Available é false em builds default (sem -tags=ebpf) ou em OS não-Linux.
-// Quando false, todos os Open*Tracer retornam erro imediatamente.
+// Available is false in default builds (without -tags=ebpf) or on non-Linux
+// OSes. When false, every Open*Tracer returns an error immediately.
 const Available = false

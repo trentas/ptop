@@ -2,19 +2,20 @@ package collector
 
 import "fmt"
 
-// syscallName resolve syscall_id → nome legível. Tabela é arch-específica em
-// Linux: aarch64 e amd64 mapeiam números diferentes pros mesmos syscalls.
+// syscallName resolves syscall_id → human-readable name. The table is
+// arch-specific on Linux: aarch64 and amd64 map different numbers to the
+// same syscalls.
 //
-// Aqui uso uma tabela curada com os ~50 mais comuns que aparecem em qualquer
-// processo userspace típico — o que vai dominar o top-N do mockup. Syscalls
-// não listados retornam "syscall_<id>".
+// We use a curated table with the ~50 most common syscalls that appear in
+// any typical userspace process — what will dominate the top-N in the
+// mockup. Syscalls not listed return "syscall_<id>".
 //
-// Fontes:
+// Sources:
 //   - aarch64: arch/arm64/include/uapi/asm/unistd.h + asm-generic
 //   - amd64:   arch/x86/entry/syscalls/syscall_64.tbl
 //
-// Mantido manualmente em vez de gerado de /usr/include/asm/unistd_64.h
-// pra evitar build-time deps em libc headers.
+// Maintained manually rather than generated from /usr/include/asm/unistd_64.h
+// to avoid build-time deps on libc headers.
 
 func syscallName(id uint32, isARM64 bool) string {
 	var table map[uint32]string
@@ -29,8 +30,8 @@ func syscallName(id uint32, isARM64 bool) string {
 	return fmt.Sprintf("syscall_%d", id)
 }
 
-// AArch64 (arm64) usa tabela "asm-generic" — mesma do RISC-V.
-// Numbers em arch/arm64/include/uapi/asm/unistd.h.
+// AArch64 (arm64) uses the "asm-generic" table — same as RISC-V.
+// Numbers from arch/arm64/include/uapi/asm/unistd.h.
 var syscallsARM64 = map[uint32]string{
 	17:  "getcwd",
 	19:  "eventfd2",
@@ -134,7 +135,7 @@ var syscallsARM64 = map[uint32]string{
 	451: "cachestat",
 }
 
-// AMD64 (x86_64) — números em arch/x86/entry/syscalls/syscall_64.tbl.
+// AMD64 (x86_64) — numbers from arch/x86/entry/syscalls/syscall_64.tbl.
 var syscallsAMD64 = map[uint32]string{
 	0:   "read",
 	1:   "write",

@@ -7,9 +7,9 @@ before:
     - go mod tidy
 
 builds:
-  # Build default — sem eBPF, roda em qualquer OS suportado.
-  # Quando os collectors eBPF (#9-#14) entrarem, a release vai ganhar uma
-  # segunda variante com -tags=ebpf só para linux/amd64 e linux/arm64.
+  # Default build — no eBPF, runs on any supported OS.
+  # Once the eBPF collectors (#9-#14) land, the release will gain a
+  # second variant with -tags=ebpf for linux/amd64 and linux/arm64 only.
   - id: xray
     main: ./cmd/xray
     binary: xray
@@ -72,7 +72,7 @@ changelog:
     - title: "Infra"
       regexp: "^.*infra[(\\w)]*:.*$"
       order: 4
-    - title: "Outros"
+    - title: "Other"
       order: 99
 
 release:
@@ -86,15 +86,15 @@ release:
   header: |
     ## xray {{ .Version }}
 
-    Binários cross-compiled para Linux (amd64/arm64) e macOS (amd64/arm64).
+    Cross-compiled binaries for Linux (amd64/arm64) and macOS (amd64/arm64).
 
-    ### Verificação de integridade
+    ### Integrity verification
 
     ```bash
     sha256sum -c SHA256SUMS
     ```
 
-    ### Instalação
+    ### Installation
 
     ```bash
     curl -L https://github.com/trentas/xray/releases/download/{{ .Tag }}/xray-{{ .Version }}-linux-amd64.tar.gz | tar xz
@@ -104,5 +104,5 @@ release:
   footer: |
     ---
 
-    Esta é uma release **sem eBPF embarcado** (modo `--no-ebpf` apenas).
-    Coletores eBPF estão sendo entregues nas issues #9-#14.
+    This release has **no embedded eBPF** (`--no-ebpf` mode only).
+    eBPF collectors are being delivered in issues #9-#14.

@@ -4,12 +4,12 @@ package bpf
 
 import "errors"
 
-// Stub não-Linux ou sem `-tags=ebpf`. Mesma shape da versão real.
-// Permite o resto do projeto importar `internal/bpf` em macOS sem quebrar
-// a compilação. Em runtime, OpenSyscallTracer falha cedo e o model cai pra
-// simulação.
+// Stub for non-Linux or builds without `-tags=ebpf`. Same shape as the real
+// version. Lets the rest of the project import `internal/bpf` on macOS
+// without breaking the build. At runtime, OpenSyscallTracer fails early and
+// the model falls back to simulation.
 
-var errSyscallsStub = errors.New("eBPF syscalls não disponível neste build (precisa Linux + -tags=ebpf)")
+var errSyscallsStub = errors.New("eBPF syscalls not available in this build (requires Linux + -tags=ebpf)")
 
 type SyscallStat struct {
 	Count      uint64

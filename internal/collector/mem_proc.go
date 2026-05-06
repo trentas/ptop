@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-// MemCollector lê /proc/<pid>/statm + /proc/<pid>/stat a cada 1s para popular
-// RSS, heap aproximado, page faults acumulados e taxa de allocs/s estimada
-// (usa total de page faults como proxy — não é perfeito mas é o melhor que
-// /proc oferece sem instrumentação).
+// MemCollector reads /proc/<pid>/statm + /proc/<pid>/stat every 1s to populate
+// RSS, approximate heap, cumulative page faults, and an estimated allocs/s
+// rate (uses total page faults as a proxy — not perfect but the best /proc
+// offers without instrumentation).
 type MemCollector struct {
 	pid  int
 	ch   chan interface{}
@@ -33,7 +33,7 @@ func NewMemCollector() *MemCollector {
 func (c *MemCollector) Start(pid int) error {
 	c.pid = pid
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/statm", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -61,20 +61,20 @@ func (c *MemCollector) loop() {
 }
 
 func (c *MemCollector) sample() (MemStats, error) {
-	// /proc/<pid>/statm: size resident shared text lib data dirty (em pages)
+	// /proc/<pid>/statm: size resident shared text lib data dirty (in pages)
 	statmData, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", c.pid))
 	if err != nil {
 		return MemStats{}, err
 	}
 	fields := strings.Fields(string(statmData))
 	if len(fields) < 7 {
-		return MemStats{}, fmt.Errorf("malformed /proc/.../statm: %d campos", len(fields))
+		return MemStats{}, fmt.Errorf("malformed /proc/.../statm: %d fields", len(fields))
 	}
 	pageSize := uint64(os.Getpagesize())
 	resident, _ := strconv.ParseUint(fields[1], 10, 64)
 	dataPages, _ := strconv.ParseUint(fields[5], 10, 64)
 
-	// page faults via /proc/<pid>/stat (campos minflt+majflt)
+	// page faults via /proc/<pid>/stat (fields minflt+majflt)
 	statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", c.pid))
 	if err != nil {
 		return MemStats{}, err
@@ -98,7 +98,7 @@ func (c *MemCollector) sample() (MemStats, error) {
 
 	return MemStats{
 		RSSBytes:   resident * pageSize,
-		HeapBytes:  dataPages * pageSize, // aproximação: data segment ~ heap+anon mappings
+		HeapBytes:  dataPages * pageSize, // approximation: data segment ~ heap+anon mappings
 		PageFaults: totalFaults,
 		AllocsPerS: allocsPerS,
 	}, nil

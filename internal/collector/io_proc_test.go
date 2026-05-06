@@ -14,7 +14,7 @@ cancelled_write_bytes: 0
 func TestParseProcIO_basic(t *testing.T) {
 	io, err := parseProcIO([]byte(sampleProcIO))
 	if err != nil {
-		t.Fatalf("erro: %v", err)
+		t.Fatalf("error: %v", err)
 	}
 	if io.rchar != 1024000 {
 		t.Errorf("rchar=%d", io.rchar)
@@ -37,20 +37,20 @@ func TestParseProcIO_basic(t *testing.T) {
 }
 
 func TestParseProcIO_extraWhitespace(t *testing.T) {
-	// Algumas distros usam tab; algumas variantes têm espaço duplicado
+	// Some distros use tab; some variants have duplicated spaces
 	noisy := "rchar:\t1000\n  wchar:    2000  \nsyscr:50\n"
 	io, err := parseProcIO([]byte(noisy))
 	if err != nil {
-		t.Fatalf("erro: %v", err)
+		t.Fatalf("error: %v", err)
 	}
 	if io.rchar != 1000 || io.wchar != 2000 || io.syscr != 50 {
-		t.Errorf("parsing tolerante falhou: rchar=%d wchar=%d syscr=%d", io.rchar, io.wchar, io.syscr)
+		t.Errorf("tolerant parsing failed: rchar=%d wchar=%d syscr=%d", io.rchar, io.wchar, io.syscr)
 	}
 }
 
 func TestParseProcIO_malformed(t *testing.T) {
 	if _, err := parseProcIO([]byte("garbage no colons")); err == nil {
-		t.Error("esperava erro pra entrada sem pares chave:valor")
+		t.Error("expected error for input without key:value pairs")
 	}
 }
 
@@ -58,9 +58,9 @@ func TestParseProcIO_unknownFieldsIgnored(t *testing.T) {
 	mixed := "rchar: 100\nfuture_field: 999\nwchar: 200\n"
 	io, err := parseProcIO([]byte(mixed))
 	if err != nil {
-		t.Fatalf("erro: %v", err)
+		t.Fatalf("error: %v", err)
 	}
 	if io.rchar != 100 || io.wchar != 200 {
-		t.Errorf("campos conhecidos não parseados: rchar=%d wchar=%d", io.rchar, io.wchar)
+		t.Errorf("known fields not parsed: rchar=%d wchar=%d", io.rchar, io.wchar)
 	}
 }

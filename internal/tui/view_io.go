@@ -12,16 +12,16 @@ import (
 
 // renderIOView (F5) — assets/mockup.jsx → IOView
 //
-//   ┌── Throughput (esq grande) ──┐  ┌── I/O Stats ────┐
+//   ┌── Throughput (large left) ──┐  ┌── I/O Stats ────┐
 //   │ dual sparkline              │  │ Total read ...  │
-//   ├── Top Files ────────────────┤  ├── Anomalias ────┤
-//   │ db /data/db   88KB ...      │  │ ⚠ fsyncs alta   │
+//   ├── Top Files ────────────────┤  ├── Anomalies ────┤
+//   │ db /data/db   88KB ...      │  │ ⚠ fsyncs high   │
 //   ├── Latency Distribution ─────┤  ├── I/O Events ───┤
 //   │ <0.1ms ▇▇  42 / 28          │  │ 12:34 IO read … │
 //   └─────────────────────────────┘  └─────────────────┘
 func renderIOView(m Model, w, h int) string {
 	if w < 50 || h < 12 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+		return MutedStyle.Render("(terminal too small)")
 	}
 	leftW := w * 22 / 32 // ratio 2.2 vs 1.0
 	rightW := w - leftW
@@ -45,7 +45,7 @@ func renderIOView(m Model, w, h int) string {
 		renderIOStats(m.IOStats, rightW-2),
 		rightW, rightHs[0])
 
-	anomalies := Panel("Anomalias",
+	anomalies := Panel("Anomalies",
 		renderIOAnomalies(m.IOStats),
 		rightW, rightHs[1])
 
@@ -58,9 +58,9 @@ func renderIOView(m Model, w, h int) string {
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
 }
 
-// stableTopFiles devolve os arquivos na ordem fornecida (paths), ou ordem por
-// ops se a lista vier vazia. Files cujos paths não estejam na lista são
-// ignorados (saíram do top desde o último refresh).
+// stableTopFiles returns the files in the given order (paths), or order by
+// ops if the list is empty. Files whose paths aren't in the list are
+// ignored (they fell out of the top since the last refresh).
 func stableTopFiles(files []collector.IOFileStats, displayPaths []string) []collector.IOFileStats {
 	if len(displayPaths) == 0 {
 		out := make([]collector.IOFileStats, len(files))
@@ -102,10 +102,10 @@ func ioFileTypeColor(t string) lipgloss.Color {
 
 func renderIOTopFiles(files []collector.IOFileStats, displayPaths []string, w, h int) string {
 	if len(files) == 0 {
-		return MutedStyle.Render("(sem dados)")
+		return MutedStyle.Render("(no data)")
 	}
-	// Se temos uma ordem estável vinda do model, usamos ela; senão sortamos
-	// por ops (uso só no primeiro frame, antes do refresh do model).
+	// If we have a stable order from the model, use it; otherwise sort
+	// by ops (used only on the first frame, before the model refresh).
 	sorted := stableTopFiles(files, displayPaths)
 
 	const typeW = 5
@@ -175,7 +175,7 @@ func renderIOTopFiles(files []collector.IOFileStats, displayPaths []string, w, h
 
 func renderIOLatencyDist(buckets []collector.LatencyBucket, w, h int) string {
 	if len(buckets) == 0 {
-		return MutedStyle.Render("(sem dados)")
+		return MutedStyle.Render("(no data)")
 	}
 	maxV := 1.0
 	for _, b := range buckets {
@@ -242,15 +242,15 @@ func renderIOStats(s collector.IOStats, w int) string {
 func renderIOAnomalies(s collector.IOStats) string {
 	lines := []string{}
 	if s.Fsyncs > 15 {
-		lines = append(lines, RedStyle.Render("⚠ fsync freq alta → /data/db"))
+		lines = append(lines, RedStyle.Render("⚠ high fsync freq → /data/db"))
 	}
 	lines = append(lines, AmberStyle.Render("⚠ /proc/self/status: polling (×12/s)"))
 	if s.IOWaitPct > 15 {
-		lines = append(lines, RedStyle.Render(fmt.Sprintf("⚠ I/O wait %.1f%% → disco saturado", s.IOWaitPct)))
+		lines = append(lines, RedStyle.Render(fmt.Sprintf("⚠ I/O wait %.1f%% → disk saturated", s.IOWaitPct)))
 	}
 	if len(lines) == 1 {
-		// só o de polling — então adiciona um OK
-		lines = append([]string{GreenStyle.Render("✓ throughput estável")}, lines...)
+		// only the polling one — so add an OK
+		lines = append([]string{GreenStyle.Render("✓ throughput stable")}, lines...)
 	}
 	return strings.Join(lines, "\n")
 }

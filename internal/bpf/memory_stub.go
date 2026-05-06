@@ -4,7 +4,7 @@ package bpf
 
 import "errors"
 
-var errMemStub = errors.New("eBPF memory tracer não disponível neste build")
+var errMemStub = errors.New("eBPF memory tracer not available in this build")
 
 type MemCounters struct {
 	PageFaults  uint64

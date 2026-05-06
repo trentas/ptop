@@ -11,7 +11,7 @@ func NewMemEBPFCollector() *MemEBPFCollector {
 }
 
 func (c *MemEBPFCollector) Start(pid int) error {
-	return errors.New("memory eBPF não disponível neste build")
+	return errors.New("memory eBPF not available in this build")
 }
 
 func (c *MemEBPFCollector) Stop() {}

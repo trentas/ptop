@@ -9,18 +9,18 @@ import (
 	"time"
 )
 
-// IOThroughputCollector lê /proc/<pid>/io a cada 500ms e calcula:
+// IOThroughputCollector reads /proc/<pid>/io every 500ms and computes:
 //
-//   - ReadBytesPerS / WriteBytesPerS via delta de read_bytes / write_bytes
-//     (camada de storage — exclui hits de cache, mais coerente com `iotop`)
-//   - ReadOps / WriteOps cumulativos via syscr / syscw (camada de syscall)
+//   - ReadBytesPerS / WriteBytesPerS via delta of read_bytes / write_bytes
+//     (storage layer — excludes cache hits, more consistent with `iotop`)
+//   - ReadOps / WriteOps cumulative via syscr / syscw (syscall layer)
 //
-// Observação: read_bytes/write_bytes só registra I/O que efetivamente toca o
-// dispositivo. Pra captar throughput "lógico" incluindo cache, usar
-// rchar/wchar — mas a camada lógica infla quando o processo relê o mesmo
-// arquivo várias vezes (cache hit), o que não é o que o usuário quer ver
-// no gráfico de throughput. read_bytes/write_bytes está mais alinhado com
-// o que o `iotop` reporta e com o que vai virar real-deal sob eBPF (#11).
+// Note: read_bytes/write_bytes only records I/O that actually touches the
+// device. To capture "logical" throughput including cache, use rchar/wchar
+// — but the logical layer inflates when the process re-reads the same
+// file multiple times (cache hit), which is not what the user wants to see
+// in the throughput chart. read_bytes/write_bytes is more aligned with
+// what `iotop` reports and with what will become real-deal under eBPF (#11).
 type IOThroughputCollector struct {
 	pid  int
 	ch   chan interface{}
@@ -42,9 +42,9 @@ func NewIOThroughputCollector() *IOThroughputCollector {
 func (c *IOThroughputCollector) Start(pid int) error {
 	c.pid = pid
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/io", pid)); err != nil {
-		// /proc/<pid>/io só está disponível pra processos do mesmo UID
-		// (ou root). Se não dá pra ler, falha imediato — modelo cai em mock.
-		return fmt.Errorf("não foi possível abrir /proc/%d/io: %w", pid, err)
+		// /proc/<pid>/io is only readable for processes of the same UID
+		// (or root). If we can't read it, fail immediately — model falls back to mock.
+		return fmt.Errorf("could not open /proc/%d/io: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -110,8 +110,8 @@ func (c *IOThroughputCollector) sample() (IOThroughputSample, error) {
 	}, nil
 }
 
-// procIOFields contém os campos de /proc/<pid>/io que nos interessam.
-// Formato canônico (1 par "key: value" por linha):
+// procIOFields contains the /proc/<pid>/io fields we care about.
+// Canonical format (1 "key: value" pair per line):
 //
 //	rchar: 1234
 //	wchar: 5678
@@ -160,7 +160,7 @@ func parseProcIO(data []byte) (procIOFields, error) {
 		parsed++
 	}
 	if parsed == 0 {
-		return io, fmt.Errorf("malformed /proc io: nenhum par chave:valor")
+		return io, fmt.Errorf("malformed /proc io: no key:value pairs")
 	}
 	return io, nil
 }

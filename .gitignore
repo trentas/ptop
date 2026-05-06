@@ -1,5 +1,6 @@
 # Build output
 /bin/
+/xray
 *.o
 *.bpf.o
 
@@ -16,5 +17,5 @@ coverage.out
 *~
 .DS_Store
 
-# Claude Code per-developer config (settings.json fica versionado)
+# Claude Code per-developer config (settings.json stays versioned)
 .claude/settings.local.json

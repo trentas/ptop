@@ -519,12 +519,12 @@ function IOView({ data }) {
             ))}
           </div>
         </Box>
-        <Box title="▸ Anomalias" flex={0.5}>
+        <Box title="▸ Anomalies" flex={0.5}>
           <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:4 }}>
-            {ioTotals.fsyncs>15&&<div style={{ fontSize:9.5, color:COLORS.red }}>⚠ fsync freq alta → /data/db</div>}
+            {ioTotals.fsyncs>15&&<div style={{ fontSize:9.5, color:COLORS.red }}>⚠ high fsync freq → /data/db</div>}
             <div style={{ fontSize:9.5, color:COLORS.amber }}>⚠ /proc/self/status: polling (×12/s)</div>
-            {ioTotals.iowait>15&&<div style={{ fontSize:9.5, color:COLORS.red }}>⚠ I/O wait {ioTotals.iowait.toFixed(1)}% → disco saturado</div>}
-            {ioTotals.iowait<=15&&ioTotals.fsyncs<=15&&<div style={{ fontSize:9.5, color:COLORS.green }}>✓ sem anomalias</div>}
+            {ioTotals.iowait>15&&<div style={{ fontSize:9.5, color:COLORS.red }}>⚠ I/O wait {ioTotals.iowait.toFixed(1)}% → disk saturated</div>}
+            {ioTotals.iowait<=15&&ioTotals.fsyncs<=15&&<div style={{ fontSize:9.5, color:COLORS.green }}>✓ no anomalies</div>}
           </div>
         </Box>
         <Box title="▸ I/O Events" flex={2}><Timeline events={data.timeline.filter(e=>e.cat==="io")}/></Box>
@@ -624,19 +624,19 @@ function FDView({ data }) {
       <div style={{ display:"flex", flexDirection:"column", flex:1, gap:1 }}>
 
         {/* suspicious / leaks */}
-        <Box title="▸ Alertas" flex={0.7}>
+        <Box title="▸ Alerts" flex={0.7}>
           <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:5 }}>
             {suspicious.length===0 && (
-              <div style={{ fontSize:9.5, color:COLORS.green }}>✓ sem vazamentos detectados</div>
+              <div style={{ fontSize:9.5, color:COLORS.green }}>✓ no leaks detected</div>
             )}
             {suspicious.map((f,i)=>(
               <div key={i} style={{ fontSize:9.5, color:COLORS.amber }}>
-                ⚠ fd={f.fd} {f.type} aberto há {fmtAge(f.age)} sem atividade
+                ⚠ fd={f.fd} {f.type} open for {fmtAge(f.age)} with no activity
               </div>
             ))}
             {fds.length > 20 && (
               <div style={{ fontSize:9.5, color:COLORS.red }}>
-                ⚠ {fds.length} fds abertos — próximo do limite
+                ⚠ {fds.length} fds open — near the limit
               </div>
             )}
           </div>
@@ -646,11 +646,11 @@ function FDView({ data }) {
         <Box title="▸ Stats" flex={0.7}>
           <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:5 }}>
             {[
-              { label:"Total abertos",  value:fds.length,                                          color:COLORS.teal   },
-              { label:"Ativos agora",   value:fds.filter(f=>f.active).length,                     color:COLORS.green  },
+              { label:"Total open",     value:fds.length,                                          color:COLORS.teal   },
+              { label:"Active now",     value:fds.filter(f=>f.active).length,                     color:COLORS.green  },
               { label:"Sockets",        value:breakdown.socket,                                    color:COLORS.blue   },
               { label:"Files",          value:breakdown.file,                                      color:COLORS.cyan   },
-              { label:"Mais antigo",    value:fmtAge(Math.max(...fds.map(f=>f.age))),              color:COLORS.amber  },
+              { label:"Oldest",         value:fmtAge(Math.max(...fds.map(f=>f.age))),              color:COLORS.amber  },
               { label:"Total I/O",      value:fmt(fds.reduce((s,f)=>s+f.bytes,0)),                color:COLORS.muted  },
             ].map(({label,value,color})=>(
               <div key={label} style={{ display:"flex", justifyContent:"space-between", fontSize:10 }}>

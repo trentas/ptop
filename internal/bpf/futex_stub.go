@@ -4,7 +4,7 @@ package bpf
 
 import "errors"
 
-var errFutexStub = errors.New("eBPF futex tracer não disponível neste build")
+var errFutexStub = errors.New("eBPF futex tracer not available in this build")
 
 type FutexStat struct {
 	WaitCount   uint64

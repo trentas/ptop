@@ -6,18 +6,18 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Panel renderiza uma caixa com borda + barra de título + corpo.
-// w e h são as dimensões externas (incluindo bordas).
-// O título ocupa a primeira linha interna; o corpo herda Width=w-2, Height=h-3.
+// Panel renders a box with border + title bar + body.
+// w and h are the outer dimensions (including borders).
+// The title occupies the first inner line; the body inherits Width=w-2, Height=h-3.
 //
-// Se body for menor que (h-3) linhas, será preenchido com espaços.
-// Se for maior, será truncado via MaxHeight.
+// If body is shorter than (h-3) lines, it's padded with spaces.
+// If longer, it's truncated via MaxHeight.
 func Panel(title, body string, w, h int) string {
 	if w < 4 || h < 3 {
 		return strings.Repeat(" ", maxInt(w, 0))
 	}
 	inner := w - 2
-	bodyH := h - 3 // 2 bordas + 1 linha de título
+	bodyH := h - 3 // 2 borders + 1 title line
 
 	titleBar := lipgloss.NewStyle().
 		Background(lipgloss.Color("#0d1017")).
@@ -42,7 +42,7 @@ func Panel(title, body string, w, h int) string {
 		Render(stack)
 }
 
-// PanelTitleless renderiza uma caixa com borda mas sem título (útil para FD table).
+// PanelTitleless renders a box with border but no title (useful for the FD table).
 func PanelTitleless(body string, w, h int) string {
 	if w < 2 || h < 2 {
 		return strings.Repeat(" ", maxInt(w, 0))
@@ -65,8 +65,8 @@ func PanelTitleless(body string, w, h int) string {
 		Render(bodyArea)
 }
 
-// splitFlex distribui um total inteiro entre slots proporcionais às ratios.
-// Garante que a soma seja exatamente `total` jogando o resto na última fatia.
+// splitFlex distributes an integer total among slots proportional to the ratios.
+// Ensures the sum is exactly `total` by dumping the remainder into the last slice.
 func splitFlex(ratios []float64, total int) []int {
 	out := make([]int, len(ratios))
 	if total <= 0 || len(ratios) == 0 {
@@ -102,9 +102,9 @@ func minInt(a, b int) int {
 	return b
 }
 
-// padRight retorna s padded com espaços até `w` colunas (largura visível).
-// O padding sai com Background(ColorPanel) — caso contrário, células
-// rendered ficariam com bg default do terminal e vazariam pelo gap.
+// padRight returns s padded with spaces up to `w` columns (visible width).
+// The padding is rendered with Background(ColorPanel) — otherwise, rendered
+// cells would have the terminal's default bg and leak through the gap.
 func padRight(s string, w int) string {
 	vw := lipgloss.Width(s)
 	if vw >= w {
@@ -114,21 +114,21 @@ func padRight(s string, w int) string {
 	return s + pad
 }
 
-// panelRow concatena segments com um separador de 1 espaço PINTADO com
-// ColorPanel — usar pra montar linhas dentro de panel bodies sem deixar
-// gaps com bg default do terminal vazando entre as palavras.
+// panelRow concatenates segments with a 1-space separator PAINTED with
+// ColorPanel — use to build rows inside panel bodies without leaving
+// gaps with the terminal's default bg leaking between words.
 //
-// Substitui o padrão antigo `name + " " + bar + " " + count`.
+// Replaces the old pattern `name + " " + bar + " " + count`.
 func panelRow(parts ...string) string {
 	return strings.Join(parts, panelSp1)
 }
 
-// panelGap retorna `width` espaços pintados com ColorPanel.
-// Usar em lipgloss.JoinHorizontal quando precisa de gap entre elementos:
+// panelGap returns `width` spaces painted with ColorPanel.
+// Use in lipgloss.JoinHorizontal when you need a gap between elements:
 //
 //	lipgloss.JoinHorizontal(lipgloss.Top, spark, panelGap(2), right)
 //
-// — em vez do `"  "` cru que vazaria o background do terminal.
+// — instead of raw `"  "` which would leak the terminal's background.
 func panelGap(width int) string {
 	if width <= 0 {
 		return ""
@@ -141,7 +141,7 @@ var (
 	panelSp2 = panelGap(2)
 )
 
-// truncate corta s para caber em `w` colunas visíveis, adicionando "…" se necessário.
+// truncate cuts s to fit in `w` visible columns, adding "…" if necessary.
 func truncate(s string, w int) string {
 	if w <= 0 {
 		return ""
@@ -153,7 +153,7 @@ func truncate(s string, w int) string {
 	if w == 1 {
 		return "…"
 	}
-	// runes, considerando largura
+	// runes, taking width into account
 	runes := []rune(s)
 	out := make([]rune, 0, len(runes))
 	used := 0

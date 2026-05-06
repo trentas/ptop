@@ -19,8 +19,8 @@ import (
 //go:embed programs/io.bpf.o
 var ioBPFObj []byte
 
-// IOEvent é o layout 1:1 da struct io_event em programs/io.bpf.c.
-// Tamanho fixo 32 bytes; binary.LittleEndian.Read parseia direto da ring buffer.
+// IOEvent is the 1:1 layout of struct io_event in programs/io.bpf.c.
+// Fixed size 32 bytes; binary.LittleEndian.Read parses it directly from the ring buffer.
 type IOEvent struct {
 	TsNs   uint64
 	LatNs  uint64
@@ -36,8 +36,8 @@ const (
 	IOOpWrite uint32 = 1
 )
 
-// IOTracer carrega io.bpf.o, attacha tracepoints sys_enter/exit_read/write,
-// abre ring buffer reader e expõe Next() pra entregar eventos parseados.
+// IOTracer loads io.bpf.o, attaches sys_enter/exit_read/write tracepoints,
+// opens a ring buffer reader and exposes Next() to deliver parsed events.
 type IOTracer struct {
 	coll  *ebpf.Collection
 	links []link.Link
@@ -46,7 +46,7 @@ type IOTracer struct {
 
 func OpenIOTracer(pid int) (*IOTracer, error) {
 	if pid <= 0 {
-		return nil, errors.New("pid inválido")
+		return nil, errors.New("invalid pid")
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -62,11 +62,11 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 	}
 	t := &IOTracer{coll: coll}
 
-	// Setar target_pid
+	// Set target_pid
 	targetMap := coll.Maps["io_target_pid"]
 	if targetMap == nil {
 		t.Close()
-		return nil, errors.New("io_target_pid map ausente")
+		return nil, errors.New("io_target_pid map missing")
 	}
 	var key uint32 = 0
 	val := uint32(pid)
@@ -88,7 +88,7 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 		prog := coll.Programs[a.prog]
 		if prog == nil {
 			t.Close()
-			return nil, fmt.Errorf("program %s ausente", a.prog)
+			return nil, fmt.Errorf("program %s missing", a.prog)
 		}
 		l, err := link.Tracepoint(a.group, a.name, prog, nil)
 		if err != nil {
@@ -98,11 +98,11 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 		t.links = append(t.links, l)
 	}
 
-	// Abre ring buffer reader. Reads bloqueiam até evento chegar ou Close.
+	// Open ring buffer reader. Reads block until an event arrives or Close.
 	eventsMap := coll.Maps["io_events"]
 	if eventsMap == nil {
 		t.Close()
-		return nil, errors.New("io_events ringbuf ausente")
+		return nil, errors.New("io_events ringbuf missing")
 	}
 	rb, err := ringbuf.NewReader(eventsMap)
 	if err != nil {
@@ -114,12 +114,12 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 	return t, nil
 }
 
-// Next bloqueia até o próximo evento chegar do kernel. Retorna io.EOF se o
-// tracer foi fechado. Erros transientes (sample lost, etc) são contornados.
+// Next blocks until the next event arrives from the kernel. Returns io.EOF
+// if the tracer was closed. Transient errors (sample lost, etc.) are skipped.
 func (t *IOTracer) Next() (IOEvent, error) {
 	var ev IOEvent
 	if t == nil || t.rb == nil {
-		return ev, errors.New("tracer não inicializado")
+		return ev, errors.New("tracer not initialized")
 	}
 	rec, err := t.rb.Read()
 	if err != nil {
@@ -129,7 +129,7 @@ func (t *IOTracer) Next() (IOEvent, error) {
 		return ev, err
 	}
 	if len(rec.RawSample) < 32 {
-		return ev, fmt.Errorf("evento curto: %d bytes", len(rec.RawSample))
+		return ev, fmt.Errorf("short event: %d bytes", len(rec.RawSample))
 	}
 	if err := binary.Read(bytes.NewReader(rec.RawSample), binary.LittleEndian, &ev); err != nil {
 		return ev, fmt.Errorf("decode event: %w", err)

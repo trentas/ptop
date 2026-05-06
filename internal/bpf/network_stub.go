@@ -7,7 +7,7 @@ import (
 	"net"
 )
 
-var errNetStub = errors.New("eBPF network tracer não disponível neste build")
+var errNetStub = errors.New("eBPF network tracer not available in this build")
 
 type NetSnapshot struct {
 	Family  uint16

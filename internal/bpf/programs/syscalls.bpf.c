@@ -1,30 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// syscalls.bpf.c — conta syscalls e mede latência por (enter, exit)
-// raw_syscalls do PID alvo.
+// syscalls.bpf.c — counts syscalls and measures latency per (enter, exit)
+// raw_syscalls of the target PID.
 //
 // Maps:
-//   target_pid     ARRAY[1]  pid alvo (escrito pelo loader Go via map.Update)
+//   target_pid     ARRAY[1]  target pid (written by the Go loader via map.Update)
 //   syscall_count  HASH      syscall_id → {count, total_lat_ns}
 //   enter_ts       HASH      tgid_pid → {ts_ns, syscall_id}
-//                            correlaciona enter→exit pra calcular latência
+//                            correlates enter→exit to compute latency
 //
-// Compilação (rodada por `make gen` em Linux):
+// Compilation (run by `make gen` on Linux):
 //   clang -O2 -g -target bpf -D__TARGET_ARCH_arm64 \
 //     -I/usr/include/bpf \
 //     -c programs/syscalls.bpf.c -o programs/syscalls.bpf.o
 //
-// O loader Go (internal/bpf/syscalls.go) embute o .o via go:embed e usa
-// cilium/ebpf pra carregar, attachar tracepoints e ler o map syscall_count.
+// The Go loader (internal/bpf/syscalls.go) embeds the .o via go:embed and
+// uses cilium/ebpf to load it, attach the tracepoints and read the
+// syscall_count map.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
-// Estruturas dos tracepoints raw_syscalls — estáveis no kernel desde ~2010.
-// Definir inline evita dependência de vmlinux.h, que é grande e arch-específico.
-// O primeiro u64 é padding pro tracepoint header (common_type/flag/preempt/pid).
+// raw_syscalls tracepoint structures — stable in the kernel since ~2010.
+// Defining them inline avoids a dependency on vmlinux.h, which is large
+// and arch-specific. The first u64 is padding for the tracepoint header
+// (common_type/flag/preempt/pid).
 struct sys_enter_args {
     unsigned long long _pad;
     long id;
@@ -68,7 +70,7 @@ struct {
     __uint(max_entries, 10240);
 } enter_ts SEC(".maps");
 
-// is_target retorna 1 se o tgid atual é o pid alvo configurado, 0 caso contrário.
+// is_target returns 1 if the current tgid is the configured target pid, 0 otherwise.
 static __always_inline int is_target(void)
 {
     __u32 key = 0;

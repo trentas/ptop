@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// memory.bpf.c — counters de memória do PID alvo:
+// memory.bpf.c — memory counters for the target PID:
 //
 //   - kprobe handle_mm_fault          → page faults (cross-arch)
 //   - tracepoint sys_enter_mmap       → mmap allocations
 //   - tracepoint sys_enter_munmap     → munmap deallocations
 //   - tracepoint sys_enter_brk        → heap growth (sbrk-style)
 //
-// Por que kprobe handle_mm_fault e não tracepoint exceptions:page_fault_user?
-//   exceptions:page_fault_user é x86-only (vive em arch/x86/). handle_mm_fault
-//   é a função canônica de mm/memory.c, existe em todas as arches Linux,
-//   é chamada em process context e bpf_get_current_pid_tgid() funciona.
-//   Trade-off: kprobe pode falhar se kernel tiver o símbolo inlined ou
-//   renomeado (raro pra handle_mm_fault). Loader Go trata como warning.
+// Why kprobe handle_mm_fault and not the exceptions:page_fault_user tracepoint?
+//   exceptions:page_fault_user is x86-only (lives in arch/x86/). handle_mm_fault
+//   is the canonical function in mm/memory.c, exists on every Linux arch, is
+//   called in process context and bpf_get_current_pid_tgid() works.
+//   Trade-off: the kprobe can fail if the kernel has the symbol inlined or
+//   renamed (rare for handle_mm_fault). The Go loader treats it as a warning.
 //
 // Maps:
-//   mem_target_pid    ARRAY[1]  pid alvo (escrito pelo loader Go)
+//   mem_target_pid    ARRAY[1]  target pid (written by the Go loader)
 //   mem_counters      ARRAY[1]  struct {page_faults, mmaps, munmaps, brks}
 //
-// RSS NÃO é amostrado aqui — /proc/<pid>/statm é cheap e estável; eBPF
-// pra RSS precisaria caminhar VMAs do mm_struct, mais caro e arch-frágil.
+// RSS is NOT sampled here — /proc/<pid>/statm is cheap and stable; doing RSS
+// via eBPF would require walking the mm_struct's VMAs, more expensive and
+// arch-fragile.
 
 #include <linux/bpf.h>
 #include <linux/ptrace.h>

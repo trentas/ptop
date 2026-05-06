@@ -1,32 +1,32 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// io.bpf.c — rastreia syscalls de I/O síncrono (read/write/pread64/pwrite64)
-// do PID alvo, mede latência por chamada e emite eventos via ring buffer.
+// io.bpf.c — traces synchronous I/O syscalls (read/write/pread64/pwrite64)
+// of the target PID, measures per-call latency and emits events via ring buffer.
 //
 // Maps:
-//   io_target_pid       ARRAY[1]   pid alvo (escrito pelo loader Go)
+//   io_target_pid       ARRAY[1]   target pid (written by the Go loader)
 //   io_inflight_map     HASH       tgid_pid → {ts_ns, fd, op, count_req}
-//                                  rastreia syscall em flight pra correlacionar
+//                                  tracks an in-flight syscall to correlate
 //                                  enter/exit
-//   io_events           RINGBUF    canal pro user-space — cada evento contém
-//                                  fd, op type, bytes lidos/escritos, latência
+//   io_events           RINGBUF    channel to user-space — each event contains
+//                                  fd, op type, bytes read/written, latency
 //
-// Por que syscall-level (não block-level)?
-//   block:block_rq_* dá latência REAL de disco (exclui cache). Mas resolver
-//   path do file requer vmlinux.h ou CO-RE. Aqui usamos sys_enter_/sys_exit_
-//   tracepoints que dão fd direto — Go resolve fd→path via /proc/<pid>/fd.
-//   Trade-off: mostramos I/O syscall-level (inclui cache hits), que é o que
-//   o usuário vê em "files acessados" e bate com o mockup de F5.
+// Why syscall-level (not block-level)?
+//   block:block_rq_* gives REAL disk latency (excludes cache). But resolving
+//   the file path requires vmlinux.h or CO-RE. Here we use sys_enter_/sys_exit_
+//   tracepoints that give the fd directly — Go resolves fd→path via
+//   /proc/<pid>/fd. Trade-off: we show syscall-level I/O (includes cache hits),
+//   which is what the user sees in "files accessed" and matches the F5 mockup.
 //
-// Tracepoints em syscalls/sys_enter_X são arch-independentes (kernel resolve
-// pelo nome, não pelo número) — código compilado em x86_64 funciona em arm64.
+// syscalls/sys_enter_X tracepoints are arch-independent (the kernel resolves
+// by name, not by number) — code compiled on x86_64 works on arm64.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 
 char LICENSE[] SEC("license") = "GPL";
 
-// Estruturas dos tracepoints. Layout estável de
+// Tracepoint structures. Stable layout from
 // /sys/kernel/debug/tracing/events/syscalls/sys_enter_read/format:
 //
 //   common_type/flags/preempt_count/pid    (8 bytes)
@@ -48,7 +48,7 @@ struct sys_exit_args {
     long ret;
 };
 
-// Op codes — devem bater com o lado Go (collector/io_ebpf.go).
+// Op codes — must match the Go side (collector/io_ebpf.go).
 #define OP_READ  0
 #define OP_WRITE 1
 
@@ -59,13 +59,13 @@ struct io_inflight {
     __u64 count_req;
 };
 
-// Evento publicado pro user-space via ring buffer. Layout fixo, lido com
-// binary.LittleEndian no Go side. Mantenha em sincronia com IOEvent em
+// Event published to user-space via ring buffer. Fixed layout, read with
+// binary.LittleEndian on the Go side. Keep in sync with IOEvent in
 // internal/collector/io_ebpf.go.
 struct io_event {
     __u64 ts_ns;
     __u64 lat_ns;
-    __u64 bytes;       // ret value (se positivo)
+    __u64 bytes;       // ret value (when positive)
     __u32 fd;
     __u32 op;
     __u32 tgid;

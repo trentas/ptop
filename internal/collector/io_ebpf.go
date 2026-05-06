@@ -14,12 +14,12 @@ import (
 	"github.com/trentas/xray/internal/bpf"
 )
 
-// IOEBPFCollector consome o ring buffer de eventos do tracer eBPF de I/O
-// e agrega por PATH em janelas de 500ms. Output é o IOStats.TopFiles +
-// LatencyBuckets atualizados, publicados via canal.
+// IOEBPFCollector consumes the event ring buffer of the eBPF I/O tracer
+// and aggregates by PATH in 500ms windows. Output is the IOStats.TopFiles +
+// LatencyBuckets, updated and published over the channel.
 //
-// Resolução fd→path: lookup em /proc/<pid>/fd/<fd> readlink, com cache
-// de 2s pra reduzir overhead. FDs novos resolvem na primeira aparição.
+// fd→path resolution: lookup via /proc/<pid>/fd/<fd> readlink, with a 2s
+// cache to reduce overhead. New FDs resolve on first appearance.
 type IOEBPFCollector struct {
 	tracer *bpf.IOTracer
 	ch     chan interface{}
@@ -27,9 +27,9 @@ type IOEBPFCollector struct {
 	pid    int
 
 	mu      sync.Mutex
-	files   map[string]*ioFileAgg     // path → contadores
+	files   map[string]*ioFileAgg     // path → counters
 	pathFor map[uint32]pathCacheEntry // fd → path (cached)
-	buckets []LatencyBucket           // baseline buckets pré-criados
+	buckets []LatencyBucket           // pre-built baseline buckets
 }
 
 type ioFileAgg struct {
@@ -72,8 +72,8 @@ func (c *IOEBPFCollector) Start(pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
-	go c.readLoop()    // consome ringbuf, popula c.files
-	go c.publishLoop() // a cada 500ms publica snapshot dos agregados
+	go c.readLoop()    // consumes ringbuf, populates c.files
+	go c.publishLoop() // every 500ms publishes a snapshot of the aggregates
 	return nil
 }
 
@@ -89,9 +89,9 @@ func (c *IOEBPFCollector) Subscribe() <-chan interface{} {
 	return c.ch
 }
 
-// readLoop lê eventos da ring buffer indefinidamente, atualiza agregados
-// in-place. Ringbuf.Read bloqueia até evento chegar — quando o tracer
-// fecha, retorna io.EOF e a goroutine termina.
+// readLoop reads events from the ring buffer indefinitely, updating
+// aggregates in place. Ringbuf.Read blocks until an event arrives — when
+// the tracer closes, it returns io.EOF and the goroutine exits.
 func (c *IOEBPFCollector) readLoop() {
 	for {
 		ev, err := c.tracer.Next()
@@ -99,7 +99,7 @@ func (c *IOEBPFCollector) readLoop() {
 			if err == io.EOF {
 				return
 			}
-			// erro transiente; tenta de novo
+			// transient error; try again
 			continue
 		}
 		c.processEvent(ev)
@@ -132,7 +132,7 @@ func (c *IOEBPFCollector) processEvent(ev bpf.IOEvent) {
 		agg.latMaxNs = ev.LatNs
 	}
 
-	// Histograma de latência (em ms)
+	// Latency histogram (in ms)
 	latMs := float64(ev.LatNs) / 1e6
 	bIdx := bucketIndexMs(latMs)
 	if bIdx >= 0 && bIdx < len(c.buckets) {
@@ -144,10 +144,10 @@ func (c *IOEBPFCollector) processEvent(ev bpf.IOEvent) {
 	}
 }
 
-// resolvePath lê /proc/<pid>/fd/<fd> via readlink, com cache de 2s.
-// Sockets e pipes retornam paths como "socket:[N]" — caller deve filtrar
-// se quiser só files de verdade. Aqui mantemos tudo (sockets aparecem
-// como "socket:[12345]" no top files, sinalizando network I/O).
+// resolvePath reads /proc/<pid>/fd/<fd> via readlink, with a 2s cache.
+// Sockets and pipes return paths like "socket:[N]" — caller should
+// filter if it wants only real files. Here we keep everything (sockets
+// appear as "socket:[12345]" in top files, signaling network I/O).
 func (c *IOEBPFCollector) resolvePath(fd uint32) string {
 	c.mu.Lock()
 	if cached, ok := c.pathFor[fd]; ok && time.Since(cached.at) < ioPathCacheTTL {
@@ -167,10 +167,10 @@ func (c *IOEBPFCollector) resolvePath(fd uint32) string {
 	return link
 }
 
-// publishLoop a cada 500ms snapshota os agregados e publica IOStats parcial.
-// Reset do histograma a cada publish — buckets refletem janela atual,
-// não cumulativo (mais útil pra UI). TopFiles permanecem cumulativos
-// (consistente com /proc/<pid>/io que cumula).
+// publishLoop snapshots the aggregates every 500ms and publishes a partial
+// IOStats. Histogram resets every publish — buckets reflect the current
+// window, not cumulative (more useful for the UI). TopFiles remain
+// cumulative (consistent with /proc/<pid>/io which is cumulative).
 func (c *IOEBPFCollector) publishLoop() {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
@@ -205,11 +205,11 @@ func (c *IOEBPFCollector) snapshot() IOEBPFSnapshot {
 			Writes:    agg.writes,
 			Bytes:     agg.bytes,
 			LatencyMs: latAvgMs,
-			Fsyncs:    0, // sem fsync tracking ainda
+			Fsyncs:    0, // no fsync tracking yet
 		})
 	}
 
-	// Copia buckets e reseta o cumulativo
+	// Copy buckets and reset the cumulative
 	bucketsCopy := append([]LatencyBucket(nil), c.buckets...)
 	for i := range c.buckets {
 		c.buckets[i].Read = 0
@@ -222,15 +222,15 @@ func (c *IOEBPFCollector) snapshot() IOEBPFSnapshot {
 	}
 }
 
-// IOEBPFSnapshot é o payload publicado. Model atualiza IOStats.TopFiles
-// e IOStats.LatencyBuckets a partir disso.
+// IOEBPFSnapshot is the published payload. Model updates IOStats.TopFiles
+// and IOStats.LatencyBuckets from this.
 type IOEBPFSnapshot struct {
 	TopFiles []IOFileStats
 	Buckets  []LatencyBucket
 }
 
-// classifyPath: heurística de tipo pra colorir o tipo na F5.
-// Mantém compatível com mockup: db / log / cfg / tmp / proc / file / sock.
+// classifyPath: type heuristic to color the type in F5.
+// Stays compatible with the mockup: db / log / cfg / tmp / proc / file / sock.
 func classifyPath(p string) string {
 	switch {
 	case strings.HasPrefix(p, "socket:"):
@@ -255,7 +255,7 @@ func classifyPath(p string) string {
 		strings.Contains(p, "/etc/"):
 		return "cfg"
 	default:
-		// Resolve absoluto se path é relativo (caso raro, defesa)
+		// Resolve absolute if path is relative (rare case, defensive)
 		if !filepath.IsAbs(p) {
 			return "file"
 		}
@@ -263,7 +263,7 @@ func classifyPath(p string) string {
 	}
 }
 
-// bucketIndexMs mapeia latência em ms pro bucket certo do histograma.
+// bucketIndexMs maps latency in ms to the right histogram bucket.
 // Buckets: <0.1, 0.1-1, 1-5, 5-20, >20.
 func bucketIndexMs(ms float64) int {
 	switch {

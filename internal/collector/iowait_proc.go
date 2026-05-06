@@ -7,18 +7,18 @@ import (
 	"time"
 )
 
-// IOWaitCollector lê /proc/<pid>/stat campo 42 (delayacct_blkio_ticks)
-// e converte em % do wallclock que o processo passou bloqueado em block I/O
-// síncrono no último intervalo.
+// IOWaitCollector reads /proc/<pid>/stat field 42 (delayacct_blkio_ticks)
+// and converts it into the % of wallclock the process spent blocked on
+// synchronous block I/O during the last interval.
 //
-// Esta é a fonte canônica para "este processo está esperando disco?" — o
-// `iowait` global de top/vmstat é uma estatística system-wide de CPU ociosa,
-// NÃO atribuível a um PID. delayacct_blkio_ticks é per-task e exato.
+// This is the canonical source for "is this process waiting on disk?" — the
+// global `iowait` from top/vmstat is a system-wide stat for idle CPU time,
+// NOT attributable to a PID. delayacct_blkio_ticks is per-task and exact.
 //
-// Requer kernel com CONFIG_TASK_DELAY_ACCT (default em distros modernas).
-// Em kernels 5.14+ pode requerer boot param `delayacct=on`. Quando o kernel
-// não exporta o campo, parseProcStatTimes retorna blkio=0 sem erro — o
-// collector continua publicando 0%, sinalizando "sem dados".
+// Requires kernel with CONFIG_TASK_DELAY_ACCT (default in modern distros).
+// On 5.14+ kernels may require boot param `delayacct=on`. When the kernel
+// doesn't export the field, parseProcStatTimes returns blkio=0 with no
+// error — the collector keeps publishing 0%, signaling "no data".
 type IOWaitCollector struct {
 	pid  int
 	ch   chan interface{}
@@ -39,7 +39,7 @@ func NewIOWaitCollector() *IOWaitCollector {
 func (c *IOWaitCollector) Start(pid int) error {
 	c.pid = pid
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/stat", pid)); err != nil {
-		return fmt.Errorf("processo %d não encontrado: %w", pid, err)
+		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -85,11 +85,11 @@ func (c *IOWaitCollector) sample() (IOWaitSample, error) {
 		elapsed := now.Sub(c.lastAt).Seconds()
 		if elapsed > 0 && blkio >= c.lastBlkio {
 			deltaTicks := float64(blkio - c.lastBlkio)
-			// % do wallclock: deltaTicks/clkTck = segundos esperando I/O.
-			// Dividido por elapsed = fração; ×100 = %.
+			// % of wallclock: deltaTicks/clkTck = seconds waiting on I/O.
+			// Divided by elapsed = fraction; ×100 = %.
 			pct = (deltaTicks / clkTck) / elapsed * 100
 			if pct > 100 {
-				pct = 100 // saturação multi-thread em rare cases
+				pct = 100 // multi-thread saturation in rare cases
 			}
 		}
 	}

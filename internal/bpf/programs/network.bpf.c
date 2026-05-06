@@ -1,30 +1,31 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// network.bpf.c — rastreia conexões TCP do PID alvo:
+// network.bpf.c — traces TCP connections of the target PID:
 //
-//   1. tracepoint sock:inet_sock_set_state → descobre 5-tuple + state
-//   2. kprobe   tcp_sendmsg                → bytes Tx
-//   3. kprobe   tcp_cleanup_rbuf           → bytes Rx
+//   1. tracepoint sock:inet_sock_set_state → discovers 5-tuple + state
+//   2. kprobe   tcp_sendmsg                → Tx bytes
+//   3. kprobe   tcp_cleanup_rbuf           → Rx bytes
 //
-// Truque pra evitar dereferenciar `struct sock` (que exigiria vmlinux.h
-// ou offsets manuais frágeis): o tracepoint inet_sock_set_state já entrega
-// o `skaddr` (ponteiro kernel do sock) JUNTO com a 5-tuple, então mantemos
-// um map auxiliar sock_to_key (skaddr → net_key). Os kprobes em
-// tcp_sendmsg/cleanup_rbuf recebem o `struct sock *sk` no primeiro arg
-// via PT_REGS_PARM1 — usam o ponteiro como chave do sock_to_key e
-// acumulam bytes no net_val correspondente, sem ler nenhum campo do sock.
+// Trick to avoid dereferencing `struct sock` (which would require vmlinux.h
+// or fragile manual offsets): the inet_sock_set_state tracepoint already
+// delivers `skaddr` (the kernel sock pointer) ALONG WITH the 5-tuple, so we
+// keep an auxiliary sock_to_key map (skaddr → net_key). The kprobes on
+// tcp_sendmsg/cleanup_rbuf receive `struct sock *sk` as their first arg via
+// PT_REGS_PARM1 — they use the pointer as the sock_to_key lookup key and
+// accumulate bytes in the corresponding net_val, without reading any field
+// of the sock.
 //
 // Maps:
-//   net_target_pid   ARRAY[1]  pid alvo (escrito pelo loader Go)
+//   net_target_pid   ARRAY[1]  target pid (written by the Go loader)
 //   net_conn_map     HASH      net_key → net_val (state, RTT, tx/rx bytes)
-//   sock_to_key      HASH      sock_ptr → net_key (correlação)
+//   sock_to_key      HASH      sock_ptr → net_key (correlation)
 //
-// Limitações:
-//   - Conexões pré-existentes (abertas antes de xray attachar) não entram
-//     no sock_to_key, então tx/rx ficam 0 pra elas. Conexões novas funcionam.
-//   - bpf_get_current_pid_tgid() em softirq retorna a task interrompida —
-//     pode pular ou contar errado em transições no path de softirq.
-//     tcp_sendmsg/cleanup_rbuf rodam em process context, então OK.
+// Limitations:
+//   - Pre-existing connections (opened before xray attached) don't enter
+//     sock_to_key, so tx/rx stay 0 for them. New connections work.
+//   - bpf_get_current_pid_tgid() in softirq returns the interrupted task —
+//     may skip or misattribute on transitions in the softirq path.
+//     tcp_sendmsg/cleanup_rbuf run in process context, so OK.
 
 #include <linux/bpf.h>
 #include <linux/ptrace.h>
@@ -42,8 +43,8 @@ char LICENSE[] SEC("license") = "GPL";
 #define TCP_SYN_SENT    2
 #define TCP_CLOSE       7
 
-// Layout do tracepoint sock:inet_sock_set_state — estável desde 4.16.
-// kernel emite sport/dport já em host-order (ntohs), addrs em network order.
+// Layout of the sock:inet_sock_set_state tracepoint — stable since 4.16.
+// kernel emits sport/dport already in host-order (ntohs), addrs in network order.
 struct sock_set_state_args {
     unsigned long long _pad;
     const void *skaddr;
@@ -59,9 +60,9 @@ struct sock_set_state_args {
     __u8  daddr_v6[16];
 };
 
-// net_key: 5-tuple. Pra IPv4, os 4 primeiros bytes de saddr/daddr são
-// significativos e o restante vai zero. Layout fixo (40 bytes) batendo
-// com NetConnKey em internal/bpf/network.go.
+// net_key: 5-tuple. For IPv4, the first 4 bytes of saddr/daddr are
+// significant and the rest are zero. Fixed layout (40 bytes) matching
+// NetConnKey in internal/bpf/network.go.
 struct net_key {
     __u8  daddr[16];
     __u8  saddr[16];
@@ -97,8 +98,8 @@ struct {
     __uint(max_entries, 4096);
 } net_conn_map SEC(".maps");
 
-// sock_to_key: ponteiro kernel do sock → 5-tuple, usado pra correlacionar
-// kprobes (que recebem sk como arg) com o net_conn_map (keyed por 5-tuple).
+// sock_to_key: kernel sock pointer → 5-tuple, used to correlate kprobes
+// (which receive sk as an arg) with net_conn_map (keyed by 5-tuple).
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __u64);
@@ -163,7 +164,7 @@ int handle_inet_set_state(struct sock_set_state_args *ctx)
         }
     }
 
-    // Mantém sock_to_key vivo enquanto a conexão existe; remove ao fechar.
+    // Keep sock_to_key alive while the connection exists; remove on close.
     if (ctx->newstate == TCP_CLOSE) {
         bpf_map_delete_elem(&sock_to_key, &skaddr);
     } else {
@@ -172,15 +173,15 @@ int handle_inet_set_state(struct sock_set_state_args *ctx)
     return 0;
 }
 
-// add_bytes faz lookup do sk → net_key → net_val e acumula bytes no campo
-// indicado. Inline pra evitar overhead de chamada e satisfazer verifier.
+// add_bytes does sk → net_key → net_val lookup and accumulates bytes in the
+// indicated field. Inlined to avoid call overhead and satisfy the verifier.
 static __always_inline void add_bytes(__u64 skaddr, __u64 bytes, int is_tx)
 {
     struct net_key *kp = bpf_map_lookup_elem(&sock_to_key, &skaddr);
     if (!kp)
         return;
-    // Copia pra stack — verifier preferere não passar ponteiros pra map
-    // memory como key de outro lookup em algumas versões.
+    // Copy to stack — the verifier prefers not passing pointers into map
+    // memory as a key for another lookup in some versions.
     struct net_key k = *kp;
     struct net_val *v = bpf_map_lookup_elem(&net_conn_map, &k);
     if (!v)
@@ -193,9 +194,9 @@ static __always_inline void add_bytes(__u64 skaddr, __u64 bytes, int is_tx)
 }
 
 // tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
-// PARM1 = sk, PARM3 = size (em bytes — request, não retorno).
-// Pra MVP usamos o size como "bytes Tx" — em prática é o que foi enfileirado;
-// erro raro (-EAGAIN, etc.) ainda contaria. Aceitável.
+// PARM1 = sk, PARM3 = size (in bytes — request, not return value).
+// For the MVP we use size as "Tx bytes" — in practice it's what was queued;
+// rare errors (-EAGAIN, etc.) would still count. Acceptable.
 SEC("kprobe/tcp_sendmsg")
 int BPF_KPROBE(handle_tcp_sendmsg, void *sk, void *msg, __u64 size)
 {
@@ -207,9 +208,9 @@ int BPF_KPROBE(handle_tcp_sendmsg, void *sk, void *msg, __u64 size)
     return 0;
 }
 
-// tcp_cleanup_rbuf(struct sock *sk, int copied) é chamada quando bytes
-// recebidos foram entregues ao userspace e o receive buffer pode liberar.
-// PARM1 = sk, PARM2 = copied (bytes efetivamente entregues).
+// tcp_cleanup_rbuf(struct sock *sk, int copied) is called when received
+// bytes have been delivered to userspace and the receive buffer can be freed.
+// PARM1 = sk, PARM2 = copied (bytes actually delivered).
 SEC("kprobe/tcp_cleanup_rbuf")
 int BPF_KPROBE(handle_tcp_cleanup_rbuf, void *sk, int copied)
 {

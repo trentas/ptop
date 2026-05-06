@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: GPL-2.0
 //
-// cpu.bpf.c — sampling de CPU do PID alvo via perf_event a 100Hz por CPU.
+// cpu.bpf.c — CPU sampling of the target PID via perf_event at 100Hz per CPU.
 //
 // Maps:
-//   cpu_target_pid       ARRAY[1]  pid alvo (escrito pelo loader Go)
-//   cpu_target_samples   ARRAY[1]  contador acumulado de samples onde o
-//                                   target estava on-CPU
+//   cpu_target_pid       ARRAY[1]  target pid (written by the Go loader)
+//   cpu_target_samples   ARRAY[1]  accumulated counter of samples where the
+//                                   target was on-CPU
 //
-// Loader Go abre um perf_event PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK
-// com sample_freq=100 em cada CPU. Cada vez que o kernel dispara um sample,
-// se o tgid atual == target_pid, incrementa o contador.
+// The Go loader opens a PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK perf_event
+// with sample_freq=100 on each CPU. Each time the kernel fires a sample,
+// if the current tgid == target_pid, the counter is incremented.
 //
-// Cálculo do % no Go side:
-//   delta_samples / (sample_freq × elapsed_seconds × NCPU) × 100 = % do
-//   sistema. Multiplica por NCPU pra ter % em escala "single-core" (top-style).
+// % computation on the Go side:
+//   delta_samples / (sample_freq × elapsed_seconds × NCPU) × 100 = % of
+//   the system. Multiply by NCPU to get % on a "single-core" scale (top-style).
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
