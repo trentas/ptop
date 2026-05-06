@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/trentas/xray/internal/collector"
+	"github.com/trentas/ptop/internal/collector"
 )
 
 // snapshotSchemaVersion matches semver in the JSON format. Bumping requires
@@ -67,12 +67,12 @@ func buildSnapshot(m Model) Snapshot {
 }
 
 // SaveSnapshot serializes a snapshot as formatted JSON to a file
-// xray-snapshot-<timestamp>.json in the cwd. Returns the created path.
+// ptop-snapshot-<timestamp>.json in the cwd. Returns the created path.
 //
 // Exposed for main.go to use in the --export-on-quit flow.
 func SaveSnapshot(m Model) (string, error) {
 	snap := buildSnapshot(m)
-	path := fmt.Sprintf("xray-snapshot-%s.json", snap.CapturedAt.Format("20060102-150405"))
+	path := fmt.Sprintf("ptop-snapshot-%s.json", snap.CapturedAt.Format("20060102-150405"))
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		return "", err
@@ -83,9 +83,9 @@ func SaveSnapshot(m Model) (string, error) {
 	return path, nil
 }
 
-// openExportFile creates/truncates xray-export-<timestamp>.jsonl for continuous mode.
+// openExportFile creates/truncates ptop-export-<timestamp>.jsonl for continuous mode.
 func openExportFile() (*os.File, error) {
-	path := fmt.Sprintf("xray-export-%s.jsonl", time.Now().Format("20060102-150405"))
+	path := fmt.Sprintf("ptop-export-%s.jsonl", time.Now().Format("20060102-150405"))
 	return os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 }
 

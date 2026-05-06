@@ -1,4 +1,4 @@
- ⬡ xray │ api-server  PID 1   Go 1.22   RUNNING   15 fds                                                          uptime 00:00  │  18:06:31 
+ ⬡ ptop │ api-server  PID 1   Go 1.22   RUNNING   15 fds                                                          uptime 00:00  │  18:06:31 
   F1 Overview  │  F2 Syscalls  │  F3 Network  │  F4 Threads  │  F5 I/O  │  F6 FD  │  F7 Timeline               q quit · / filter · p pause  
 ┌──────────────────────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────┐
 │ ▸ CPU                                                                            ││ ▸ I/O THROUGHPUT                                     │

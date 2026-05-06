@@ -10,7 +10,7 @@ import (
 
 // renderHeader draws the top bar:
 //
-//	⬡ xray │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
+//	⬡ ptop │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
 //
 // The result is ALWAYS truncated to fit m.Width. If the line overflows
 // width, the terminal line-wraps and the rest of the TUI gets flipped upside
@@ -22,7 +22,7 @@ func renderHeader(m Model) string {
 		Foreground(ColorCyan).
 		Background(headerBg).
 		Bold(true).
-		Render("⬡ xray")
+		Render("⬡ ptop")
 
 	sep := lipgloss.NewStyle().
 		Foreground(ColorBorder).

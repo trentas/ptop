@@ -1,4 +1,4 @@
-module github.com/trentas/xray
+module github.com/trentas/ptop
 
 go 1.22
 

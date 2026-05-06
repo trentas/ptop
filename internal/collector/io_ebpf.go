@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trentas/xray/internal/bpf"
+	"github.com/trentas/ptop/internal/bpf"
 )
 
 // IOEBPFCollector consumes the event ring buffer of the eBPF I/O tracer

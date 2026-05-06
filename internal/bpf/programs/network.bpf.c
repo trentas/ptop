@@ -21,7 +21,7 @@
 //   sock_to_key      HASH      sock_ptr → net_key (correlation)
 //
 // Limitations:
-//   - Pre-existing connections (opened before xray attached) don't enter
+//   - Pre-existing connections (opened before ptop attached) don't enter
 //     sock_to_key, so tx/rx stay 0 for them. New connections work.
 //   - bpf_get_current_pid_tgid() in softirq returns the interrupted task —
 //     may skip or misattribute on transitions in the softirq path.

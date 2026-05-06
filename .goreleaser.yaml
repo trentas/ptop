@@ -1,26 +1,26 @@
 version: 2
 
-project_name: xray
+project_name: ptop
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  # Default build — no eBPF, runs on any supported OS.
-  # Once the eBPF collectors (#9-#14) land, the release will gain a
-  # second variant with -tags=ebpf for linux/amd64 and linux/arm64 only.
-  - id: xray
-    main: ./cmd/xray
-    binary: xray
+  # Single Linux build with embedded eBPF programs. ptop targets Linux
+  # exclusively (eBPF, /proc, kernel tracepoints) — no other OS is supported.
+  - id: ptop
+    main: ./cmd/ptop
+    binary: ptop
     env:
       - CGO_ENABLED=0
     goos:
       - linux
-      - darwin
     goarch:
       - amd64
       - arm64
+    tags:
+      - ebpf
     flags:
       - -trimpath
     ldflags:
@@ -30,15 +30,14 @@ builds:
       - -X main.buildDate={{ .Date }}
 
 archives:
-  - id: xray
-    ids: [xray]
+  - id: ptop
+    ids: [ptop]
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}
     files:
       - LICENSE
       - README.md
-      - CLAUDE.md
 
 checksum:
   name_template: "SHA256SUMS"
@@ -78,15 +77,16 @@ changelog:
 release:
   github:
     owner: trentas
-    name: xray
-  name_template: "xray {{ .Version }}"
+    name: ptop
+  name_template: "ptop {{ .Version }}"
   draft: false
   prerelease: auto
   mode: replace
   header: |
-    ## xray {{ .Version }}
+    ## ptop {{ .Version }}
 
-    Cross-compiled binaries for Linux (amd64/arm64) and macOS (amd64/arm64).
+    Linux binaries (amd64 / arm64) with eBPF collectors embedded.
+    Requires kernel 5.8+ with BTF, and either root or `CAP_BPF + CAP_PERFMON`.
 
     ### Integrity verification
 
@@ -97,12 +97,7 @@ release:
     ### Installation
 
     ```bash
-    curl -L https://github.com/trentas/xray/releases/download/{{ .Tag }}/xray-{{ .Version }}-linux-amd64.tar.gz | tar xz
-    sudo install xray /usr/local/bin/
-    xray --pid <PID> --no-ebpf
+    curl -L https://github.com/trentas/ptop/releases/download/{{ .Tag }}/ptop-{{ .Version }}-linux-amd64.tar.gz | tar xz
+    sudo install ptop /usr/local/bin/
+    sudo ptop --pid <PID>
     ```
-  footer: |
-    ---
-
-    This release has **no embedded eBPF** (`--no-ebpf` mode only).
-    eBPF collectors are being delivered in issues #9-#14.

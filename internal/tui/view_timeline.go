@@ -5,7 +5,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/xray/internal/collector"
+	"github.com/trentas/ptop/internal/collector"
 )
 
 // renderTimelineView (F7) — assets/mockup.jsx → TimelineView

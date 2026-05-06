@@ -20,9 +20,9 @@ jobs:
           go-version: '1.22'
           cache: true
 
-      # ─── Default lane (sem eBPF) ──────────────────────────────────────────
-      # Roda primeiro porque cobre o caminho macOS/dev. Falhas aqui afetam
-      # qualquer contributor sem libbpf-dev.
+      # ─── Default lane (no eBPF) ───────────────────────────────────────────
+      # Runs first because it exercises the path used by contributors without
+      # libbpf-dev. A failure here breaks everyone without the eBPF toolchain.
 
       - name: go vet (default)
         run: go vet ./...
@@ -31,11 +31,11 @@ jobs:
         run: go test -race -count=1 ./...
 
       - name: go build (default — TUI + /proc)
-        run: go build -o /tmp/xray ./cmd/xray
+        run: go build -o /tmp/ptop ./cmd/ptop
 
       # ─── eBPF lane ────────────────────────────────────────────────────────
-      # Requer libbpf headers + clang pra compilar os .bpf.c.
-      # cilium/ebpf é pure-Go, não precisa de libbpf.so em runtime.
+      # Requires libbpf headers + clang to compile the .bpf.c programs.
+      # cilium/ebpf is pure-Go, so no libbpf.so is needed at runtime.
 
       - name: install eBPF toolchain
         run: |
@@ -56,4 +56,4 @@ jobs:
         run: go test -race -count=1 -tags=ebpf ./...
 
       - name: go build (ebpf tag)
-        run: go build -tags=ebpf -o /tmp/xray-ebpf ./cmd/xray
+        run: go build -tags=ebpf -o /tmp/ptop-ebpf ./cmd/ptop

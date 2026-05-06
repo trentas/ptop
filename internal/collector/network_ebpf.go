@@ -8,7 +8,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/trentas/xray/internal/bpf"
+	"github.com/trentas/ptop/internal/bpf"
 )
 
 // NetworkEBPFCollector combines:
@@ -68,7 +68,7 @@ func (c *NetworkEBPFCollector) publishLoop() {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
 	// Re-seed every 5s to catch long-lived connections that didn't go through
-	// any state transition during xray's lifetime.
+	// any state transition during ptop's lifetime.
 	const reseedEvery = 10 // 10 × 500ms = 5s
 	tick := 0
 	for {

@@ -141,7 +141,7 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 
 // SeedConnection inserts an entry into net_conn_map for a 5-tuple that was
 // not captured by the tracepoint (e.g. TCP connections already established
-// when xray attached). Uses BPF_NOEXIST: if an entry already exists (because
+// when ptop attached). Uses BPF_NOEXIST: if an entry already exists (because
 // the tracepoint fired at some point), it preserves what's there — data
 // from the tracepoint has real RTT, accumulated bytes, etc.
 //

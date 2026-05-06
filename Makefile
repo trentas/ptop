@@ -2,22 +2,15 @@
 
 .DEFAULT_GOAL := all
 
-BINARY := xray
-PKG    := ./cmd/xray
+BINARY := ptop
+PKG    := ./cmd/ptop
 
 # ─── all ─────────────────────────────────────────────────────────────────────
 
-# Full developer/CI verification. On Linux: generates .bpf.o, vets and tests
-# in both modes (default + -tags=ebpf), then produces the eBPF-embedded
-# binary. On other OSes: vet + test + /proc-only binary (eBPF requires
-# Linux + libbpf-dev to compile the .bpf.c programs).
-ifeq ($(shell uname),Linux)
+# Full developer/CI verification. Compiles the eBPF programs, vets and tests
+# both lanes (default + -tags=ebpf), then produces the eBPF-embedded binary.
+# Requires Linux + clang + libbpf-dev to compile the .bpf.c programs.
 all: gen vet test-all build-ebpf
-else
-all: vet test build
-	@echo
-	@echo "(non-Linux host — built /proc-only binary; eBPF needs Linux + libbpf-dev)"
-endif
 
 # ─── eBPF compilation ────────────────────────────────────────────────────────
 
@@ -61,12 +54,13 @@ CLANG  ?= clang
 		$(if $(GNU_TRIPLE),-I/usr/include/$(GNU_TRIPLE),) \
 		-c $< -o $@
 
-# `make gen` produces all .o files from programs/. Linux + libbpf-dev only.
+# `make gen` produces all .o files from programs/. Requires libbpf-dev.
 gen: $(BPF_OBJS)
 
 # ─── builds ──────────────────────────────────────────────────────────────────
 
-# Default build: NO eBPF, any OS (TUI + /proc collectors).
+# Build without eBPF — TUI + /proc collectors. Useful on Linux without root,
+# or for quick iteration when you don't need kernel-level tracing.
 build:
 	go build -o bin/$(BINARY) $(PKG)
 
@@ -74,7 +68,7 @@ build:
 build-ebpf: gen
 	go build -tags=ebpf -o bin/$(BINARY) $(PKG)
 
-# eBPF mode requires root or CAP_BPF
+# eBPF mode requires root or CAP_BPF + CAP_PERFMON
 run: build-ebpf
 	sudo ./bin/$(BINARY) --pid $(PID)
 
@@ -87,14 +81,9 @@ dev: build
 test:
 	go test -race ./...
 
-# Runs tests in both modes. The eBPF lane only makes sense on Linux (depends
-# on .bpf.o); skips with a warning on other OSes.
+# Runs tests in both lanes. The eBPF lane requires .bpf.o (run `make gen`).
 test-all: test
-	@if [ "$$(uname)" = "Linux" ]; then \
-		$(MAKE) gen && go test -race -tags=ebpf ./...; \
-	else \
-		echo "(eBPF tests only run on Linux with libbpf-dev — skipping)"; \
-	fi
+	$(MAKE) gen && go test -race -tags=ebpf ./...
 
 vet:
 	go vet ./...

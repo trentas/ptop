@@ -1,8 +1,10 @@
-# xray
+# ptop — implementation guide
 
 Interactive TUI for deep inspection of Linux processes via eBPF.
-Provides live diagnosis of CPU, syscalls, network, I/O, memory, threads, and file descriptors
-of any running process — without restarting, without instrumenting, without changing a line of code.
+This file documents the implementation: tech stack, project layout, type
+contracts, and the conventions every collector and view follows.
+
+If something here drifts from reality, the code wins. Update this file.
 
 ---
 
@@ -10,22 +12,28 @@ of any running process — without restarting, without instrumenting, without ch
 
 | Layer  | Technology | Reason |
 |--------|-----------|--------|
-| TUI    | [Bubbletea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss) | Mature ecosystem, composable, mouse support |
-| eBPF   | [libbpfgo](https://github.com/aquasecurity/libbpfgo) | Official Cilium binding, best CO-RE support |
-| Build  | Go 1.22+ | Single binary, easy cross-compile |
-| eBPF C | clang + bpftool | Compile .c → .o → embed in the binary via go:generate |
+| TUI    | [Bubbletea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss) | Mature, composable, mouse support |
+| eBPF   | [cilium/ebpf](https://github.com/cilium/ebpf) | Pure-Go, no libbpf.so needed at runtime |
+| Build  | Go 1.22+, clang, libbpf-dev (build only) | Single static binary |
+| eBPF C | clang `-target bpf` → `.bpf.o` → `go:embed` | See `Makefile` |
 
-> Don't use CGO beyond what libbpfgo already requires. Don't use CLI frameworks (cobra, urfave) — the entrypoint is simple.
+> Don't introduce CGO. Don't introduce a CLI framework — `flag` is sufficient.
+> Don't add a logging library — `fmt.Fprintln(os.Stderr, ...)` is enough.
 
 ---
 
 ## Visual reference
 
-`assets/mockup.jsx` contains the full React prototype with all tabs implemented and simulated data.
-**Each Go view must faithfully reproduce the layout of the corresponding mockup.**
-Use it as the authoritative visual spec — if there's any doubt about layout, the mockup wins.
+`assets/mockup.jsx` contains the React prototype with all tabs implemented and
+simulated data. **Each Go view must faithfully reproduce the layout of the
+corresponding mockup.** Use it as the authoritative visual spec — if there's
+any doubt about layout, the mockup wins.
 
-Color palette (use via Lipgloss):
+`assets/screenshot-overview.txt` is a captured F1 dump used as a regression
+fixture in `internal/tui/dump_test.go`.
+
+Color palette (defined in `internal/tui/styles.go`):
+
 ```
 bg:      #0e1014    bgPanel: #13161c    border:  #2a2d35
 dim:     #3a3d45    muted:   #5a5f72    text:    #c8ccd8
@@ -40,113 +48,136 @@ teal:    #2dd4bf
 ## Project structure
 
 ```
-xray/
-├── CLAUDE.md
-├── go.mod
-├── go.sum
-├── Makefile
-├── cmd/
-│   └── inspector/
-│       └── main.go          # entrypoint: parse args, init collectors, start TUI
+ptop/
+├── CLAUDE.md, README.md, CONTRIBUTING.md, SECURITY.md, LICENSE
+├── go.mod, go.sum
+├── Makefile, .goreleaser.yaml
+├── cmd/ptop/main.go               entrypoint: parse flags, start model
 ├── internal/
-│   ├── bpf/
-│   │   ├── programs/        # .c sources for the eBPF programs
-│   │   │   ├── syscalls.bpf.c
-│   │   │   ├── network.bpf.c
-│   │   │   ├── io.bpf.c
-│   │   │   └── fds.bpf.c
-│   │   ├── loader.go        # loads and manages the eBPF programs
-│   │   └── maps.go          # definitions of the shared BPF maps
-│   ├── collector/
-│   │   ├── types.go         # data structs shared between collectors and TUI
-│   │   ├── cpu.go           # perf_event sampling → CPU history
-│   │   ├── syscalls.go      # tracepoint syscalls:sys_enter_* → counts + latency
-│   │   ├── network.go       # sock tracepoints → active connections, per-peer latency
-│   │   ├── memory.go        # mmap/brk/page faults via tracepoints
-│   │   ├── threads.go       # sched tracepoints → thread state + off-cpu
-│   │   ├── io.go            # block I/O tracepoints → throughput, latency, top files
-│   │   └── fds.go           # openat/close/dup2 uprobes → live FD table
-│   └── tui/
-│       ├── model.go         # Bubbletea root model: global state, msg routing
-│       ├── keys.go          # keybindings (F1-F7, q, p, /, s, e)
-│       ├── styles.go        # all Lipgloss definitions (colors, borders, badges)
-│       ├── header.go        # top bar: name, PID, runtime, fd count badge, uptime
-│       ├── tabbar.go        # F1-F7 tab bar
-│       ├── statusbar.go     # footer with keybindings and overhead info
-│       ├── sparkline.go     # reusable SVG-style braille sparkline component
-│       └── views/
-│           ├── overview.go  # F1: CPU + syscalls + threads + I/O mini + net + mem + timeline
-│           ├── syscalls.go  # F2: frequency bars + percentage + event stream
-│           ├── network.go   # F3: active connections + latency trend + net events
-│           ├── threads.go   # F4: thread state + lock graph + lock events
-│           ├── io.go        # F5: dual throughput + top files + latency histogram + stats
-│           ├── fd.go        # F6: fd table + breakdown + sparkline + alerts + fd events
-│           └── timeline.go  # F7: full event stream with badge per category
+│   ├── bpf/                       eBPF programs + loader (build tag `ebpf`)
+│   │   ├── programs/              .bpf.c sources, compiled by `make gen`
+│   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
+│   │   │   ├── cpu.bpf.c          perf_event @ 100Hz/CPU
+│   │   │   ├── io.bpf.c           VFS read/write/fsync
+│   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes
+│   │   │   ├── threads.bpf.c      sched_switch
+│   │   │   ├── memory.bpf.c       mmap/brk/page-fault
+│   │   │   └── futex.bpf.c        futex wait/wake → lock graph
+│   │   ├── available.go           runtime feature flag (build-tag based)
+│   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
+│   │   ├── caps_stub.go           non-Linux stub
+│   │   ├── caps_test.go
+│   │   ├── cpu.go                 perf_event tracer
+│   │   ├── syscalls.go            raw_syscalls tracepoint loader
+│   │   ├── network.go             sock tracepoints + connection seeding
+│   │   ├── io.go                  VFS syscall tracker loader
+│   │   ├── memory.go              memory counter loader
+│   │   ├── threads.go             sched_switch loader
+│   │   ├── futex.go               futex wait/wake loader
+│   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
+│   ├── collector/                 /proc + eBPF collectors + shared types
+│   │   ├── types.go               public type contracts (see below)
+│   │   ├── cpu_proc.go            /proc/<pid>/stat utime+stime
+│   │   ├── cpu_ebpf.go            eBPF perf_event sampling
+│   │   ├── threads_proc.go        /proc/<pid>/task/*/stat + wchan
+│   │   ├── threads_ebpf.go        sched_switch → CPU% real-time
+│   │   ├── mem_proc.go            /proc/<pid>/statm + faults
+│   │   ├── mem_ebpf.go            kprobe + syscall tracepoints
+│   │   ├── iowait_proc.go         /proc/<pid>/stat field 42
+│   │   ├── io_proc.go             /proc/<pid>/io throughput
+│   │   ├── io_ebpf.go             top files + per-op latency
+│   │   ├── network_ebpf.go        connections + RTT + bytes
+│   │   ├── syscalls_ebpf.go       per-syscall counts + latency
+│   │   ├── futex_ebpf.go          lock graph from futex tracking
+│   │   ├── fds.go                 /proc/<pid>/fd + fdinfo + events
+│   │   ├── sockets.go             inode → host:port via /proc/net/*
+│   │   ├── syscall_names.go       syscall id → name table
+│   │   └── *_test.go, *_stub.go
+│   └── tui/                       Bubbletea + Lipgloss
+│       ├── model.go               root model: state + msg routing
+│       ├── keys.go                keybindings F1-F7, q, p, /, s, e
+│       ├── styles.go              palette + Lipgloss styles
+│       ├── sparkline.go           braille sparkline component
+│       ├── format.go              human-readable formatters (bytes, ns, ...)
+│       ├── panel.go               titled box layout helper
+│       ├── panels.go              reusable inner panel renderers
+│       ├── header.go              top bar (badges + uptime + clock)
+│       ├── tabbar.go              F1-F7 tab bar
+│       ├── statusbar.go           footer with keybindings
+│       ├── help.go                ? overlay (collector source visibility)
+│       ├── snapshot.go            JSON / JSONL export
+│       ├── view_overview.go       F1
+│       ├── view_syscalls.go       F2
+│       ├── view_network.go        F3
+│       ├── view_threads.go        F4
+│       ├── view_io.go             F5
+│       ├── view_fd.go             F6
+│       ├── view_timeline.go       F7
+│       └── *_test.go              dump test, model test, snapshot test
 └── assets/
-    └── mockup.jsx           # React prototype — authoritative visual reference
+    ├── mockup.jsx                 authoritative visual spec
+    └── screenshot-overview.txt    regression fixture
 ```
+
+> View files live flat under `internal/tui/` (`view_*.go`), not under a
+> `views/` subpackage — they share unexported helpers with the model.
 
 ---
 
 ## Core data types (`internal/collector/types.go`)
 
-All collectors publish to typed channels consumed by the Bubbletea model.
+All collectors publish typed values to a `chan interface{}` consumed by the
+model. The exact struct shapes are the source of truth — refer to `types.go`.
+Representative samples:
 
 ```go
-// Msg sent by the CPU collector on each tick
 type CpuSample struct {
-    UsagePct float64
+    UsagePct  float64
     Timestamp time.Time
 }
 
-// Syscall msg
 type SyscallEvent struct {
     Name      string
     Count     uint64
     LatencyNs uint64
 }
 
-// Active network connection
 type NetConn struct {
-    FD       int
-    Type     string // "TCP" | "UDP" | "UNIX"
-    Remote   string
-    State    string // "ESTABLISHED" | "WAIT" | "RECV" | ...
+    FD        int
+    Type      string // "TCP" | "UDP" | "UNIX"
+    Remote    string
+    State     string // "ESTABLISHED" | "WAIT" | ...
     LatencyMs float64
-    TxBytes  uint64
-    RxBytes  uint64
+    TxBytes   uint64
+    RxBytes   uint64
 }
 
-// I/O event
 type IOEvent struct {
-    Op       string // "read" | "write" | "fsync" | "openat"
-    Path     string
-    Bytes    uint64
+    Op        string // "read" | "write" | "fsync" | "openat"
+    Path      string
+    Bytes     uint64
     LatencyMs float64
-    FD       int
+    FD        int
 }
 
-// File descriptor
 type FDEntry struct {
-    FD       int
-    Type     string // "file" | "socket" | "pipe" | "epoll" | "timer"
-    Desc     string // path or remote address
-    Flags    string // O_RDONLY | O_WRONLY | O_RDWR
-    Bytes    uint64
-    AgeMs    int64
-    Active   bool
+    FD     int
+    Type   string // "file" | "socket" | "pipe" | "epoll" | "timer"
+    Desc   string
+    Flags  string
+    Bytes  uint64
+    AgeMs  int64
+    Active bool
 }
 
-// Thread
 type ThreadInfo struct {
     TID     int
     Name    string
     State   string // "running" | "blocked" | "sleeping"
     CPUPct  float64
-    Waiting string // name of the blocking lock/syscall, if any
+    Waiting string
 }
 
-// Generic timeline event
 type TimelineEvent struct {
     Timestamp time.Time
     Category  string // "syscall"|"net"|"mem"|"cpu"|"lock"|"io"|"fd"
@@ -156,139 +187,112 @@ type TimelineEvent struct {
 
 ---
 
-## Collectors — implementation contract
+## Collector contract
 
-Each collector implements this interface:
+Every collector implements:
 
 ```go
 type Collector interface {
-    Start(ctx context.Context, pid int) error
+    Start(pid int) error
     Stop()
-    Subscribe() <-chan interface{} // sends the typed msgs above
+    Subscribe() <-chan interface{} // sends one of the typed structs above
 }
 ```
 
-The Bubbletea model `select`s across all channels via `tea.Cmd` wrapping `waitForMsg`.
+- `Start` returns an error if the data source isn't available (no `/proc`,
+  missing `CAP_BPF`, kernel too old). The model logs the warning and falls
+  back to either another source for the same subsystem or simulated data.
+- `Stop` must be idempotent and safe even if `Start` failed.
+- `Subscribe` may return `nil` for stub collectors — model handles that.
+- Collectors must **never panic in steady state**. Errors go to stderr
+  and the goroutine continues (or exits cleanly via `Stop`).
 
-### Implementation priority
+### Source priority per subsystem
 
-1. `syscalls.go` — highest impact, uses stable tracepoints
-2. `cpu.go` — perf_event, kernel-version-independent
-3. `fds.go` — read `/proc/{pid}/fd` + eBPF events for openat/close
-4. `io.go` — block tracepoints
-5. `network.go` — sock tracepoints
-6. `threads.go` — sched tracepoints
-7. `memory.go` — mmap/fault tracepoints
+For each subsystem the model tries sources in this order, taking the first
+that succeeds:
 
-> For the MVP, `fds.go` can poll `/proc/{pid}/fd` every 500ms without eBPF.
-> The rest should use eBPF from the start.
+1. eBPF collector (richest data, requires `-tags=ebpf` + caps)
+2. `/proc` collector (degraded but real)
+3. simulated/mocked data (only if both above fail — clearly marked in `?` overlay)
+
+The `?` help overlay surfaces the active source per subsystem (`real via eBPF`,
+`real via /proc`, or `mock`). Never lie about the source — users debug with
+this.
 
 ---
 
-## TUI — implementation rules
+## TUI conventions
 
-### Bubbletea model
+### Model
 
-```go
-type Model struct {
-    // collected data
-    CPUHistory    []float64       // last 60 samples
-    SyscallCounts map[string]uint64
-    NetConns      []collector.NetConn
-    MemStats      collector.MemStats
-    Threads       []collector.ThreadInfo
-    IOStats       collector.IOStats
-    FDs           []collector.FDEntry
-    Timeline      []collector.TimelineEvent
+The root `Model` is the single source of state. View functions are pure: they
+take `m Model, width, height int` and return `string`. No mutation, no
+internal state.
 
-    // UI state
-    ActiveTab     int
-    FDFilter      string          // "all"|"file"|"socket"|...
-    Paused        bool
-    Width, Height int
-}
-```
-
-### Bubbletea messages
-
-```go
-type TickMsg time.Time
-type CpuMsg collector.CpuSample
-type SyscallMsg []collector.SyscallEvent
-type NetMsg []collector.NetConn
-type IOMsg collector.IOEvent
-type FDMsg []collector.FDEntry
-type ThreadMsg []collector.ThreadInfo
-type TimelineMsg collector.TimelineEvent
-```
-
-### Braille sparkline
-
-Use Unicode braille blocks for sparklines — it's the modern TUI standard.
-Characters: `⣀⣄⣆⣇⡇⡏⡟⡿` (8-level scale per column).
-Implement in `tui/sparkline.go` as a pure function `Sparkline(data []float64, width int, color lipgloss.Color) string`.
+Messages flow through `Update(msg tea.Msg)`:
+- `TickMsg`: render tick (FPS-bounded)
+- `CpuMsg`, `SyscallMsg`, `NetMsg`, `IOMsg`, `FDMsg`, `ThreadMsg`,
+  `TimelineMsg`: collector publish
+- `tea.WindowSizeMsg`: layout reflow
+- `tea.KeyMsg`: tab switch / pause / filter / snapshot / quit
 
 ### Layout
 
-Use `lipgloss.JoinHorizontal` and `lipgloss.JoinVertical` to compose panels.
-Each view receives `width, height int` and returns `string` — no internal state.
-The root model distributes dimensions via `tea.WindowSizeMsg`.
+Use `lipgloss.JoinHorizontal` / `lipgloss.JoinVertical` to compose panels.
+Every panel uses `internal/tui/panel.go` for its titled box. The root model
+distributes dimensions via `tea.WindowSizeMsg` — never query the terminal
+directly.
+
+### Sparklines
+
+Unicode braille (`⣀⣄⣆⣇⡇⡏⡟⡿`, 8-level per column).
+`Sparkline(data []float64, width int, color lipgloss.Color) string` is pure
+and reused across views.
+
+### Width discipline
+
+The header and status bar must **never overflow the terminal width** — the
+line wraps and the rest of the TUI flips upside down. `header.go` shows the
+priority-based segment dropping pattern: copy it for any new dynamic strip.
 
 ---
 
-## Makefile
+## Build tags
 
-```makefile
-.PHONY: build run gen clean
+- `//go:build linux && ebpf` — real eBPF code (loader + program objects)
+- `//go:build !linux || !ebpf` — stubs that fail `Start` cleanly
 
-# compile the eBPF programs and embed them in the binary
-gen:
-	go generate ./internal/bpf/...
-
-build: gen
-	go build -o bin/xray ./cmd/xray
-
-# requires root for eBPF
-run: build
-	sudo ./bin/xray --pid $(PID)
-
-clean:
-	rm -rf bin/
-```
+This split lets the project `go vet` and `go test` on any host without the
+eBPF toolchain. The `bpf.Available` const reflects which lane was compiled.
 
 ---
 
-## Command-line flags
+## Command-line flags (`cmd/ptop/main.go`)
 
 ```
-xray --pid <PID>            # inspect a specific process
-xray --pid <PID> --fps 10   # refresh rate (default: 5)
-xray --pid <PID> --export   # save JSON snapshot on exit ('e' key)
-xray --pid <PID> --no-ebpf  # degraded mode: only /proc, no eBPF (for testing)
+ptop --pid <PID>            inspect a specific process
+ptop --pid <PID> --fps 10   render rate (default: 5)
+ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
+ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
+ptop --version              print version + commit + build date
 ```
 
----
-
-## Suggested implementation order for Claude Code
-
-1. `go.mod` + dependencies (bubbletea, lipgloss, libbpfgo)
-2. `internal/collector/types.go` — all the types
-3. `internal/tui/styles.go` — full palette in Lipgloss
-4. `internal/tui/sparkline.go` — reusable braille component
-5. `internal/tui/header.go`, `tabbar.go`, `statusbar.go`
-6. `internal/tui/model.go` — with mocked data (--no-ebpf mode)
-7. Each view in `internal/tui/views/` — start with `overview.go`
-8. `internal/collector/fds.go` — /proc polling without eBPF
-9. `internal/collector/syscalls.go` — first real eBPF collector
-10. The remaining collectors
-
-> Items 1-7 build the full TUI with simulated data, verifiable without root.
-> Items 8-10 connect to reality one collector at a time.
+Version metadata is injected via `-ldflags` at release time
+(`main.version`, `main.commit`, `main.buildDate`). In dev they stay as
+`"dev"`/`"none"`/`"unknown"`.
 
 ---
 
 ## Security notes
 
-- eBPF requires `CAP_BPF` or root. The binary must check and print a clear error if it lacks permission.
-- In `--no-ebpf` mode, all collectors fall back to reading `/proc` — useful for development.
-- Never `panic` in production — collectors must log errors and continue.
+- eBPF requires `CAP_BPF + CAP_PERFMON` (or root). `bpf.GetCapStatus()` /
+  `Diagnose()` produce a structured error before the TUI starts — never
+  silently fall through to a non-functional state.
+- In `--no-ebpf` mode, all collectors fall back to `/proc` — useful when
+  granting caps isn't acceptable.
+- Never `panic` in production paths — collectors log to stderr and continue.
+- The binary is built with `CGO_ENABLED=0` — no dynamic linking, no surprise
+  shared-library footprint.
+
+See [`SECURITY.md`](SECURITY.md) for vulnerability reporting.

@@ -1,12 +1,33 @@
-# xray
+# ptop — process top
 
-Interactive TUI for deep inspection of Linux processes via eBPF.
+[![CI](https://github.com/trentas/ptop/actions/workflows/ci.yml/badge.svg)](https://github.com/trentas/ptop/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/trentas/ptop?display_name=tag&sort=semver)](https://github.com/trentas/ptop/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/trentas/ptop.svg)](https://pkg.go.dev/github.com/trentas/ptop)
+[![Go Report Card](https://goreportcard.com/badge/github.com/trentas/ptop)](https://goreportcard.com/report/github.com/trentas/ptop)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+`ptop` is an interactive TUI for deep inspection of Linux processes via eBPF.
 Live diagnosis of CPU, syscalls, network, I/O, memory, threads, and file
-descriptors — without restarting, without instrumenting, without changing
-a line of code in the target.
+descriptors — without restarting, instrumenting, or changing a line of code
+in the target.
 
-```
-⬡ xray │ api-server  PID 1   Go 1.22   RUNNING   15 fds                                                          uptime 00:00  │  18:06:31
+| Tab | Shows | eBPF source |
+|---|---|---|
+| **F1 Overview** | CPU sparkline, top syscalls, threads, I/O, FDs, network, events | aggregate |
+| **F2 Syscalls** | per-call frequency, latency, live event stream | `raw_syscalls:sys_{enter,exit}` |
+| **F3 Network**  | TCP/UDP/UNIX connections with state, RTT, Tx/Rx | `sock:inet_sock_set_state` + tcp_sendmsg/cleanup_rbuf kprobes |
+| **F4 Threads**  | per-TID state, on-CPU%, lock graph (futex) | `sched:sched_switch` + futex tracepoints |
+| **F5 I/O**      | dual throughput, top files, latency histogram | VFS read/write/fsync syscall tracking |
+| **F6 FDs**      | live FD table by type, with bytes and active flag | `/proc/<pid>/fd` + open/close events |
+| **F7 Timeline** | unified event stream tagged by category | all of the above |
+
+## Snapshot
+
+A real `go test` dump from `internal/tui/dump_test.go`. Every panel matches
+what the live binary renders against a real PID.
+
+```text
+⬡ ptop │ api-server  PID 1   Go 1.22   RUNNING   15 fds                                                          uptime 00:00  │  18:06:31
   F1 Overview  │  F2 Syscalls  │  F3 Network  │  F4 Threads  │  F5 I/O  │  F6 FD  │  F7 Timeline               q quit · / filter · p pause
 ┌──────────────────────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────┐
 │ ▸ CPU                                                                            ││ ▸ I/O THROUGHPUT                                     │
@@ -37,212 +58,136 @@ a line of code in the target.
  F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                          eBPF kernel 6.8 · sampling 100Hz · overhead <0.5%
 ```
 
-> The frame above is a real dump from `go test` in `--no-ebpf` mode. Runs in any modern terminal.
-> The React version of the mockup lives in [`assets/mockup.jsx`](assets/mockup.jsx) — authoritative visual reference.
+A live recording (vhs script in [`assets/demo.tape`](assets/demo.tape)) will
+replace this section soon.
 
----
+## Requirements
 
-## Quickstart
+- Linux, kernel **5.8+** (BTF + ring buffer + `CAP_BPF`)
+- `amd64` or `arm64`
+- For full mode: root, or the binary with `cap_bpf,cap_perfmon+ep`
+- For building from source: Go **1.22+**, `clang`, `libbpf-dev`, `bpftool`
 
-### Prerequisites
+## Install
 
-- **macOS / dev (no eBPF):** Go 1.22+
-- **Linux (full mode):** Go 1.22+, kernel 5.8+ (BTF + ring buffer), `clang`, `bpftool`, `libbpf-dev`, root or `CAP_BPF`
-
-### Build
-
-```bash
-git clone git@github.com:trentas/xray.git
-cd xray
-
-# default — no eBPF, any OS (TUI + /proc collectors)
-make build
-
-# with embedded eBPF — Linux only, requires libbpf
-make build-ebpf
-```
-
-### Run
+Pre-built Linux binaries (amd64/arm64) are published on each tag:
 
 ```bash
-# /proc-only mode (Linux + macOS dev)
-./bin/xray --pid 1234 --no-ebpf
-
-# full mode (Linux with sudo)
-sudo ./bin/xray --pid 1234
-
-# custom refresh rate (default: 5fps render, sim every 700ms)
-sudo ./bin/xray --pid 1234 --fps 10
-
-# save JSON snapshot on exit
-sudo ./bin/xray --pid 1234 --export
+curl -L https://github.com/trentas/ptop/releases/latest/download/ptop-linux-amd64.tar.gz | tar xz
+sudo install ptop /usr/local/bin/
 ```
 
-### Navigation
+Or build from source:
+
+```bash
+git clone https://github.com/trentas/ptop.git
+cd ptop
+make            # gen + vet + test + build-ebpf
+```
+
+## Run
+
+```bash
+sudo ./bin/ptop --pid <PID>            # full mode (eBPF)
+./bin/ptop --pid <PID> --no-ebpf       # /proc-only, no root
+sudo ./bin/ptop --pid <PID> --fps 10   # higher render rate
+sudo ./bin/ptop --pid <PID> --export   # save JSON snapshot on exit
+```
+
+### Keys
 
 | Key | Action |
-|-------|------|
-| `F1`–`F7` | Switch tab |
-| `Tab` / `Shift+Tab` | Next / previous tab |
-| `1`–`7` | Tab shortcut (alternative to F1-F7) |
-| `p`, `Space` | Pause / resume simulation |
-| `/` | Filter (cycles types in F6) |
-| `q`, `Ctrl+C` | Quit |
-| `?` | Help overlay (collector status with eBPF/proc/mock source) |
-| `s` | One-shot JSON snapshot |
-| `e` | Toggle continuous export (JSONL) |
+|-----|--------|
+| `F1`–`F7` (or `1`–`7`, `Tab`/`Shift+Tab`) | switch tab |
+| `p`, `Space` | pause / resume |
+| `/` | filter (cycles types in F6) |
+| `?` | help overlay (collector status with eBPF/proc/mock source) |
+| `s` | one-shot JSON snapshot |
+| `e` | toggle continuous JSONL export |
+| `q`, `Ctrl+C` | quit |
 
-### Verifying eBPF loaded
+### Permissions
 
-The help overlay (`?`) shows each collector with its source: `cpu ● real via eBPF`, `cpu ● real via /proc`, or `cpu ○ mock`.
-
-If an eBPF collector failed to start, the error appears on **stderr** before the TUI comes up:
-
-```
-$ sudo ./bin/xray --pid 1234
-warning: eBPF cpu collector unavailable: perf_event_open: operation not permitted
-```
-
-Common: `operation not permitted` = missing `CAP_BPF` + `CAP_PERFMON` or kernel with `unprivileged_bpf_disabled=1`.
-
-Extra kernel-side check (Linux):
+The recommended setup is to grant capabilities once and run unprivileged:
 
 ```bash
-# List eBPF programs loaded by the kernel
-sudo bpftool prog list | grep -E 'tracepoint|perf_event' | tail
+sudo setcap cap_bpf,cap_perfmon+ep ./bin/ptop
+./bin/ptop --pid <PID>
 ```
 
-When xray is running with eBPF active, you should see `handle_sys_enter` / `handle_sys_exit` (#9) and `handle_perf_event` (#10).
+If something is wrong (kernel too old, `unprivileged_bpf_disabled=1`, missing
+caps), `ptop` prints an actionable error before opening the TUI:
 
----
+```
+$ ./bin/ptop --pid 1234
+error: eBPF not available
 
-## Collector status
+Kernel 5.4 detected — ptop requires Linux 5.8+ (BTF + CAP_BPF).
+On older kernels, use --no-ebpf (/proc-only mode).
+```
 
-Each tab can be fed by 3 different sources, depending on the mode. ✅ = real, ⚠️ = planned, ❌ = no source in that mode.
+## Collector sources
 
-| Tab | macOS dev | `--no-ebpf` (Linux) | eBPF (`-tags=ebpf` + sudo) |
-|---|---|---|---|
-| **F1 Overview**     | mock | ✅ CPU + Mem + Threads + I/O + FDs | ⚠️ refined by #9-#14 |
-| **F2 Syscalls**     | mock | ❌ no `/proc` source | ⚠️ #9 (raw_syscalls tracepoint) |
-| **F3 Network**      | mock | ✅ connections via `/proc/net/{tcp,udp,unix}` | ⚠️ #12 (per-peer latency) |
-| **F4 Threads**      | mock | ✅ state + CPU% + waiting (wchan) | ⚠️ #13 (off-CPU + lock graph) |
-| **F5 I/O**          | mock | ✅ throughput (`/proc/<pid>/io`) + iowait (field 42) | ⚠️ #11 (top files + per-op latency) |
-| **F6 FDs**          | mock | ✅ complete: resolved sockets, bytes, active, events | ⚠️ #11 (correct active for sockets) |
-| **F7 Timeline**     | mock | partial — only the `fd` category has a real source | ⚠️ all via #9-#14 |
+Each subsystem is fed by one of three sources, picked at startup. The `?`
+overlay shows which one is active per tab.
 
-### Implemented sources
+| Tab | `--no-ebpf` (Linux) | full mode (eBPF) |
+|---|---|---|
+| **F1 Overview** | ✅ CPU + Mem + Threads + I/O + FDs | ✅ refined by tracepoints |
+| **F2 Syscalls** | ❌ no `/proc` source | ✅ raw_syscalls tracepoint |
+| **F3 Network**  | ✅ via `/proc/net/{tcp,udp,unix}` | ✅ + per-conn RTT/bytes |
+| **F4 Threads**  | ✅ state + CPU% + wchan | ✅ + futex lock graph |
+| **F5 I/O**      | ✅ throughput + iowait | ✅ + top files + histogram |
+| **F6 FDs**      | ✅ resolved sockets, bytes, active | ✅ same + active socket detection |
+| **F7 Timeline** | partial — only `fd` events | ✅ all categories |
 
-- `internal/collector/cpu_proc.go` — `/proc/<pid>/stat` fields 14-15 (utime+stime)
-- `internal/collector/threads_proc.go` — `/proc/<pid>/task/*/stat` + `wchan`
-- `internal/collector/mem_proc.go` — `/proc/<pid>/statm` + page faults
-- `internal/collector/iowait_proc.go` — `/proc/<pid>/stat` field 42 (delayacct_blkio_ticks)
-- `internal/collector/io_proc.go` — `/proc/<pid>/io` (read_bytes/write_bytes/syscr/syscw)
-- `internal/collector/fds.go` + `sockets.go` — `/proc/<pid>/fd`, `/proc/<pid>/fdinfo`, `/proc/net/{tcp,tcp6,udp,udp6,unix}`
+`/proc` sources used in `--no-ebpf`:
 
-### Known limitations (`--no-ebpf` mode)
+- `cpu_proc.go` — `/proc/<pid>/stat` fields 14-15 (utime+stime)
+- `threads_proc.go` — `/proc/<pid>/task/*/stat` + `wchan`
+- `mem_proc.go` — `/proc/<pid>/statm` + page faults
+- `iowait_proc.go` — `/proc/<pid>/stat` field 42 (delayacct_blkio_ticks)
+- `io_proc.go` — `/proc/<pid>/io`
+- `fds.go` + `sockets.go` — `/proc/<pid>/fd`, `/proc/net/{tcp,tcp6,udp,udp6,unix}`
 
-- **CPU%**: clkTck hardcoded at 100Hz (default x86/x86_64). ARM with `CONFIG_HZ=250` reports 2.5× lower.
-- **F2 Syscalls** empty: there is no per-syscall counter in `/proc`.
-- **F7 Timeline** partial: only FD events (open/close/dup) in `/proc` mode. Other categories require eBPF tracepoints.
-- **CAP_BPF / SIP**: see [issue #19](https://github.com/trentas/xray/issues/19).
+eBPF programs in `internal/bpf/programs/`:
 
----
+- `syscalls.bpf.c` — raw_syscalls/sys_{enter,exit}
+- `cpu.bpf.c` — perf_event @ 100Hz/CPU
+- `io.bpf.c` — VFS read/write/fsync
+- `network.bpf.c` — sock tracepoints + tcp kprobes
+- `threads.bpf.c` — sched_switch
+- `futex.bpf.c` — wait/wake → lock graph
+- `memory.bpf.c` — mmap/brk/page-fault counters
 
 ## Architecture
 
 ```
-xray/
-├── cmd/xray/                  entrypoint: parse flags, start model
+ptop/
+├── cmd/ptop/                 entrypoint
 ├── internal/
-│   ├── bpf/                   eBPF programs + loader (tag `ebpf`)
-│   ├── collector/             /proc collectors + shared types
-│   │   ├── types.go           CpuSample, IOWaitSample, FDEntry, ...
-│   │   ├── cpu_proc.go        /proc/<pid>/stat utime+stime
-│   │   ├── threads_proc.go    /proc/<pid>/task/*/stat + wchan
-│   │   ├── mem_proc.go        /proc/<pid>/statm + faults
-│   │   ├── iowait_proc.go     field 42 (block I/O wait)
-│   │   ├── io_proc.go         /proc/<pid>/io (throughput + ops)
-│   │   ├── fds.go             /proc/<pid>/fd + fdinfo + open/close events
-│   │   └── sockets.go         inode resolution via /proc/net/*
-│   └── tui/                   Bubbletea + Lipgloss
-│       ├── model.go           global state, msg routing
-│       ├── keys.go            keybindings F1-F7, q, p, /, s, e
-│       ├── styles.go          palette + Lipgloss styles
-│       ├── sparkline.go       braille sparklines
-│       ├── panel.go           titled box (layout helper)
-│       ├── header.go          top bar (badges + uptime + clock)
-│       ├── tabbar.go          F1-F7
-│       ├── statusbar.go       footer with keybindings
-│       ├── panels.go          reusable renderers
-│       └── view_*.go          7 views (overview + syscalls + network + ...)
-└── assets/
-    ├── mockup.jsx                   authoritative visual spec in React
-    └── screenshot-overview.txt      F1 dump in --no-ebpf
+│   ├── bpf/                  eBPF programs + loader (build tag `ebpf`)
+│   ├── collector/            /proc + eBPF collectors + shared types
+│   └── tui/                  Bubbletea + Lipgloss views
+└── assets/                   visual references + vhs script
 ```
 
-See [`CLAUDE.md`](CLAUDE.md) for the full implementation spec and type reference.
-
----
-
-## Roadmap
-
-**Closed** (PRs #23-#29):
-- ✅ Full TUI across all 7 tabs
-- ✅ `/proc` collectors for CPU, threads, memory, I/O wait, throughput, FDs
-- ✅ Socket inode resolution (TCP/UDP/UNIX)
-- ✅ FD open/close/dup events
-- ✅ CI (vet + race + build, default + tags=ebpf)
-- ✅ Build tags isolating eBPF code
-
-**Next block — quality of life:**
-- [#15](https://github.com/trentas/xray/issues/15) snapshot/JSON export
-- [#16](https://github.com/trentas/xray/issues/16) `/` input filter + `?` help overlay
-- [#19](https://github.com/trentas/xray/issues/19) capabilities UX (CAP_BPF/PERFMON)
-- [#20](https://github.com/trentas/xray/issues/20) release tooling
-
-**Next block — eBPF:**
-- [#9](https://github.com/trentas/xray/issues/9) syscalls.bpf.c + loader (raw_syscalls tracepoint)
-- [#10](https://github.com/trentas/xray/issues/10) CPU sampling via perf_event
-- [#11](https://github.com/trentas/xray/issues/11) block I/O tracepoints (top files + latency)
-- [#12](https://github.com/trentas/xray/issues/12) network sock tracepoints
-- [#13](https://github.com/trentas/xray/issues/13) sched tracepoints + off-CPU profiling
-- [#14](https://github.com/trentas/xray/issues/14) memory tracepoints
-
-**Future ports** (non-blocking, OS-specific):
-- [#21](https://github.com/trentas/xray/issues/21) Windows 11 via ETW (eBPF for Windows is networking-only)
-- [#22](https://github.com/trentas/xray/issues/22) macOS via libproc + Mach (DTrace blocked by SIP in OSS)
-
----
+See [`CLAUDE.md`](CLAUDE.md) for the full implementation guide, type
+contracts, and conventions.
 
 ## Development
 
 ```bash
-make test            # go test -race ./...
-make vet             # vet in both modes (default + tags=ebpf)
-make clean           # rm -rf bin/
-make lint            # golangci-lint (must be installed)
+make            # gen + vet + test (both lanes) + build-ebpf — default goal
+make test       # go test -race ./...
+make vet        # vet in both modes (default + tags=ebpf)
+make clean      # rm -rf bin/ + *.bpf.o
+make lint       # golangci-lint (must be installed)
 ```
 
-### Linux environment for testing eBPF (Apple Silicon Mac)
+CI runs both lanes (`-tags=ebpf` and default) on `ubuntu-latest`. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the PR flow and commit conventions.
 
-`lima.yaml` at the repo root provisions Ubuntu 24.04 ARM64 with Go 1.22 +
-clang + libbpf-dev + bpftool already installed, with the Mac's `~` mounted
-read-write inside the VM. Edit on the Mac, run inside the VM.
+## License
 
-```bash
-brew install lima
-limactl start --name=xray-dev ./lima.yaml
-
-# enter the VM
-limactl shell xray-dev
-cd /Users/<you>/src/github.com/trentas/xray
-make test
-sudo ./bin/xray --pid 1 --no-ebpf
-
-# clean up when done
-limactl stop xray-dev && limactl delete xray-dev
-```
-
-On Intel Macs, swap `vmType: vz` for `vmType: qemu` in `lima.yaml`.
-
-See [CLAUDE.md](CLAUDE.md) for the implementation guide and collector contracts.
+MIT. See [`LICENSE`](LICENSE).

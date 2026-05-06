@@ -2,9 +2,9 @@ package collector
 
 import "testing"
 
-// TestDetectClkTck — on any POSIX system (Linux/macOS) `getconf CLK_TCK`
-// returns a sensible value. On systems where the command doesn't exist,
-// the fallback is 100. We verify it returns >0 and is in a reasonable range.
+// TestDetectClkTck — on any POSIX system `getconf CLK_TCK` returns a
+// sensible value. On systems where the command doesn't exist, the fallback
+// is 100. We verify it returns >0 and is in a reasonable range.
 func TestDetectClkTck(t *testing.T) {
 	v := detectClkTck()
 	if v <= 0 {

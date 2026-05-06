@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trentas/xray/internal/bpf"
+	"github.com/trentas/ptop/internal/bpf"
 )
 
 // SyscallsEBPFCollector consumes the syscall_count map from the eBPF

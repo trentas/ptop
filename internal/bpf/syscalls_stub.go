@@ -5,7 +5,7 @@ package bpf
 import "errors"
 
 // Stub for non-Linux or builds without `-tags=ebpf`. Same shape as the real
-// version. Lets the rest of the project import `internal/bpf` on macOS
+// version. Lets the rest of the project import `internal/bpf` from any host
 // without breaking the build. At runtime, OpenSyscallTracer fails early and
 // the model falls back to simulation.
 

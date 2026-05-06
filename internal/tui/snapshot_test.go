@@ -59,7 +59,7 @@ func TestSaveSnapshot_roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if !strings.HasPrefix(path, "xray-snapshot-") {
+	if !strings.HasPrefix(path, "ptop-snapshot-") {
 		t.Errorf("unexpected path: %s", path)
 	}
 	full := filepath.Join(dir, path)

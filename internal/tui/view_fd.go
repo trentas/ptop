@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/xray/internal/collector"
+	"github.com/trentas/ptop/internal/collector"
 )
 
 // renderFDView (F6) — assets/mockup.jsx → FDView

@@ -14,12 +14,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # goreleaser usa o histórico pra changelog
+          fetch-depth: 0  # goreleaser uses git history for the changelog
 
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22'
           cache: true
+
+      # eBPF toolchain — required to compile the .bpf.c programs that
+      # goreleaser embeds in the binary via `-tags=ebpf`.
+      - name: install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libbpf-dev \
+            linux-tools-common \
+            linux-tools-generic
+
+      - name: make gen (compile .bpf.c → .bpf.o)
+        run: make gen
 
       - uses: goreleaser/goreleaser-action@v6
         with:

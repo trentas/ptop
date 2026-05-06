@@ -13,7 +13,7 @@ import (
 // CPUCollector reads /proc/<pid>/stat polling every 500ms to compute the
 // process CPU usage % via delta of (utime+stime) between samples.
 //
-// Works without root, without eBPF. On macOS/Windows Start fails silently
+// Works without root, without eBPF. On non-Linux hosts Start fails silently
 // because /proc doesn't exist — the model keeps using simulated data.
 type CPUCollector struct {
 	pid  int
@@ -67,9 +67,9 @@ func (c *CPUCollector) loop() {
 //   - x86/x86_64: typically 100 (Ubuntu) or 250 (RHEL family)
 //   - ARM/ARM64:  typically 250 (Ubuntu/Debian) or 1000 (Fedora ARM)
 //
-// Detected via `getconf CLK_TCK` (POSIX, available on Linux and Darwin) —
-// a single invocation at startup, negligible cost. Previously hardcoded to
-// 100, which made CPU% 2.5x wrong on ARM (issue #18 follow-up).
+// Detected via `getconf CLK_TCK` (POSIX) — a single invocation at startup,
+// negligible cost. Previously hardcoded to 100, which made CPU% 2.5x wrong
+// on ARM (issue #18 follow-up).
 var clkTck float64 = detectClkTck()
 
 func detectClkTck() float64 {

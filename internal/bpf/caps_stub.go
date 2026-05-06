@@ -28,5 +28,5 @@ func (CapStatus) Diagnose() string {
 		"eBPF requires Linux 5.8+. You are running on an unsupported OS.\n" +
 		"\n" +
 		"Use --no-ebpf to run the TUI in simulated/dev mode:\n" +
-		"  ./bin/xray --pid <PID> --no-ebpf\n"
+		"  ./bin/ptop --pid <PID> --no-ebpf\n"
 }

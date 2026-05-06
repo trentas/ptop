@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trentas/xray/internal/bpf"
+	"github.com/trentas/ptop/internal/bpf"
 )
 
 // CPUEBPFCollector consumes the on-CPU sample counter from the perf_event

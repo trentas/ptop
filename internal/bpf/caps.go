@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Capability bits from uapi/linux/capability.h relevant to xray.
+// Capability bits from uapi/linux/capability.h relevant to ptop.
 const (
 	capBPF       = 39
 	capPerfmon   = 38
@@ -66,7 +66,7 @@ func (s CapStatus) CanLoadBPF() bool {
 }
 
 // KernelSupportsBPF is true if kernel >= 5.8 (BTF + ring buffer + CAP_BPF).
-// Earlier versions partially work but xray assumes 5.8+.
+// Earlier versions partially work but ptop assumes 5.8+.
 func (s CapStatus) KernelSupportsBPF() bool {
 	if s.KernelMajor == 0 {
 		return true // unknown; let the load fail with a more specific error
@@ -87,7 +87,7 @@ func (s CapStatus) Diagnose() string {
 
 	// Kernel issue takes priority — no point suggesting caps if kernel is old.
 	if !s.KernelSupportsBPF() {
-		fmt.Fprintf(&b, "Kernel %d.%d detected — xray requires Linux 5.8+ (BTF + CAP_BPF).\n",
+		fmt.Fprintf(&b, "Kernel %d.%d detected — ptop requires Linux 5.8+ (BTF + CAP_BPF).\n",
 			s.KernelMajor, s.KernelMinor)
 		fmt.Fprintln(&b, "On older kernels, use --no-ebpf (/proc-only mode).")
 		return b.String()
@@ -117,11 +117,11 @@ func (s CapStatus) Diagnose() string {
 	fmt.Fprintln(&b, "")
 	fmt.Fprintln(&b, "Options:")
 	fmt.Fprintln(&b, "  1) Run with sudo:")
-	fmt.Fprintln(&b, "       sudo ./bin/xray --pid <PID>")
+	fmt.Fprintln(&b, "       sudo ./bin/ptop --pid <PID>")
 	fmt.Fprintln(&b, "  2) Apply caps to the binary (one-time):")
-	fmt.Fprintln(&b, "       sudo setcap cap_bpf,cap_perfmon+ep ./bin/xray")
+	fmt.Fprintln(&b, "       sudo setcap cap_bpf,cap_perfmon+ep ./bin/ptop")
 	fmt.Fprintln(&b, "  3) /proc-only mode (no eBPF, no privileges):")
-	fmt.Fprintln(&b, "       ./bin/xray --pid <PID> --no-ebpf")
+	fmt.Fprintln(&b, "       ./bin/ptop --pid <PID> --no-ebpf")
 
 	return b.String()
 }

@@ -4,7 +4,7 @@ package collector
 
 import "errors"
 
-// Stub: builds without -tags=ebpf or on macOS/Windows get this
+// Stub: builds without -tags=ebpf or on non-Linux hosts get this
 // SyscallsEBPFCollector that always fails Start. Model handles this by
 // falling back to simulation.
 

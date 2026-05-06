@@ -29,8 +29,7 @@ type CPUTracer struct {
 }
 
 // SampleFreq is the sampling frequency in Hz per CPU. 100Hz is what
-// `perf record` uses by default and what macOS Instruments calls the
-// "Sampler" — granular enough to detect CPU spikes >10ms.
+// `perf record` uses by default — granular enough to detect CPU spikes >10ms.
 const SampleFreq = 100
 
 func OpenCPUTracer(pid int) (*CPUTracer, error) {

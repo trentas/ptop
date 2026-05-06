@@ -11,7 +11,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/trentas/xray/internal/bpf"
+	"github.com/trentas/ptop/internal/bpf"
 )
 
 // ThreadsEBPFCollector is a hybrid /proc + eBPF collector:

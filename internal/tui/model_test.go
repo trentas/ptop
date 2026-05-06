@@ -35,7 +35,7 @@ func TestRenderAllTabs(t *testing.T) {
 			if out == "" {
 				t.Errorf("size=%dx%d tab=%d: empty", sz.w, sz.h, tab)
 			}
-			if !strings.Contains(out, "xray") {
+			if !strings.Contains(out, "ptop") {
 				t.Errorf("size=%dx%d tab=%d: header missing", sz.w, sz.h, tab)
 			}
 		}

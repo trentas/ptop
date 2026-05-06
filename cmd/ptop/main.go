@@ -6,8 +6,8 @@ import (
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/trentas/xray/internal/bpf"
-	"github.com/trentas/xray/internal/tui"
+	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/internal/tui"
 )
 
 // Variables injected via -ldflags in the release build (goreleaser).
@@ -27,14 +27,14 @@ func main() {
 	flag.Parse()
 
 	if *showVer {
-		fmt.Printf("xray %s (commit %s, built %s)\n", version, commit, buildDate)
+		fmt.Printf("ptop %s (commit %s, built %s)\n", version, commit, buildDate)
 		os.Exit(0)
 	}
 
 	if *pid == 0 {
 		fmt.Fprintln(os.Stderr, "error: --pid is required")
-		fmt.Fprintln(os.Stderr, "usage: xray --pid <PID> [--fps 5] [--no-ebpf] [--export]")
-		fmt.Fprintln(os.Stderr, "       xray --version")
+		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
+		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
 	}
 
@@ -45,7 +45,7 @@ func main() {
 		//   - Available = true but insufficient caps → fatal error before
 		//     the TUI starts, with detailed message from Diagnose().
 		if !bpf.Available {
-			fmt.Fprintln(os.Stderr, "[xray] eBPF is not embedded in this binary")
+			fmt.Fprintln(os.Stderr, "[ptop] eBPF is not embedded in this binary")
 			fmt.Fprintln(os.Stderr, "       Run `make build-ebpf` (Linux + libbpf-dev) to enable it.")
 			fmt.Fprintln(os.Stderr, "       Continuing in /proc-only mode.")
 			fmt.Fprintln(os.Stderr, "")
@@ -57,7 +57,7 @@ func main() {
 				fmt.Fprint(os.Stderr, diag)
 				os.Exit(1)
 			}
-			fmt.Fprintln(os.Stderr, "[xray] eBPF embedded, kernel supports it. Starting tracers...")
+			fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Starting tracers...")
 		}
 	}
 

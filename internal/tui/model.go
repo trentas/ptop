@@ -12,7 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/xray/internal/collector"
+	"github.com/trentas/ptop/internal/collector"
 )
 
 // simInterval defines the granularity of the simulation. TickMsg fires at FPS
@@ -222,7 +222,7 @@ func NewModel(cfg Config) Model {
 	m.seedMockData()
 
 	// Try to start real collectors that read /proc (Linux only).
-	// Silent failure on macOS/Windows: usingMock* stays true and the model
+	// Silent failure on non-Linux hosts: usingMock* stays true and the model
 	// keeps simulating that subsystem.
 	if cfg.PID > 0 {
 		if c := collector.NewFDCollector(); c.Start(cfg.PID) == nil {
@@ -1338,8 +1338,8 @@ func clamp(v, lo, hi float64) float64 {
 }
 
 // detectProcessName reads /proc/<pid>/comm to get the short process name
-// (kernel TASK_COMM_LEN = 16 chars). On macOS/Windows, falls back to "(?)" —
-// clearly indicates we're in simulated mode.
+// (kernel TASK_COMM_LEN = 16 chars). On non-Linux hosts, falls back to
+// "(?)" — clearly indicates we're in simulated mode.
 func detectProcessName(pid int) string {
 	if pid <= 0 {
 		return "(?)"
