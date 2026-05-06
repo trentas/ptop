@@ -47,6 +47,10 @@ type ThreadInfo struct {
 	State   string  // "running" | "blocked" | "sleeping"
 	CPUPct  float64
 	Waiting string  // nome do lock/syscall bloqueante, vazio se nenhum
+	// CtxSwitches: total de context switches da thread no janela atual
+	// (intervalo entre publishes do collector). Só populado quando o eBPF
+	// threads collector está ativo; via /proc fica zero.
+	CtxSwitches uint64
 }
 
 // ─── I/O ─────────────────────────────────────────────────────────────────────

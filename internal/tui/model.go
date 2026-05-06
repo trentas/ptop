@@ -152,6 +152,7 @@ type Model struct {
 	syscallsEBPF          *collector.SyscallsEBPFCollector
 	ioEBPF                *collector.IOEBPFCollector
 	networkEBPF           *collector.NetworkEBPFCollector
+	threadsEBPF           *collector.ThreadsEBPFCollector
 
 	// Simulação
 	rng                  *rand.Rand
@@ -173,6 +174,7 @@ type Model struct {
 	syscallsSource string
 	ioFilesSource  string
 	netSource      string
+	threadsSource  string
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -242,9 +244,25 @@ func NewModel(cfg Config) Model {
 				m.cpuSource = "/proc"
 			}
 		}
-		if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
-			m.threadsCollector = c
-			m.usingMockThreads = false
+		// Threads: eBPF preferred (sched_switch dá CPU% real-time + ctx switches),
+		// /proc como fallback. eBPF coletor já lê /proc internamente, então não
+		// precisamos rodar os dois em paralelo.
+		if !cfg.NoEBPF {
+			c := collector.NewThreadsEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				m.threadsEBPF = c
+				m.usingMockThreads = false
+				m.threadsSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF threads collector indisponível: %v\n", err)
+			}
+		}
+		if m.threadsEBPF == nil {
+			if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
+				m.threadsCollector = c
+				m.usingMockThreads = false
+				m.threadsSource = "/proc"
+			}
 		}
 		if c := collector.NewMemCollector(); c.Start(cfg.PID) == nil {
 			m.memCollector = c
@@ -338,6 +356,9 @@ func (m Model) Init() tea.Cmd {
 	if m.networkEBPF != nil {
 		cmds = append(cmds, waitForNetEBPF(m.networkEBPF))
 	}
+	if m.threadsEBPF != nil {
+		cmds = append(cmds, waitForThreadsEBPF(m.threadsEBPF))
+	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
 	}
@@ -405,6 +426,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ThreadsMsg:
 		m.Threads = []collector.ThreadInfo(v)
 		m.usingMockThreads = false
+		// ThreadsMsg pode vir do eBPF ou do /proc — reagenda a fonte ativa.
+		if m.threadsEBPF != nil {
+			return m, waitForThreadsEBPF(m.threadsEBPF)
+		}
 		return m, waitForThreads(m.threadsCollector)
 
 	case MemMsg:
@@ -1079,6 +1104,23 @@ func waitForCPUEBPF(c *collector.CPUEBPFCollector) tea.Cmd {
 		v := <-ch
 		if s, ok := v.(collector.CpuSample); ok {
 			return CpuMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForThreadsEBPF(c *collector.ThreadsEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
+		if t, ok := v.([]collector.ThreadInfo); ok {
+			return ThreadsMsg(t)
 		}
 		return TickMsg(time.Now())
 	}
