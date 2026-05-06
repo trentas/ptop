@@ -81,6 +81,8 @@ type FDEventMsg collector.FDEvent
 type SyscallsMsg map[string]uint64
 type IOEBPFMsg collector.IOEBPFSnapshot
 type NetMsg []collector.NetConn
+type LockGraphMsg []collector.LockEntry
+type LockTimelineMsg collector.TimelineEvent
 
 // exportTickMsg dispara periodicamente quando export contínuo está ON.
 type exportTickMsg time.Time
@@ -112,6 +114,7 @@ type Model struct {
 	FDCountHistory []float64
 	FDEvents       []collector.FDEvent
 	Timeline       []collector.TimelineEvent
+	LockGraph      []collector.LockEntry
 
 	// Estado da UI
 	ActiveTab int
@@ -154,6 +157,7 @@ type Model struct {
 	networkEBPF           *collector.NetworkEBPFCollector
 	threadsEBPF           *collector.ThreadsEBPFCollector
 	memEBPF               *collector.MemEBPFCollector
+	futexEBPF             *collector.FutexEBPFCollector
 
 	// Simulação
 	rng                  *rand.Rand
@@ -177,6 +181,7 @@ type Model struct {
 	netSource      string
 	threadsSource  string
 	memSource      string
+	locksSource    string
 
 	// Caches estáveis para evitar reordenação visual entre ticks.
 	// topSyscallNames é recomputado a cada `topRefreshInterval`; entre refreshes
@@ -323,6 +328,14 @@ func NewModel(cfg Config) Model {
 			} else {
 				fmt.Fprintf(os.Stderr, "aviso: eBPF network collector indisponível: %v\n", err)
 			}
+
+			c4 := collector.NewFutexEBPFCollector()
+			if err := c4.Start(cfg.PID); err == nil {
+				m.futexEBPF = c4
+				m.locksSource = "eBPF"
+			} else {
+				fmt.Fprintf(os.Stderr, "aviso: eBPF futex collector indisponível: %v\n", err)
+			}
 		}
 	}
 
@@ -379,6 +392,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.memEBPF != nil {
 		cmds = append(cmds, waitForMemEBPF(m.memEBPF))
+	}
+	if m.futexEBPF != nil {
+		cmds = append(cmds, waitForFutexEBPF(m.futexEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -496,6 +512,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
 		return m, waitForNetEBPF(m.networkEBPF)
+
+	case LockGraphMsg:
+		m.LockGraph = []collector.LockEntry(v)
+		return m, waitForFutexEBPF(m.futexEBPF)
+
+	case LockTimelineMsg:
+		ev := collector.TimelineEvent(v)
+		m.Timeline = append([]collector.TimelineEvent{ev}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
+		return m, waitForFutexEBPF(m.futexEBPF)
 
 	case IOEBPFMsg:
 		s := collector.IOEBPFSnapshot(v)
@@ -1159,6 +1187,26 @@ func waitForThreads(c *collector.ThreadsCollector) tea.Cmd {
 		v := <-c.Subscribe()
 		if t, ok := v.([]collector.ThreadInfo); ok {
 			return ThreadsMsg(t)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForFutexEBPF(c *collector.FutexEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		v := <-ch
+		switch t := v.(type) {
+		case []collector.LockEntry:
+			return LockGraphMsg(t)
+		case collector.TimelineEvent:
+			return LockTimelineMsg(t)
 		}
 		return TickMsg(time.Now())
 	}

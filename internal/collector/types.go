@@ -53,6 +53,24 @@ type ThreadInfo struct {
 	CtxSwitches uint64
 }
 
+// ─── Locks (futex) ───────────────────────────────────────────────────────────
+
+// LockEntry descreve um futex contestado: cumulativo de WAITs e WAKEs
+// observados no uaddr (endereço virtual da palavra futex), além de
+// latência média da chamada e quem foi o último a esperar/acordar.
+//
+// UAddr é o ponteiro virtual no espaço do processo — não dá pra
+// resolver pra "mutex-A" sem unwind/symbols. Mostramos hex.
+type LockEntry struct {
+	UAddr       uint64
+	Waiters     uint64  // cumulativo wait_count
+	Wakers      uint64  // cumulativo wake_count
+	WaitDelta   uint64  // novos waits na janela atual
+	LatencyMs   float64 // latência média por call (waits + wakes)
+	LastWaitTID int
+	LastWakeTID int
+}
+
 // ─── I/O ─────────────────────────────────────────────────────────────────────
 
 // IOWaitSample é a fração do wallclock que o processo passou bloqueado em
