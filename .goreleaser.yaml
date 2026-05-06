@@ -1,0 +1,103 @@
+version: 2
+
+project_name: ptop
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  # Single Linux build with embedded eBPF programs. ptop targets Linux
+  # exclusively (eBPF, /proc, kernel tracepoints) — no other OS is supported.
+  - id: ptop
+    main: ./cmd/ptop
+    binary: ptop
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    tags:
+      - ebpf
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.buildDate={{ .Date }}
+
+archives:
+  - id: ptop
+    ids: [ptop]
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}-{{ .Version }}-{{ .Os }}-{{ .Arch }}
+    files:
+      - LICENSE
+      - README.md
+
+checksum:
+  name_template: "SHA256SUMS"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+  groups:
+    - title: "Features"
+      regexp: "^.*feat[(\\w)]*:.*$"
+      order: 0
+    - title: "Bug fixes"
+      regexp: "^.*fix[(\\w)]*:.*$"
+      order: 1
+    - title: "Collectors"
+      regexp: "^.*collector[(\\w)]*:.*$"
+      order: 2
+    - title: "TUI"
+      regexp: "^.*tui[(\\w)]*:.*$"
+      order: 3
+    - title: "Infra"
+      regexp: "^.*infra[(\\w)]*:.*$"
+      order: 4
+    - title: "Other"
+      order: 99
+
+release:
+  github:
+    owner: trentas
+    name: ptop
+  name_template: "ptop {{ .Version }}"
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## ptop {{ .Version }}
+
+    Linux binaries (amd64 / arm64) with eBPF collectors embedded.
+    Requires kernel 5.8+ with BTF, and either root or `CAP_BPF + CAP_PERFMON`.
+
+    ### Integrity verification
+
+    ```bash
+    sha256sum -c SHA256SUMS
+    ```
+
+    ### Installation
+
+    ```bash
+    curl -L https://github.com/trentas/ptop/releases/download/{{ .Tag }}/ptop-{{ .Version }}-linux-amd64.tar.gz | tar xz
+    sudo install ptop /usr/local/bin/
+    sudo ptop --pid <PID>
+    ```

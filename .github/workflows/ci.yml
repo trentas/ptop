@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet · test · build (default + ebpf)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      # ─── Default lane (no eBPF) ───────────────────────────────────────────
+      # Runs first because it exercises the path used by contributors without
+      # libbpf-dev. A failure here breaks everyone without the eBPF toolchain.
+
+      - name: go vet (default)
+        run: go vet ./...
+
+      - name: go test -race (default)
+        run: go test -race -count=1 ./...
+
+      - name: go build (default — TUI + /proc)
+        run: go build -o /tmp/ptop ./cmd/ptop
+
+      # ─── eBPF lane ────────────────────────────────────────────────────────
+      # Requires libbpf headers + clang to compile the .bpf.c programs.
+      # cilium/ebpf is pure-Go, so no libbpf.so is needed at runtime.
+
+      - name: install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            clang \
+            libbpf-dev \
+            linux-tools-common \
+            linux-tools-generic
+
+      - name: make gen (compile .bpf.c → .bpf.o)
+        run: make gen
+
+      - name: go vet (ebpf tag)
+        run: go vet -tags=ebpf ./...
+
+      - name: go test -race (ebpf tag)
+        run: go test -race -count=1 -tags=ebpf ./...
+
+      - name: go build (ebpf tag)
+        run: go build -tags=ebpf -o /tmp/ptop-ebpf ./cmd/ptop

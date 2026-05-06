@@ -1,0 +1,133 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// renderHeader draws the top bar:
+//
+//	⬡ ptop │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
+//
+// The result is ALWAYS truncated to fit m.Width. If the line overflows
+// width, the terminal line-wraps and the rest of the TUI gets flipped upside
+// down — hence the obsession with never going over the limit.
+func renderHeader(m Model) string {
+	headerBg := lipgloss.Color("#0a0d11")
+
+	logo := lipgloss.NewStyle().
+		Foreground(ColorCyan).
+		Background(headerBg).
+		Bold(true).
+		Render("⬡ ptop")
+
+	sep := lipgloss.NewStyle().
+		Foreground(ColorBorder).
+		Background(headerBg).
+		Render("│")
+
+	procName := lipgloss.NewStyle().
+		Foreground(ColorBright).
+		Background(headerBg).
+		Render(m.ProcessName)
+
+	pidBadge := Badge(fmt.Sprintf("PID %d", m.cfg.PID), ColorBlue)
+	rtBadge := Badge(m.Runtime, ColorCyan)
+
+	stateColor := ColorGreen
+	switch strings.ToUpper(m.State) {
+	case "BLOCKED", "STOPPED", "ZOMBIE":
+		stateColor = ColorRed
+	case "SLEEPING":
+		stateColor = ColorMuted
+	}
+	stateBadge := Badge(strings.ToUpper(m.State), stateColor)
+
+	fdBadge := Badge(fmt.Sprintf("%d fds", len(m.FDs)), ColorTeal)
+
+	// build "left" segments in descending priority order
+	// (seg is declared at the end of the file)
+	leftSegs := []seg{
+		{logo, 0},
+		{sep, 0},
+		{procName, 0},
+		{pidBadge, 0},
+		{rtBadge, 2},
+		{stateBadge, 1},
+		{fdBadge, 1},
+	}
+
+	uptime := time.Since(m.StartedAt)
+	upMin := int(uptime.Minutes())
+	upSec := int(uptime.Seconds()) % 60
+
+	clock := time.Now().Format("15:04:05")
+	rightFull := fmt.Sprintf("uptime %02d:%02d  │  %s", upMin, upSec, clock)
+	rightShort := clock // fallback version for narrow terminals
+
+	style := lipgloss.NewStyle().Foreground(ColorMuted).Background(headerBg)
+
+	// determine which "right" version fits
+	// and which "left" segments to drop
+	left := buildSegments(leftSegs, " ")
+	right := style.Render(rightFull)
+	for budget := 0; budget < 4; budget++ {
+		if lipgloss.Width(left)+lipgloss.Width(right)+3 <= m.Width {
+			break
+		}
+		// 1) try short version of right
+		if budget == 0 {
+			right = style.Render(rightShort)
+			continue
+		}
+		// 2) drop optional left segments by priority
+		left = buildSegments(filterSegs(leftSegs, budget), " ")
+	}
+
+	gap := m.Width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+	if gap < 1 {
+		gap = 1
+	}
+	pad := lipgloss.NewStyle().Background(headerBg).Render(strings.Repeat(" ", gap))
+	edge := lipgloss.NewStyle().Background(headerBg).Render(" ")
+
+	return edge + left + pad + right + edge
+}
+
+// buildSegments concatenates seg.text with sep, respecting order.
+func buildSegments(segs []seg, sep string) string {
+	parts := make([]string, 0, len(segs))
+	for _, s := range segs {
+		parts = append(parts, s.text)
+	}
+	return strings.Join(parts, sep)
+}
+
+// filterSegs returns only segments with priority <= maxPrio.
+// Used to shrink the set to fit a narrower width.
+func filterSegs(segs []seg, maxPrio int) []seg {
+	limit := 0
+	switch maxPrio {
+	case 1:
+		limit = 1 // keep prio 0 and 1
+	case 2:
+		limit = 0 // essentials only
+	default:
+		limit = 0
+	}
+	out := make([]seg, 0, len(segs))
+	for _, s := range segs {
+		if s.prio <= limit {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+type seg struct {
+	text string
+	prio int
+}
