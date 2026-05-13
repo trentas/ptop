@@ -1,9 +1,27 @@
-.PHONY: all build build-ebpf run gen clean dev test test-all vet lint
+.PHONY: all build build-ebpf run gen clean dev test test-all vet lint install install-bare install-ebpf uninstall
 
 .DEFAULT_GOAL := all
 
 BINARY := ptop
 PKG    := ./cmd/ptop
+
+# Install location — override via `make install PREFIX=~/.local` for a
+# no-sudo user install, or `make install PREFIX=/opt/local` etc. DESTDIR
+# is the standard packager-staging variable (kept empty in regular use).
+PREFIX  ?= /usr/local
+BINDIR  ?= $(PREFIX)/bin
+DESTDIR ?=
+
+# `make install` picks the most capable build for the host OS:
+#   - Linux: eBPF-embedded (full F2/F3/F5/F7 + rich CPU/threads/mem).
+#   - other: the bare libproc-based build (macOS Tier 1; see #22).
+# Override with `make install-ebpf` / `make install-bare` for explicit control.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Linux)
+  INSTALL_DEFAULT := install-ebpf
+else
+  INSTALL_DEFAULT := install-bare
+endif
 
 # ─── all ─────────────────────────────────────────────────────────────────────
 
@@ -99,3 +117,31 @@ clean:
 
 lint:
 	golangci-lint run ./...
+
+# ─── install ─────────────────────────────────────────────────────────────────
+
+# `make install` is the user-facing entry point — it picks the right variant
+# for the host OS (see INSTALL_DEFAULT above). Default destination is
+# /usr/local/bin which needs sudo; override with `make install PREFIX=~/.local`
+# for a user-local install. install(1) exists on both macOS and Linux and
+# handles both creation of the target dir (-d) and permissions (-m) in one
+# shot.
+install: $(INSTALL_DEFAULT)
+
+install-bare: build
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 bin/$(BINARY) $(DESTDIR)$(BINDIR)/$(BINARY)
+	@echo "installed $(DESTDIR)$(BINDIR)/$(BINARY)"
+
+# Linux-only flavor: eBPF-embedded binary. Requires `make gen`
+# (libbpf-dev + clang). On macOS this target will fail at the gen step
+# since the kernel headers aren't there — use `install` (the default
+# alias dispatches by OS).
+install-ebpf: build-ebpf
+	install -d $(DESTDIR)$(BINDIR)
+	install -m 0755 bin/$(BINARY) $(DESTDIR)$(BINDIR)/$(BINARY)
+	@echo "installed $(DESTDIR)$(BINDIR)/$(BINARY) (with embedded eBPF)"
+
+uninstall:
+	rm -f $(DESTDIR)$(BINDIR)/$(BINARY)
+	@echo "removed $(DESTDIR)$(BINDIR)/$(BINARY)"
