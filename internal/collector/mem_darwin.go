@@ -1,20 +1,24 @@
-//go:build linux
+//go:build darwin
 
 package collector
 
 import (
 	"fmt"
-	"os"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
 
-// MemCollector reads /proc/<pid>/statm + /proc/<pid>/stat every 1s to populate
-// RSS, approximate heap, cumulative page faults, and an estimated allocs/s
-// rate (uses total page faults as a proxy — not perfect but the best /proc
-// offers without instrumentation).
+// MemCollector samples per-process memory stats on macOS via libproc.
+//
+// Fields mapping (vs the Linux /proc collector):
+//   - RSSBytes:   ProcPidTaskInfo.ResidentSize — direct equivalent.
+//   - HeapBytes:  unavailable without task_for_pid() (restricted on macOS).
+//                 VirtualSize is the only public scalar but on Go programs
+//                 it's ~hundreds of GB due to Go's arena reservation; would
+//                 mislead more than inform. Left as 0.
+//   - PageFaults: ProcPidTaskInfo.FaultCount — cumulative since process start.
+//   - AllocsPerS: page-fault growth rate (same proxy the Linux collector uses).
+
 type MemCollector struct {
 	pid  int
 	ch   chan interface{}
@@ -34,8 +38,8 @@ func NewMemCollector() *MemCollector {
 
 func (c *MemCollector) Start(pid int) error {
 	c.pid = pid
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d/statm", pid)); err != nil {
-		return fmt.Errorf("process %d not found: %w", pid, err)
+	if _, err := ProcPidTaskInfo(pid); err != nil {
+		return fmt.Errorf("Memory collector unavailable for pid %d: %w", pid, err)
 	}
 	go c.loop()
 	return nil
@@ -63,26 +67,11 @@ func (c *MemCollector) loop() {
 }
 
 func (c *MemCollector) sample() (MemStats, error) {
-	// /proc/<pid>/statm: size resident shared text lib data dirty (in pages)
-	statmData, err := os.ReadFile(fmt.Sprintf("/proc/%d/statm", c.pid))
+	info, err := ProcPidTaskInfo(c.pid)
 	if err != nil {
 		return MemStats{}, err
 	}
-	fields := strings.Fields(string(statmData))
-	if len(fields) < 7 {
-		return MemStats{}, fmt.Errorf("malformed /proc/.../statm: %d fields", len(fields))
-	}
-	pageSize := uint64(os.Getpagesize())
-	resident, _ := strconv.ParseUint(fields[1], 10, 64)
-	dataPages, _ := strconv.ParseUint(fields[5], 10, 64)
-
-	// page faults via /proc/<pid>/stat (fields minflt+majflt)
-	statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", c.pid))
-	if err != nil {
-		return MemStats{}, err
-	}
-	_, _, minflt, majflt, _, _ := parseProcStatTimes(statData)
-	totalFaults := minflt + majflt
+	totalFaults := uint64(info.FaultCount)
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -99,8 +88,8 @@ func (c *MemCollector) sample() (MemStats, error) {
 	c.lastAt = now
 
 	return MemStats{
-		RSSBytes:   resident * pageSize,
-		HeapBytes:  dataPages * pageSize, // approximation: data segment ~ heap+anon mappings
+		RSSBytes:   info.ResidentSize,
+		HeapBytes:  0,
 		PageFaults: totalFaults,
 		AllocsPerS: allocsPerS,
 	}, nil

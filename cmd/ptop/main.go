@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"runtime"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/trentas/ptop/internal/bpf"
@@ -41,13 +42,20 @@ func main() {
 	if !*noEBPF {
 		// Build vs runtime diagnostic:
 		//   - Available = false → binary was built WITHOUT `-tags=ebpf`.
-		//     Not a permission error; it's the wrong build. Falls back to /proc.
+		//     Not a permission error; it's the wrong build. Falls back to
+		//     /proc on Linux, or to libproc on macOS (Tier 1, see #22).
 		//   - Available = true but insufficient caps → fatal error before
 		//     the TUI starts, with detailed message from Diagnose().
 		if !bpf.Available {
-			fmt.Fprintln(os.Stderr, "[ptop] eBPF is not embedded in this binary")
-			fmt.Fprintln(os.Stderr, "       Run `make build-ebpf` (Linux + libbpf-dev) to enable it.")
-			fmt.Fprintln(os.Stderr, "       Continuing in /proc-only mode.")
+			if runtime.GOOS == "darwin" {
+				fmt.Fprintln(os.Stderr, "[ptop] macOS Tier 1 mode — collectors run via libproc + Mach.")
+				fmt.Fprintln(os.Stderr, "       Some panels (syscalls F2, lock graph in F7, per-file I/O")
+				fmt.Fprintln(os.Stderr, "       latency in F5) are structurally unavailable on macOS; see ?.")
+			} else {
+				fmt.Fprintln(os.Stderr, "[ptop] eBPF is not embedded in this binary")
+				fmt.Fprintln(os.Stderr, "       Run `make build-ebpf` (Linux + libbpf-dev) to enable it.")
+				fmt.Fprintln(os.Stderr, "       Continuing in /proc-only mode.")
+			}
 			fmt.Fprintln(os.Stderr, "")
 		} else {
 			caps := bpf.GetCapStatus()

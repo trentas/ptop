@@ -6,11 +6,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// sourceProcOrEmpty returns "/proc" when the collector is running real,
+// sourceProcOrEmpty returns the OS-appropriate non-eBPF source label
+// ("/proc" on Linux, "libproc" on macOS) when the collector is running real,
 // "" otherwise. Used to annotate the source in the help overlay.
 func sourceProcOrEmpty(real bool) string {
 	if real {
-		return "/proc"
+		return sourceProcEquivalent
 	}
 	return ""
 }
@@ -39,7 +40,19 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 
 	statusReal := lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Render("● real")
 	statusMock := lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel).Render("○ mock")
+	statusNA := lipgloss.NewStyle().Foreground(ColorRed).Background(ColorPanel).Render("✕ unavailable")
 	sourceStyle := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Italic(true)
+
+	// statusRowNA renders a subsystem that is structurally unavailable on
+	// this OS (e.g. syscalls on macOS Tier 1). Distinct from "mock" because
+	// no user toggle can flip it to real — it's a platform limitation.
+	statusRowNA := func(name, reason string) string {
+		row := keyStyle.Render(padRight(name, 14)) + descStyle.Render(" ") + statusNA
+		if reason != "" {
+			row += sourceStyle.Render(" — " + reason)
+		}
+		return row
+	}
 
 	statusRow := func(name string, isMock bool, source string) string {
 		s := statusReal
@@ -51,6 +64,16 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			row += sourceStyle.Render(" via " + source)
 		}
 		return row
+	}
+
+	// statusRowMaybeNA picks between the "unavailable" rendering (when
+	// the build target has no Tier 1 path for this subsystem) and the
+	// regular real/mock row.
+	statusRowMaybeNA := func(name string, unavailable bool, naReason string, isMock bool, source string) string {
+		if unavailable {
+			return statusRowNA(name, naReason)
+		}
+		return statusRow(name, isMock, source)
 	}
 
 	lines := []string{
@@ -77,12 +100,15 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		dimRow("--export", "CLI flag: export from launch + final snapshot on exit"),
 		"",
 		sectionTitle.Render("Collectors"),
-		statusRow("syscalls", m.usingMockSyscalls, m.syscallsSource),
+		statusRowMaybeNA("syscalls", syscallsUnavailable, "no public per-syscall trace on macOS (see #22)",
+			m.usingMockSyscalls, m.syscallsSource),
 		statusRow("cpu", m.usingMockCPU, m.cpuSource),
-		statusRow("io-files", m.usingMockIOFiles, m.ioFilesSource),
+		statusRowMaybeNA("io-files", ioFilesUnavailable, "no public per-file VFS hook on macOS (see #22)",
+			m.usingMockIOFiles, m.ioFilesSource),
 		statusRow("network", m.usingMockNet, m.netSource),
 		statusRow("memory", m.usingMockMem, m.memSource),
-		statusRow("locks", m.locksSource == "", m.locksSource),
+		statusRowMaybeNA("locks", locksUnavailable, "no public __ulock_wait hook on macOS (see #22)",
+			m.locksSource == "", m.locksSource),
 		statusRow("threads", m.usingMockThreads, m.threadsSource),
 		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
 		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),

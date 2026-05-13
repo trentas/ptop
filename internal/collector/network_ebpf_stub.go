@@ -1,12 +1,12 @@
-//go:build !linux || !ebpf
+//go:build !darwin && (!linux || !ebpf)
 
 package collector
 
 import "errors"
 
-// NetworkEBPFCollector is a no-op stub in builds without -tags=ebpf
-// (non-Linux or no libbpf). Keeps the API the same so model.go can
-// instantiate it without branching by OS.
+// NetworkEBPFCollector is a no-op stub for builds without -tags=ebpf on
+// platforms that don't have a Tier 1 substitute. macOS has its own
+// real implementation in network_darwin.go.
 type NetworkEBPFCollector struct{}
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {

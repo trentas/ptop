@@ -12,8 +12,20 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/trentas/ptop/internal/bpf"
 	"github.com/trentas/ptop/internal/collector"
 )
+
+// warnEBPFFailure emits a stderr warning that a given eBPF collector failed
+// to start. We suppress it when the binary has no eBPF code embedded
+// (bpf.Available == false): there, every eBPF call would warn — pure noise.
+// main.go already prints a single up-front diagnostic in that case.
+func warnEBPFFailure(name string, err error) {
+	if !bpf.Available {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: eBPF %s collector unavailable: %v\n", name, err)
+}
 
 // simInterval defines the granularity of the simulation. TickMsg fires at FPS
 // (5/s by default) to keep the clock fluid, but the sim only advances when
@@ -241,14 +253,14 @@ func NewModel(cfg Config) Model {
 				m.usingMockCPU = false
 				m.cpuSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF cpu collector unavailable: %v\n", err)
+				warnEBPFFailure("cpu", err)
 			}
 		}
 		if m.cpuEBPF == nil {
 			if c := collector.NewCPUCollector(); c.Start(cfg.PID) == nil {
 				m.cpuCollector = c
 				m.usingMockCPU = false
-				m.cpuSource = "/proc"
+				m.cpuSource = sourceProcEquivalent
 			}
 		}
 		// Threads: eBPF preferred (sched_switch gives real-time CPU% + ctx switches),
@@ -261,14 +273,14 @@ func NewModel(cfg Config) Model {
 				m.usingMockThreads = false
 				m.threadsSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF threads collector unavailable: %v\n", err)
+				warnEBPFFailure("threads", err)
 			}
 		}
 		if m.threadsEBPF == nil {
 			if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
 				m.threadsCollector = c
 				m.usingMockThreads = false
-				m.threadsSource = "/proc"
+				m.threadsSource = sourceProcEquivalent
 			}
 		}
 		// Memory: eBPF preferred (real allocs/s via mmap+brk syscalls,
@@ -281,14 +293,14 @@ func NewModel(cfg Config) Model {
 				m.usingMockMem = false
 				m.memSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF memory collector unavailable: %v\n", err)
+				warnEBPFFailure("memory", err)
 			}
 		}
 		if m.memEBPF == nil {
 			if c := collector.NewMemCollector(); c.Start(cfg.PID) == nil {
 				m.memCollector = c
 				m.usingMockMem = false
-				m.memSource = "/proc"
+				m.memSource = sourceProcEquivalent
 			}
 		}
 		if c := collector.NewIOWaitCollector(); c.Start(cfg.PID) == nil {
@@ -308,7 +320,7 @@ func NewModel(cfg Config) Model {
 				m.usingMockSyscalls = false
 				m.syscallsSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF syscalls collector unavailable: %v\n", err)
+				warnEBPFFailure("syscalls", err)
 			}
 
 			c2 := collector.NewIOEBPFCollector()
@@ -317,16 +329,16 @@ func NewModel(cfg Config) Model {
 				m.usingMockIOFiles = false
 				m.ioFilesSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF io collector unavailable: %v\n", err)
+				warnEBPFFailure("io", err)
 			}
 
 			c3 := collector.NewNetworkEBPFCollector()
 			if err := c3.Start(cfg.PID); err == nil {
 				m.networkEBPF = c3
 				m.usingMockNet = false
-				m.netSource = "eBPF"
+				m.netSource = sourceNetworkRich
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF network collector unavailable: %v\n", err)
+				warnEBPFFailure("network", err)
 			}
 
 			c4 := collector.NewFutexEBPFCollector()
@@ -334,7 +346,7 @@ func NewModel(cfg Config) Model {
 				m.futexEBPF = c4
 				m.locksSource = "eBPF"
 			} else {
-				fmt.Fprintf(os.Stderr, "warning: eBPF futex collector unavailable: %v\n", err)
+				warnEBPFFailure("futex", err)
 			}
 		}
 	}
@@ -1337,18 +1349,15 @@ func clamp(v, lo, hi float64) float64 {
 	return v
 }
 
-// detectProcessName reads /proc/<pid>/comm to get the short process name
-// (kernel TASK_COMM_LEN = 16 chars). On non-Linux hosts, falls back to
-// "(?)" — clearly indicates we're in simulated mode.
+// detectProcessName resolves the short process name (~16 chars). The
+// per-OS lookup lives in process_name_{linux,darwin}.go so this stays
+// free of build tags. Empty / failure returns "(?)" so the header
+// clearly signals "we couldn't identify the process".
 func detectProcessName(pid int) string {
 	if pid <= 0 {
 		return "(?)"
 	}
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
-	if err != nil {
-		return "(?)"
-	}
-	name := strings.TrimSpace(string(data))
+	name := strings.TrimSpace(osProcessName(pid))
 	if name == "" {
 		return "(?)"
 	}

@@ -1,6 +1,10 @@
 # ptop — implementation guide
 
-Interactive TUI for deep inspection of Linux processes via eBPF.
+Interactive TUI for deep inspection of processes.
+Linux is the rich target (eBPF + /proc); macOS is a Tier 1 port via
+libproc + Mach with a reduced feature set (see the `*_darwin.go` files
+under `internal/collector/` and issue #22).
+
 This file documents the implementation: tech stack, project layout, type
 contracts, and the conventions every collector and view follows.
 
@@ -14,11 +18,15 @@ If something here drifts from reality, the code wins. Update this file.
 |--------|-----------|--------|
 | TUI    | [Bubbletea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss) | Mature, composable, mouse support |
 | eBPF   | [cilium/ebpf](https://github.com/cilium/ebpf) | Pure-Go, no libbpf.so needed at runtime |
-| Build  | Go 1.22+, clang, libbpf-dev (build only) | Single static binary |
+| Build  | Go 1.22+, clang, libbpf-dev (build only) | Single static binary on Linux (`CGO_ENABLED=0`) |
 | eBPF C | clang `-target bpf` → `.bpf.o` → `go:embed` | See `Makefile` |
+| macOS  | libproc + Mach via cgo (darwin-only build tag) | The only public path for per-process info on macOS |
 
-> Don't introduce CGO. Don't introduce a CLI framework — `flag` is sufficient.
+> Don't introduce a CLI framework — `flag` is sufficient.
 > Don't add a logging library — `fmt.Fprintln(os.Stderr, ...)` is enough.
+> CGo is gated to `//go:build darwin` for libproc/Mach. The Linux binary
+> stays `CGO_ENABLED=0` and statically linked; do not pull cgo into any
+> file that compiles on linux.
 
 ---
 

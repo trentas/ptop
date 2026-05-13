@@ -37,9 +37,14 @@ func renderThreadsView(m Model, w, h int) string {
 
 // renderLockGraph: compact list of the most contended futexes in the current
 // window. When LockGraph is empty (no eBPF futex collector or no contention
-// detected), shows a discrete placeholder.
+// detected), shows a discrete placeholder. On macOS the lock graph has no
+// Tier 1 source at all (no public __ulock_wait hook), so the placeholder
+// is more explicit.
 func renderLockGraph(m Model, w int) string {
 	title := MutedStyle.Render("lock graph (futex)")
+	if locksUnavailable {
+		return title + "\n" + renderUnavailableInline("not available on macOS — see ?")
+	}
 	if len(m.LockGraph) == 0 {
 		return title + "\n" + MutedStyle.Render("(no contention detected)")
 	}

@@ -16,6 +16,14 @@ func renderSyscallsView(m Model, w, h int) string {
 	if w < 40 || h < 10 {
 		return MutedStyle.Render("(terminal pequeno demais)")
 	}
+	if syscallsUnavailable {
+		return Panel("Syscalls",
+			renderUnavailablePanel(
+				"Per-syscall counts + latency not available on macOS",
+				"DTrace is unreliable on Apple Silicon and ESF only covers a subset; libproc has no equivalent of Linux tracepoint:raw_syscalls.",
+				w-2, h-3),
+			w, h)
+	}
 	leftW := w * 2 / 3
 	rightW := w - leftW
 
