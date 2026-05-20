@@ -10,7 +10,7 @@
 //   serializing.
 //
 // Maps:
-//   futex_target_pid    ARRAY[1]  target pid (written by the Go loader)
+//   futex_target_pid    ARRAY[1]  struct target_filter (written by the Go loader)
 //   futex_inflight      HASH      tgid_pid → {uaddr, op, ts_ns}
 //                                 correlates enter→exit to compute
 //                                 per-call latency
@@ -25,6 +25,7 @@
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -82,7 +83,7 @@ struct futex_stat {
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, __u32);
+    __type(value, struct target_filter);
     __uint(max_entries, 1);
 } futex_target_pid SEC(".maps");
 
@@ -102,13 +103,7 @@ struct {
 
 static __always_inline int is_futex_target(void)
 {
-    __u32 key = 0;
-    __u32 *target = bpf_map_lookup_elem(&futex_target_pid, &key);
-    if (!target || *target == 0)
-        return 0;
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(pid_tgid >> 32);
-    return tgid == *target;
+    return pid_is_target(&futex_target_pid);
 }
 
 static __always_inline int is_wait_op(__u32 op)
