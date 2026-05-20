@@ -26,14 +26,12 @@ type ThreadState struct {
 	CtxSwitches   uint64
 }
 
-// ThreadsTracer loads threads.bpf.o, attaches sched:sched_switch, and
-// exposes Stats() to read tid_state + UpdateTrackedTIDs() to update the
-// set of TIDs the BPF program should track.
+// ThreadsTracer loads threads.bpf.o, attaches sched:sched_switch, and exposes
+// Stats() to read tid_state (keyed by the target's namespace-local TIDs).
 type ThreadsTracer struct {
-	coll        *ebpf.Collection
-	link        link.Link
-	stateMap    *ebpf.Map
-	trackedMap  *ebpf.Map
+	coll     *ebpf.Collection
+	link     link.Link
+	stateMap *ebpf.Map
 }
 
 func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
@@ -59,18 +57,20 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 		t.Close()
 		return nil, errors.New("threads_target_pid map missing")
 	}
-	var key uint32 = 0
-	val := uint32(pid)
-	if err := targetMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
+	tf, err := resolveTarget(pid)
+	if err != nil {
+		t.Close()
+		return nil, err
+	}
+	if err := writeTargetFilter(targetMap, tf); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("set threads_target_pid: %w", err)
 	}
 
 	t.stateMap = coll.Maps["tid_state"]
-	t.trackedMap = coll.Maps["tracked_tids"]
-	if t.stateMap == nil || t.trackedMap == nil {
+	if t.stateMap == nil {
 		t.Close()
-		return nil, errors.New("tid_state / tracked_tids map missing")
+		return nil, errors.New("tid_state map missing")
 	}
 
 	prog := coll.Programs["handle_sched_switch"]
@@ -88,51 +88,39 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 	return t, nil
 }
 
-// UpdateTrackedTIDs syncs the tracked_tids map with the supplied slice.
-// Adds new TIDs and removes ones that disappeared. Called periodically by
-// the collector (Go side) — it already walks /proc/<pid>/task/ to collect
-// state/wchan.
-func (t *ThreadsTracer) UpdateTrackedTIDs(tids []int) error {
-	if t == nil || t.trackedMap == nil {
+// PruneDeadTIDs deletes tid_state entries for TIDs no longer alive, so a
+// recycled TID does not inherit stale counters. `live` holds the
+// namespace-local TIDs currently present under /proc/<pid>/task/.
+func (t *ThreadsTracer) PruneDeadTIDs(live []int) error {
+	if t == nil || t.stateMap == nil {
 		return errors.New("tracer not initialized")
 	}
-	desired := make(map[uint32]struct{}, len(tids))
-	for _, tid := range tids {
+	alive := make(map[uint32]struct{}, len(live))
+	for _, tid := range live {
 		if tid > 0 {
-			desired[uint32(tid)] = struct{}{}
+			alive[uint32(tid)] = struct{}{}
 		}
 	}
-
-	// List existing
-	existing := make(map[uint32]struct{}, len(desired))
+	var dead []uint32
 	var k uint32
-	var v uint8
-	iter := t.trackedMap.Iterate()
+	var v ThreadState
+	iter := t.stateMap.Iterate()
 	for iter.Next(&k, &v) {
-		existing[k] = struct{}{}
-	}
-
-	// Add missing
-	for tid := range desired {
-		if _, ok := existing[tid]; !ok {
-			one := uint8(1)
-			if err := t.trackedMap.Update(&tid, &one, ebpf.UpdateAny); err != nil {
-				return fmt.Errorf("add tid %d: %w", tid, err)
-			}
+		if _, ok := alive[k]; !ok {
+			dead = append(dead, k)
 		}
 	}
-	// Remove orphans
-	for tid := range existing {
-		if _, ok := desired[tid]; !ok {
-			_ = t.trackedMap.Delete(&tid)
-			// Also clear state so recycled TIDs don't inherit counters.
-			_ = t.stateMap.Delete(&tid)
-		}
+	if err := iter.Err(); err != nil {
+		return err
+	}
+	for i := range dead {
+		_ = t.stateMap.Delete(&dead[i])
 	}
 	return nil
 }
 
-// Stats returns a complete snapshot of the tid_state map.
+// Stats returns a complete snapshot of the tid_state map, keyed by the
+// target's namespace-local TIDs.
 func (t *ThreadsTracer) Stats() (map[uint32]ThreadState, error) {
 	if t == nil || t.stateMap == nil {
 		return nil, errors.New("tracer not initialized")
@@ -162,7 +150,6 @@ func (t *ThreadsTracer) Close() error {
 		t.coll.Close()
 		t.coll = nil
 		t.stateMap = nil
-		t.trackedMap = nil
 	}
 	return nil
 }

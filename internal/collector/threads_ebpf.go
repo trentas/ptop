@@ -27,7 +27,7 @@ import (
 // Lifecycle:
 //   - tick every 1s
 //   - read /proc/<pid>/task/ → collect state/wchan/name + list of live TIDs
-//   - sync tracked_tids in the BPF map (add new ones, remove stragglers)
+//   - prune tid_state for TIDs that have exited
 //   - read tid_state from BPF, compute deltas vs previous snapshot
 //   - publish []ThreadInfo
 type ThreadsEBPFCollector struct {
@@ -143,9 +143,9 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		tidList = append(tidList, tid)
 	}
 
-	// Sync tracked_tids in the BPF map.
-	if err := c.tracer.UpdateTrackedTIDs(tidList); err != nil {
-		// Not fatal: keep publishing /proc data even if the sync fails.
+	// Prune tid_state for threads that exited since the last tick.
+	if err := c.tracer.PruneDeadTIDs(tidList); err != nil {
+		// Not fatal: keep publishing /proc data even if the prune fails.
 		_ = err
 	}
 
