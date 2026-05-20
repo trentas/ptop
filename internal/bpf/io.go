@@ -68,9 +68,12 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 		t.Close()
 		return nil, errors.New("io_target_pid map missing")
 	}
-	var key uint32 = 0
-	val := uint32(pid)
-	if err := targetMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
+	tf, err := resolveTarget(pid)
+	if err != nil {
+		t.Close()
+		return nil, err
+	}
+	if err := writeTargetFilter(targetMap, tf); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("set io_target_pid: %w", err)
 	}
