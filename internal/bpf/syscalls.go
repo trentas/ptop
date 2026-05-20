@@ -72,9 +72,12 @@ func OpenSyscallTracer(pid int) (*SyscallTracer, error) {
 		t.Close()
 		return nil, errors.New("target_pid map not found in BPF object")
 	}
-	var key uint32 = 0
-	val := uint32(pid)
-	if err := targetMap.Update(&key, &val, ebpf.UpdateAny); err != nil {
+	tf, err := resolveTarget(pid)
+	if err != nil {
+		t.Close()
+		return nil, err
+	}
+	if err := writeTargetFilter(targetMap, tf); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("set target_pid: %w", err)
 	}
