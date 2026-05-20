@@ -9,10 +9,19 @@ import (
 )
 
 // The Go targetFilter must match `struct target_filter` in target.bpf.h
-// byte-for-byte, or the loader writes garbage into the BPF map.
-func TestTargetFilterSize(t *testing.T) {
-	if got := unsafe.Sizeof(targetFilter{}); got != 24 {
+// byte-for-byte, or the loader writes garbage into the BPF map. Size alone
+// is not enough — field offsets must match too, since the kernel reads the
+// struct verbatim.
+func TestTargetFilterLayout(t *testing.T) {
+	var tf targetFilter
+	if got := unsafe.Sizeof(tf); got != 24 {
 		t.Fatalf("sizeof(targetFilter) = %d, want 24", got)
+	}
+	if got := unsafe.Offsetof(tf.Dev); got != 8 {
+		t.Fatalf("offsetof(targetFilter.Dev) = %d, want 8", got)
+	}
+	if got := unsafe.Offsetof(tf.Ino); got != 16 {
+		t.Fatalf("offsetof(targetFilter.Ino) = %d, want 16", got)
 	}
 }
 
@@ -33,6 +42,8 @@ func TestResolveTargetSelf(t *testing.T) {
 }
 
 func TestResolveTargetMissingPID(t *testing.T) {
+	// 0x7fffffff exceeds Linux's hard cap on pid_max (PID_MAX_LIMIT = 4194304),
+	// so this PID is guaranteed not to exist on any kernel.
 	if _, err := resolveTarget(0x7fffffff); err == nil {
 		t.Error("resolveTarget(nonexistent pid) = nil error, want failure")
 	}
