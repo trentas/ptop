@@ -3,13 +3,14 @@
 // cpu.bpf.c — CPU sampling of the target PID via perf_event at 100Hz per CPU.
 //
 // Maps:
-//   cpu_target_pid       ARRAY[1]  target pid (written by the Go loader)
+//   cpu_target_pid       ARRAY[1]  struct target_filter (written by the Go loader)
 //   cpu_target_samples   ARRAY[1]  accumulated counter of samples where the
 //                                   target was on-CPU
 //
 // The Go loader opens a PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK perf_event
 // with sample_freq=100 on each CPU. Each time the kernel fires a sample,
-// if the current tgid == target_pid, the counter is incremented.
+// if the current task is the target — resolved within its PID namespace via
+// pid_is_target() (see target.bpf.h) — the counter is incremented.
 //
 // % computation on the Go side:
 //   delta_samples / (sample_freq × elapsed_seconds × NCPU) × 100 = % of
