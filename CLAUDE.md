@@ -61,9 +61,11 @@ ptop/
 ├── go.mod, go.sum
 ├── Makefile, .goreleaser.yaml
 ├── cmd/ptop/main.go               entrypoint: parse flags, start model
+├── cmd/ebpfselftest/              root-only eBPF self-diagnostic
 ├── internal/
 │   ├── bpf/                       eBPF programs + loader (build tag `ebpf`)
 │   │   ├── programs/              .bpf.c sources, compiled by `make gen`
+│   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          perf_event @ 100Hz/CPU
 │   │   │   ├── io.bpf.c           VFS read/write/fsync
@@ -72,6 +74,7 @@ ptop/
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   └── futex.bpf.c        futex wait/wake → lock graph
 │   │   ├── available.go           runtime feature flag (build-tag based)
+│   │   ├── target.go              pid-namespace target resolver (shared)
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
 │   │   ├── caps_stub.go           non-Linux stub
 │   │   ├── caps_test.go
@@ -265,6 +268,17 @@ line wraps and the rest of the TUI flips upside down. `header.go` shows the
 priority-based segment dropping pattern: copy it for any new dynamic strip.
 
 ---
+
+## PID namespaces
+
+eBPF programs filter the target process via `bpf_get_ns_current_pid_tgid()`,
+resolving pids inside the target's PID namespace (dev+inode of
+`/proc/<pid>/ns/pid`, written by the Go loader into `struct target_filter`).
+This is required because `bpf_get_current_pid_tgid()` returns root-namespace
+pids — wrong when ptop runs inside a nested namespace (WSL2, Docker, LXC).
+The shared logic lives in `programs/target.bpf.h` and `bpf/target.go`; never
+filter with the bare `bpf_get_current_pid_tgid()` again. Verify with
+`make ebpf-selftest` → `sudo ./bin/ebpf-selftest`.
 
 ## Build tags
 

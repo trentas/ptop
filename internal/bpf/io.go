@@ -62,7 +62,7 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 	}
 	t := &IOTracer{coll: coll}
 
-	// Set target_pid
+	// Set the target filter
 	targetMap := coll.Maps["io_target_pid"]
 	if targetMap == nil {
 		t.Close()
