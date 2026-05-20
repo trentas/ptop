@@ -58,6 +58,10 @@ BPF_SRCS := \
 
 BPF_OBJS := $(BPF_SRCS:.c=.o)
 
+# Every BPF object includes the shared filter header — editing it must
+# trigger a rebuild (the %.bpf.o rule below only tracks the .c file).
+$(BPF_OBJS): internal/bpf/programs/target.bpf.h
+
 CLANG  ?= clang
 
 # Default rule: .bpf.c → .bpf.o via clang -target bpf.

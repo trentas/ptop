@@ -17,13 +17,14 @@
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, __u32);
+    __type(value, struct target_filter);
     __uint(max_entries, 1);
 } cpu_target_pid SEC(".maps");
 
@@ -37,16 +38,10 @@ struct {
 SEC("perf_event")
 int handle_perf_event(void *ctx)
 {
+    if (!pid_is_target(&cpu_target_pid))
+        return 0;
+
     __u32 key = 0;
-    __u32 *target = bpf_map_lookup_elem(&cpu_target_pid, &key);
-    if (!target || *target == 0)
-        return 0;
-
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(pid_tgid >> 32);
-    if (tgid != *target)
-        return 0;
-
     __u64 *count = bpf_map_lookup_elem(&cpu_target_samples, &key);
     if (count)
         __sync_fetch_and_add(count, 1);
