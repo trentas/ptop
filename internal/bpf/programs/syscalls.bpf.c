@@ -4,7 +4,7 @@
 // raw_syscalls of the target PID.
 //
 // Maps:
-//   target_pid     ARRAY[1]  target pid (written by the Go loader via map.Update)
+//   target_pid     ARRAY[1]  struct target_filter (written by the Go loader)
 //   syscall_count  HASH      syscall_id → {count, total_lat_ns}
 //   enter_ts       HASH      tgid_pid → {ts_ns, syscall_id}
 //                            correlates enter→exit to compute latency
