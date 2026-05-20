@@ -91,6 +91,11 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 // PruneDeadTIDs deletes tid_state entries for TIDs no longer alive, so a
 // recycled TID does not inherit stale counters. `live` holds the
 // namespace-local TIDs currently present under /proc/<pid>/task/.
+//
+// The root2ns map is intentionally left unpruned: it is an LRU_HASH that
+// evicts dead entries on its own, and a stale entry at worst produces a
+// tid_state row the collector never publishes (it only emits TIDs found
+// under /proc/<pid>/task/).
 func (t *ThreadsTracer) PruneDeadTIDs(live []int) error {
 	if t == nil || t.stateMap == nil {
 		return errors.New("tracer not initialized")
@@ -103,7 +108,7 @@ func (t *ThreadsTracer) PruneDeadTIDs(live []int) error {
 	}
 	var dead []uint32
 	var k uint32
-	var v ThreadState
+	var v ThreadState // unused; the Iterate API requires a value pointer
 	iter := t.stateMap.Iterate()
 	for iter.Next(&k, &v) {
 		if _, ok := alive[k]; !ok {

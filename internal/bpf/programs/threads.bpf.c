@@ -60,6 +60,8 @@ struct {
 
 // root2ns maps a root-namespace TID to the target's namespace-local TID.
 // Self-populated from the `prev` side of sched_switch; LRU evicts dead TIDs.
+// Only target-process threads are ever inserted, so 8192 entries comfortably
+// covers any realistic thread count.
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, __u32);
