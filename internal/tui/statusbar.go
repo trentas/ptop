@@ -71,7 +71,7 @@ func renderStatusBar(m Model) string {
 				Background(barBg).
 				Render("● REC"))
 		}
-		rightParts = append(rightParts, lblStyle.Render("eBPF kernel 6.8 · sampling 100Hz · overhead <0.5%"))
+		rightParts = append(rightParts, lblStyle.Render(statusBarSourceLabel()))
 	}
 	right := strings.Join(rightParts, lblStyle.Render("  "))
 

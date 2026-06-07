@@ -18,3 +18,9 @@ const (
 	ioFilesUnavailable  = true
 	locksUnavailable    = true
 )
+
+// statusBarSourceLabel — no eBPF on macOS, so the footer must not claim it.
+// Tier 1 collects via libproc + Mach (see issue #22).
+func statusBarSourceLabel() string {
+	return "libproc + Mach · Tier 1 · no eBPF"
+}

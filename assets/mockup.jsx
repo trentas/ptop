@@ -36,9 +36,9 @@ function useSimulatedData() {
   const [cpuHistory,       setCpuHistory]       = useState(()=>Array(60).fill(0).map(()=>Math.random()*30+5));
   const [syscallCounts,    setSyscallCounts]    = useState(()=>Object.fromEntries(SYSCALLS.map(s=>[s,Math.floor(Math.random()*200)])));
   const [netEvents,        setNetEvents]        = useState([
-    { id:1, type:"TCP",  remote:"10.0.1.5:5432",         state:"WAIT",        latency:42, dir:"→" },
-    { id:2, type:"TCP",  remote:"10.0.0.1:443",          state:"ESTABLISHED", latency:8,  dir:"↔" },
-    { id:3, type:"UNIX", remote:"/var/run/docker.sock",  state:"ESTABLISHED", latency:1,  dir:"→" },
+    { id:1, type:"TCP",  remote:"10.0.1.5:5432",         state:"WAIT",        latency:42, dir:"→", tx:12000,  rx:88000  },
+    { id:2, type:"TCP",  remote:"10.0.0.1:443",          state:"ESTABLISHED", latency:8,  dir:"↔", tx:480000, rx:500000 },
+    { id:3, type:"UNIX", remote:"/var/run/docker.sock",  state:"ESTABLISHED", latency:1,  dir:"→", tx:22000,  rx:22000  },
   ]);
   const [memStats,         setMemStats]         = useState({ rss:148, heap:92, pageFaults:14, allocs:320 });
   const [threads,          setThreads]          = useState([
@@ -240,17 +240,22 @@ function SyscallBars({ counts }) {
   );
 }
 
-function NetPanel({ events }) {
+// showTraffic adds the TX/RX column. Only the dedicated F3 view enables it;
+// the narrow F1 overview panel omits it to keep REMOTE readable. The TX/RX
+// reading is OS-dependent in the real TUI — cumulative bytes on Linux/eBPF,
+// current send/recv socket-buffer occupancy (a backlog gauge) on macOS.
+function NetPanel({ events, showTraffic }) {
   const sc=s=>s==="WAIT"?COLORS.amber:s==="RECV"?COLORS.cyan:s==="ESTABLISHED"?COLORS.green:COLORS.muted;
   return (
     <div style={{ padding:"4px 10px", display:"flex", flexDirection:"column", gap:4 }}>
-      <div style={{ display:"flex", fontSize:9, color:COLORS.muted, marginBottom:2 }}><span style={{ width:36 }}>TYPE</span><span style={{ flex:1 }}>REMOTE</span><span style={{ width:60 }}>STATE</span><span style={{ width:52, textAlign:"right" }}>LAT</span></div>
+      <div style={{ display:"flex", fontSize:9, color:COLORS.muted, marginBottom:2 }}><span style={{ width:36 }}>TYPE</span><span style={{ flex:1 }}>REMOTE</span><span style={{ width:60 }}>STATE</span><span style={{ width:52, textAlign:"right" }}>LAT</span>{showTraffic&&<span style={{ width:120, textAlign:"right" }}>TX/RX</span>}</div>
       {events.map(e=>(
         <div key={e.id} style={{ display:"flex", fontSize:10, color:COLORS.text, alignItems:"center" }}>
           <span style={{ width:36, color:COLORS.blue }}>{e.type}</span>
           <span style={{ flex:1, color:COLORS.bright }}>{e.dir} {e.remote}</span>
           <span style={{ width:60, color:sc(e.state) }}>{e.state}</span>
           <span style={{ width:52, textAlign:"right", color:e.latency>30?COLORS.amber:COLORS.green }}>{e.latency.toFixed(0)}ms</span>
+          {showTraffic&&<span style={{ width:120, textAlign:"right", color:COLORS.muted }}>↑{fmt(e.tx||0)} ↓{fmt(e.rx||0)}</span>}
         </div>
       ))}
     </div>
@@ -425,7 +430,7 @@ function NetworkView({ data }) {
   return (
     <div style={{ display:"flex", flex:1, gap:1, overflow:"hidden", padding:1 }}>
       <div style={{ display:"flex", flexDirection:"column", flex:2, gap:1 }}>
-        <Box title="▸ Active Connections" flex={1}><NetPanel events={data.netEvents}/></Box>
+        <Box title="▸ Active Connections" flex={1}><NetPanel events={data.netEvents} showTraffic/></Box>
         <Box title="▸ Latency Trend" flex={1.5}>
           <div style={{ padding:"8px 12px", display:"flex", flexDirection:"column", gap:10 }}>
             {data.netEvents.map(e=>{ const pct=Math.min(100,(e.latency/100)*100); const color=e.latency>30?COLORS.amber:COLORS.green; return (

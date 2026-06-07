@@ -84,6 +84,12 @@ static int wrap_proc_name(int pid, void *buf, uint32_t bufsize, int *out_errno) 
     return n;
 }
 
+static int wrap_proc_pidpath(int pid, void *buf, uint32_t bufsize, int *out_errno) {
+    int n = proc_pidpath(pid, buf, bufsize);
+    if (n <= 0) { *out_errno = errno; }
+    return n;
+}
+
 // inet_ntop for IPv4 / IPv6 addresses pulled from socket_fdinfo. Returns
 // length written or -1 on error.
 static int fmt_v4(const struct in_addr *a, char *out, size_t n) {
@@ -160,6 +166,19 @@ func ProcName(pid int) (string, error) {
 	n := C.wrap_proc_name(C.int(pid), unsafe.Pointer(&buf[0]), C.uint32_t(len(buf)), &cerrno)
 	if n <= 0 {
 		return "", fmt.Errorf("proc_name(%d): %w", pid, syscall.Errno(cerrno))
+	}
+	return string(buf[:n]), nil
+}
+
+// ProcPath returns the absolute executable path for pid via proc_pidpath —
+// the macOS equivalent of readlink(/proc/<pid>/exe). The buffer is sized to
+// PROC_PIDPATHINFO_MAXSIZE (4*MAXPATHLEN).
+func ProcPath(pid int) (string, error) {
+	var buf [4096]byte
+	var cerrno C.int
+	n := C.wrap_proc_pidpath(C.int(pid), unsafe.Pointer(&buf[0]), C.uint32_t(len(buf)), &cerrno)
+	if n <= 0 {
+		return "", fmt.Errorf("proc_pidpath(%d): %w", pid, syscall.Errno(cerrno))
 	}
 	return string(buf[:n]), nil
 }
@@ -384,6 +403,16 @@ type LPSocketFDInfo struct {
 	TCPState   int32  // 0=CLOSED, 1=LISTEN, 2=SYN_SENT, 4=ESTABLISHED, etc — only valid when SockType=STREAM
 	LocalAddr  string
 	RemoteAddr string
+
+	// SndQueued / RcvQueued are the current send/receive socket-buffer
+	// occupancy in bytes (socket_info.soi_snd/soi_rcv.sbi_cc). This is the
+	// instantaneous backlog — NOT cumulative traffic. macOS libproc has no
+	// public cumulative byte counter for sockets, so this is the closest
+	// real signal: a growing SndQueued means the peer/network is draining
+	// slower than the process writes; a growing RcvQueued means the process
+	// is reading slower than data arrives.
+	SndQueued uint64
+	RcvQueued uint64
 }
 
 // TCP states (from <netinet/tcp_fsm.h>).
@@ -411,9 +440,11 @@ func FDSocketInfo(pid int, fd int32) (LPSocketFDInfo, error) {
 	}
 
 	out := LPSocketFDInfo{
-		Family:   int32(raw.psi.soi_family),
-		SockType: int32(raw.psi.soi_type),
-		Protocol: int32(raw.psi.soi_protocol),
+		Family:    int32(raw.psi.soi_family),
+		SockType:  int32(raw.psi.soi_type),
+		Protocol:  int32(raw.psi.soi_protocol),
+		SndQueued: uint64(raw.psi.soi_snd.sbi_cc),
+		RcvQueued: uint64(raw.psi.soi_rcv.sbi_cc),
 	}
 
 	// soi_proto is a union of in_sockinfo / un_sockinfo / tcp_sockinfo / ...

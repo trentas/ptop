@@ -461,21 +461,38 @@ func netStateColor(state string) lipgloss.Color {
 	}
 }
 
-func renderNetMini(conns []collector.NetConn, w, h int) string {
+// renderNetMini renders the connection table (TYPE REMOTE STATE LAT). When
+// showTraffic is set it appends a TX/RX column carrying NetConn.Tx/RxBytes —
+// only the dedicated F3 view enables it; the narrow F1 overview panel omits
+// it to keep REMOTE readable.
+//
+// TX/RX semantics are OS-dependent (the field is the same, the meaning is not):
+// on Linux/eBPF the values are cumulative bytes sent/received; on macOS libproc
+// has no cumulative counter, so they are the current send/recv socket-buffer
+// occupancy (a backlog gauge). The ? overlay reports the active source so the
+// user can tell which reading they're looking at.
+func renderNetMini(conns []collector.NetConn, w, h int, showTraffic bool) string {
 	const typeW = 5
 	const stateW = 12
 	const latW = 7
-	remoteW := w - typeW - stateW - latW - 4
+	const txrxW = 18
+	overhead := typeW + stateW + latW + 4
+	if showTraffic {
+		overhead += txrxW + 1
+	}
+	remoteW := w - overhead
 	if remoteW < 8 {
 		remoteW = 8
 	}
 
-	header := MutedStyle.Render(
-		padRight("TYPE", typeW) + " " +
-			padRight("REMOTE", remoteW) + " " +
-			padRight("STATE", stateW) + " " +
-			lipgloss.NewStyle().Width(latW).Background(ColorPanel).Align(lipgloss.Right).Render("LAT"),
-	)
+	headerCols := padRight("TYPE", typeW) + " " +
+		padRight("REMOTE", remoteW) + " " +
+		padRight("STATE", stateW) + " " +
+		lipgloss.NewStyle().Width(latW).Background(ColorPanel).Align(lipgloss.Right).Render("LAT")
+	if showTraffic {
+		headerCols += " " + lipgloss.NewStyle().Width(txrxW).Background(ColorPanel).Align(lipgloss.Right).Render("TX/RX")
+	}
+	header := MutedStyle.Render(headerCols)
 
 	lines := []string{header}
 	for _, c := range conns {
@@ -498,8 +515,13 @@ func renderNetMini(conns []collector.NetConn, w, h int) string {
 		}
 		lat := lipgloss.NewStyle().Foreground(latColor).Background(ColorPanel).Width(latW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%.0fms", c.LatencyMs))
-		lines = append(lines, panelRow(t, remote, state, lat))
-
+		if showTraffic {
+			txrx := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(txrxW).Align(lipgloss.Right).
+				Render(fmt.Sprintf("↑%s ↓%s", fmtBytes(c.TxBytes), fmtBytes(c.RxBytes)))
+			lines = append(lines, panelRow(t, remote, state, lat, txrx))
+		} else {
+			lines = append(lines, panelRow(t, remote, state, lat))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
