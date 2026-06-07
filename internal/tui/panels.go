@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -606,8 +607,8 @@ func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []fl
 	return strings.Join(lines, "\n")
 }
 
-// renderHeapSiteRow lays out one call site: leak marker, call-site address (hex
-// until #54 symbolizes it), live bytes, and cumulative allocation count.
+// renderHeapSiteRow lays out one call site: leak marker, symbolized site label
+// (#54), live bytes, and cumulative allocation count.
 func renderHeapSiteRow(cs collector.HeapCallSite, w int) string {
 	leak := MutedStyle.Render("  ")
 	if cs.Suspected {
@@ -617,12 +618,31 @@ func renderHeapSiteRow(cs collector.HeapCallSite, w int) string {
 	bytesSpan := BrightStyle.Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(cs.LiveBytes))
 	countSpan := MutedStyle.Width(countW).Align(lipgloss.Right).Render(fmt.Sprintf("×%d", cs.AllocCount))
 
-	addrW := w - lipgloss.Width(leak) - bytesW - countW - 2
-	if addrW < 6 {
-		addrW = 6
+	siteW := w - lipgloss.Width(leak) - bytesW - countW - 2
+	if siteW < 6 {
+		siteW = 6
 	}
-	addrSpan := CyanStyle.Width(addrW).Render(truncate(cs.AddrHex, addrW))
-	return leak + addrSpan + panelSp1 + bytesSpan + panelSp1 + countSpan
+	siteSpan := CyanStyle.Width(siteW).Render(truncate(heapSiteLabel(cs), siteW))
+	return leak + siteSpan + panelSp1 + bytesSpan + panelSp1 + countSpan
+}
+
+// heapSiteLabel renders a call site as the most specific form available:
+//
+//	func (file:line)  — resolved with a line table (Go)
+//	func              — resolved by symbol name only (C; no DWARF line info)
+//	module+0xoffset   — stripped module, located by load offset
+//	0x… / unknown     — stack walk failed or address fell outside every module
+func heapSiteLabel(cs collector.HeapCallSite) string {
+	if cs.Func != "" {
+		if cs.File != "" && cs.Line > 0 {
+			return fmt.Sprintf("%s (%s:%d)", cs.Func, filepath.Base(cs.File), cs.Line)
+		}
+		return cs.Func
+	}
+	if cs.Module != "" {
+		return fmt.Sprintf("%s+0x%x", cs.Module, cs.Offset)
+	}
+	return cs.AddrHex
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────

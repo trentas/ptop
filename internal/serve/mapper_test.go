@@ -29,12 +29,19 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 			pb.Category_CATEGORY_MEMORY, func(e *pb.Event) bool { return e.GetMemory().GetRssBytes() == 1000 }},
 		{"heap_snapshot", collector.HeapStats{
 			LiveHeapBytes: 4096, AllocRate: 12.5, SuspectedLeakBytes: 1024,
-			TopCallSites: []collector.HeapCallSite{{CallSite: 0xabc, AddrHex: "0xabc", LiveBytes: 4096, Suspected: true}},
-			Timestamp:    time.Unix(6, 0),
+			TopCallSites: []collector.HeapCallSite{{CallSite: 0xabc, AddrHex: "0xabc",
+				Func: "main.leak", File: "/build/main.go", Line: 42, Module: "app", Offset: 0x1a3,
+				LiveBytes: 4096, Suspected: true}},
+			Timestamp: time.Unix(6, 0),
 		}, pb.Category_CATEGORY_MEMORY, func(e *pb.Event) bool {
 			h := e.GetHeap()
-			return h.GetLiveHeapBytes() == 4096 && h.GetSuspectedLeakBytes() == 1024 &&
-				len(h.GetTopCallSites()) == 1 && h.GetTopCallSites()[0].GetAddrHex() == "0xabc"
+			if h.GetLiveHeapBytes() != 4096 || h.GetSuspectedLeakBytes() != 1024 || len(h.GetTopCallSites()) != 1 {
+				return false
+			}
+			cs := h.GetTopCallSites()[0]
+			return cs.GetAddrHex() == "0xabc" && cs.GetFunc() == "main.leak" &&
+				cs.GetFile() == "/build/main.go" && cs.GetLine() == 42 &&
+				cs.GetModule() == "app" && cs.GetOffset() == 0x1a3
 		}},
 		{"heap_event", collector.HeapEvent{Op: "free", Size: 256, Addr: 0xdead, LifetimeMs: 7.5, CallSite: 0xabc, Large: false},
 			pb.Category_CATEGORY_MEMORY, func(e *pb.Event) bool {

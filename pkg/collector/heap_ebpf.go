@@ -5,11 +5,13 @@ package collector
 import (
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // HeapEBPFCollector tracks libc heap allocations via the uprobe-based eBPF
@@ -27,6 +29,7 @@ import (
 // presented as exact.
 type HeapEBPFCollector struct {
 	tracer *bpf.HeapTracer
+	sym    *symbol.Symbolizer // nil if /proc maps couldn't be parsed
 	ch     chan interface{}
 	stop   chan struct{}
 	pid    int
@@ -35,9 +38,17 @@ type HeapEBPFCollector struct {
 
 	allocCount uint64 // atomic; allocations since the last publish (rate)
 
-	mu       sync.Mutex
-	siteAddr map[int32]uint64 // stack_id → resolved app call-site (cache)
-	lastAt   time.Time        // publishLoop-only; rate baseline
+	mu        sync.Mutex
+	siteCache map[int32]heapSite // stack_id → resolved app call-site (cache)
+	lastAt    time.Time          // publishLoop-only; rate baseline
+}
+
+// heapSite is the resolved application call site for a stack_id: the raw frame
+// address plus its symbolization. Cached because stacks are stable for the
+// process lifetime and symbolizing re-reads ELF modules.
+type heapSite struct {
+	addr  uint64
+	frame symbol.Frame
 }
 
 const (
@@ -51,7 +62,7 @@ func NewHeapEBPFCollector() *HeapEBPFCollector {
 		ch:            make(chan interface{}, 64),
 		stop:          make(chan struct{}),
 		leakThreshold: heapDefaultLeakThreshold,
-		siteAddr:      make(map[int32]uint64),
+		siteCache:     make(map[int32]heapSite),
 	}
 }
 
@@ -62,6 +73,13 @@ func (c *HeapEBPFCollector) Start(pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
+	// Symbolize call sites best-effort: without /proc maps (or off Linux) the
+	// sites degrade to hex, exactly as before #54 — never fail Start over it.
+	if sym, err := symbol.NewSymbolizer(pid); err == nil {
+		c.sym = sym
+	} else {
+		fmt.Fprintf(os.Stderr, "heap: call-site symbolization unavailable for pid %d: %v\n", pid, err)
+	}
 	go c.readLoop()
 	go c.publishLoop()
 	return nil
@@ -72,6 +90,10 @@ func (c *HeapEBPFCollector) Stop() {
 	if c.tracer != nil {
 		_ = c.tracer.Close()
 		c.tracer = nil
+	}
+	if c.sym != nil {
+		_ = c.sym.Close()
+		c.sym = nil
 	}
 }
 
@@ -94,7 +116,7 @@ func (c *HeapEBPFCollector) readLoop() {
 			Size:       ev.Size,
 			Addr:       ev.Addr,
 			LifetimeMs: float64(ev.LifetimeNs) / 1e6,
-			CallSite:   c.resolveSite(ev.StackID),
+			CallSite:   c.resolveSite(ev.StackID).addr,
 			Large:      ev.Flags&bpf.HeapFlagLarge != 0,
 		}
 		select {
@@ -104,30 +126,34 @@ func (c *HeapEBPFCollector) readLoop() {
 	}
 }
 
-// resolveSite maps a stack_id to the application call-site address, caching it
-// (stacks are stable for the process lifetime).
-func (c *HeapEBPFCollector) resolveSite(stackID int32) uint64 {
+// resolveSite maps a stack_id to its application call site (address + symbol),
+// caching the result (stacks are stable for the process lifetime). Concurrent
+// callers (readLoop + publishLoop) share the cache under c.mu.
+func (c *HeapEBPFCollector) resolveSite(stackID int32) heapSite {
 	if stackID < 0 {
-		return 0
+		return heapSite{}
 	}
 	c.mu.Lock()
-	if a, ok := c.siteAddr[stackID]; ok {
+	if s, ok := c.siteCache[stackID]; ok {
 		c.mu.Unlock()
-		return a
+		return s
 	}
 	c.mu.Unlock()
 
 	frames, err := c.tracer.ResolveStack(stackID)
 	if err != nil {
-		return 0
+		return heapSite{}
 	}
 	lo, hi := c.tracer.LibcRange()
-	addr := pickAppFrame(frames, lo, hi)
+	site := heapSite{addr: pickAppFrame(frames, lo, hi)}
+	if c.sym != nil && site.addr != 0 {
+		site.frame = c.sym.Symbolize(site.addr)
+	}
 
 	c.mu.Lock()
-	c.siteAddr[stackID] = addr
+	c.siteCache[stackID] = site
 	c.mu.Unlock()
-	return addr
+	return site
 }
 
 func (c *HeapEBPFCollector) publishLoop() {
@@ -179,10 +205,15 @@ func (c *HeapEBPFCollector) snapshot() (HeapStats, error) {
 		if raw.LifetimeCount > 0 {
 			avgLifeMs = float64(raw.LifetimeSumNs) / float64(raw.LifetimeCount) / 1e6
 		}
-		addr := c.resolveSite(sid)
+		site := c.resolveSite(sid)
 		sites = append(sites, HeapCallSite{
-			CallSite:      addr,
-			AddrHex:       heapAddrHex(addr),
+			CallSite:      site.addr,
+			AddrHex:       heapAddrHex(site.addr),
+			Func:          site.frame.Func,
+			File:          site.frame.File,
+			Line:          site.frame.Line,
+			Module:        site.frame.Module,
+			Offset:        site.frame.Offset,
 			LiveBytes:     uint64(lb),
 			AllocCount:    raw.AllocCount,
 			AvgLifetimeMs: avgLifeMs,

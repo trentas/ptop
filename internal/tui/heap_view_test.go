@@ -18,7 +18,12 @@ func TestHeapMsgUpdatesState(t *testing.T) {
 		AllocRate:          1500,
 		SuspectedLeakBytes: 1 << 20,
 		TopCallSites: []collector.HeapCallSite{
-			{CallSite: 0x4011a3, AddrHex: "0x4011a3", LiveBytes: 2 << 20, AllocCount: 128, Suspected: true},
+			// Symbolized (#54): rendered as "func (file:line)", not hex.
+			{CallSite: 0x4011a3, AddrHex: "0x4011a3", Func: "leakyAlloc",
+				File: "/build/app/alloc.go", Line: 42, Module: "app",
+				LiveBytes: 2 << 20, AllocCount: 128, Suspected: true},
+			// Unresolved: falls back to the raw-address hex.
+			{CallSite: 0x7f00, AddrHex: "0x7f00", LiveBytes: 1 << 20, AllocCount: 9},
 		},
 	}
 	nm, _ := m.Update(HeapMsg(hs))
@@ -34,10 +39,40 @@ func TestHeapMsgUpdatesState(t *testing.T) {
 	mm.Width, mm.Height = 180, 50
 	mm.ActiveTab = TabOverview
 	out := mm.View()
-	for _, want := range []string{"0x4011a3", "Live heap", "Alloc rate", "top alloc sites"} {
+	// "leakyAlloc" proves the symbolized site renders (the full "(alloc.go:42)"
+	// suffix may be truncated by the panel width); "0x7f00" proves the
+	// unresolved fallback still shows hex.
+	for _, want := range []string{"leakyAlloc", "0x7f00", "Live heap", "Alloc rate", "top alloc sites"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("F1 overview missing %q with heap data", want)
 		}
+	}
+}
+
+// TestHeapSiteLabel covers the call-site label fallback chain (#54): full
+// func+file:line, func-only, module+offset, and raw-address/unknown.
+func TestHeapSiteLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		cs   collector.HeapCallSite
+		want string
+	}{
+		{"go func+line", collector.HeapCallSite{
+			Func: "main.leakyAlloc", File: "/build/app/main.go", Line: 42,
+			Module: "app", AddrHex: "0x4011a3"}, "main.leakyAlloc (main.go:42)"},
+		{"c func only", collector.HeapCallSite{
+			Func: "malloc", Module: "libc.so.6", AddrHex: "0x7f12"}, "malloc"},
+		{"stripped module+offset", collector.HeapCallSite{
+			Module: "libfoo.so", Offset: 0x1500, AddrHex: "0x55aa1500"}, "libfoo.so+0x1500"},
+		{"raw hex fallback", collector.HeapCallSite{AddrHex: "0xdead"}, "0xdead"},
+		{"unknown", collector.HeapCallSite{AddrHex: "unknown"}, "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := heapSiteLabel(c.cs); got != c.want {
+				t.Errorf("heapSiteLabel = %q, want %q", got, c.want)
+			}
+		})
 	}
 }
 
