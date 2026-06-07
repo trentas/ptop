@@ -384,6 +384,16 @@ type LPSocketFDInfo struct {
 	TCPState   int32  // 0=CLOSED, 1=LISTEN, 2=SYN_SENT, 4=ESTABLISHED, etc — only valid when SockType=STREAM
 	LocalAddr  string
 	RemoteAddr string
+
+	// SndQueued / RcvQueued are the current send/receive socket-buffer
+	// occupancy in bytes (socket_info.soi_snd/soi_rcv.sbi_cc). This is the
+	// instantaneous backlog — NOT cumulative traffic. macOS libproc has no
+	// public cumulative byte counter for sockets, so this is the closest
+	// real signal: a growing SndQueued means the peer/network is draining
+	// slower than the process writes; a growing RcvQueued means the process
+	// is reading slower than data arrives.
+	SndQueued uint64
+	RcvQueued uint64
 }
 
 // TCP states (from <netinet/tcp_fsm.h>).
@@ -411,9 +421,11 @@ func FDSocketInfo(pid int, fd int32) (LPSocketFDInfo, error) {
 	}
 
 	out := LPSocketFDInfo{
-		Family:   int32(raw.psi.soi_family),
-		SockType: int32(raw.psi.soi_type),
-		Protocol: int32(raw.psi.soi_protocol),
+		Family:    int32(raw.psi.soi_family),
+		SockType:  int32(raw.psi.soi_type),
+		Protocol:  int32(raw.psi.soi_protocol),
+		SndQueued: uint64(raw.psi.soi_snd.sbi_cc),
+		RcvQueued: uint64(raw.psi.soi_rcv.sbi_cc),
 	}
 
 	// soi_proto is a union of in_sockinfo / un_sockinfo / tcp_sockinfo / ...

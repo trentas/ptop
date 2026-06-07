@@ -9,9 +9,9 @@ import (
 
 // renderNetworkView (F3) — assets/mockup.jsx → NetworkView
 //
-//   ┌── Active Connections (left) ────────┬── Network Events (1/3) ─┐
-//   │ TYPE REMOTE         STATE   LAT     │ 12:34 NET TCP SYN  …    │
-//   │ ...                                  │                          │
+//   ┌── Active Connections (left) ──────────────┬── Network Events ─┐
+//   │ TYPE REMOTE       STATE   LAT      TX/RX   │ 12:34 NET TCP …   │
+//   │ ...                                         │                   │
 //   ├── Latency Trend ────────────────────┤                          │
 //   │ remote        ▇▇▇▇▇▇  42ms          │                          │
 //   └─────────────────────────────────────┴──────────────────────────┘
@@ -25,7 +25,7 @@ func renderNetworkView(m Model, w, h int) string {
 	leftHs := splitFlex([]float64{1.0, 1.5}, h)
 
 	conns := Panel("Active Connections",
-		renderNetMini(m.NetConns, leftW-2, leftHs[0]-3),
+		renderNetMini(m.NetConns, leftW-2, leftHs[0]-3, true),
 		leftW, leftHs[0])
 
 	latency := Panel("Latency Trend",

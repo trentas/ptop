@@ -13,12 +13,17 @@ import (
 // every second via proc_pidinfo(PROC_PIDLISTFDS) + proc_pidfdinfo
 // (PROC_PIDFDSOCKETINFO).
 //
-// Fields not populated (no public path on macOS):
-//   - LatencyMs (RTT): NEFilterDataProvider doesn't expose it; PKTAP-based
-//     inference needs a system extension. Stays 0.
-//   - TxBytes / RxBytes: socket_info has byte counters but they're not in
-//     our LPSocketFDInfo struct yet; leaving 0 for now and adding them in
-//     a follow-up if the F3 view's "Traffic" column gains importance.
+// Field semantics on darwin (differ from the Linux eBPF collector):
+//   - LatencyMs (RTT): no public path. NEFilterDataProvider doesn't expose
+//     it and PKTAP-based inference needs a system extension. Stays 0.
+//   - TxBytes / RxBytes: macOS libproc has NO cumulative per-socket byte
+//     counter. The only real signal is the current socket-buffer occupancy
+//     (socket_info.soi_snd/soi_rcv.sbi_cc), so TxBytes/RxBytes here are the
+//     bytes currently QUEUED in the send/receive buffers, not lifetime
+//     totals. A non-zero value means the kernel is holding data the peer
+//     (Tx) or the process (Rx) hasn't drained yet — useful as a backlog
+//     indicator, but the F3 "Traffic" column must be read as a gauge, not
+//     a counter. See LPSocketFDInfo.SndQueued/RcvQueued.
 //   - Dir (→/←/↔): inferred from local vs remote address presence.
 //
 // The label "eBPF" in the type name lies on darwin; the source string is
@@ -143,8 +148,9 @@ func socketToNetConn(fd int, s LPSocketFDInfo) NetConn {
 		State:     state,
 		Dir:       dir,
 		LatencyMs: 0,
-		TxBytes:   0,
-		RxBytes:   0,
+		// Queued buffer occupancy, not cumulative traffic — see file header.
+		TxBytes: s.SndQueued,
+		RxBytes: s.RcvQueued,
 	}
 }
 

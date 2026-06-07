@@ -22,10 +22,12 @@ import (
 //     Linux build is the only place this is real-time; both /proc and
 //     darwin fall back to "never active". Marking everything Active is
 //     misleading, so we mark nothing.
-//   - Bytes column is 0 for the same reason — we don't have a cumulative
-//     file-position equivalent. For TCP sockets the kernel exposes
-//     in/out byte counters via socket_info, but those need extra fields in
-//     the libproc wrapper; deferred to a follow-up.
+//   - Bytes column is 0: there's no cumulative file-position equivalent on
+//     macOS, and sockets are no exception — socket_info exposes only the
+//     current send/recv buffer occupancy (sbi_cc), not lifetime byte
+//     totals, so there's nothing cumulative to put here. The F3 view does
+//     surface that occupancy as a backlog gauge (NetConn.Tx/RxBytes); the
+//     F6 Bytes column stays 0 to avoid mixing a gauge into a counter slot.
 
 type FDCollector struct {
 	pid  int

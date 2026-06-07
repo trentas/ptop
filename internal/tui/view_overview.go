@@ -59,7 +59,7 @@ func renderOverviewView(m Model, w, h int) string {
 		rightW, rightHs[1])
 
 	netPanel := Panel("Network",
-		renderNetMini(m.NetConns, rightW-2, rightHs[2]-3),
+		renderNetMini(m.NetConns, rightW-2, rightHs[2]-3, false),
 		rightW, rightHs[2])
 
 	memPanel := Panel("Memory",
