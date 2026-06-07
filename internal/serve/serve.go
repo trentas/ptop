@@ -31,14 +31,22 @@ type Options struct {
 // and returns. The caller owns the collectors' lifecycle (typically
 // set.Collectors() here and set.Stop() after Run returns). addr is
 // "unix:///path" or "tcp://host:port".
-func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, opts Options) error {
+//
+// resolver (optional, nil-safe) symbolizes captured stacks: it stamps the
+// per-process build-id onto every StackRef and backs the ResolveStack RPC. Pass
+// set.HeapEBPF when non-nil; nil leaves heap events without stack references.
+func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, resolver StackResolver, opts Options) error {
 	lis, cleanup, err := listen(addr)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
-	hub := NewHub(pid)
+	var buildID string
+	if resolver != nil {
+		buildID = resolver.ProcessBuildID()
+	}
+	hub := NewHub(pid, buildID)
 	hub.Start(ctx, cols)
 
 	// Optional JSONL sink: a non-gRPC consumer of the same event stream.
@@ -54,7 +62,7 @@ func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, 
 	}
 
 	srv := grpc.NewServer()
-	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{hub: hub})
+	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{hub: hub, resolver: resolver})
 
 	// On cancel, Stop() (not GracefulStop): Subscribe streams are long-lived and
 	// only end when the client disconnects, so GracefulStop would block forever.

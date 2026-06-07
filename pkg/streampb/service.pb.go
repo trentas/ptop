@@ -200,6 +200,108 @@ func (*SubscribeResponse_Event) isSubscribeResponse_Kind() {}
 
 func (*SubscribeResponse_Meta) isSubscribeResponse_Kind() {}
 
+// ResolveStackRequest asks the server to symbolize a stack id referenced by an
+// event (Event.stack.stack_id or HeapCallSite.stack_id). The id is only valid
+// for the build identified by the accompanying StackRef.build_id.
+type ResolveStackRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StackId       uint64                 `protobuf:"varint,1,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveStackRequest) Reset() {
+	*x = ResolveStackRequest{}
+	mi := &file_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveStackRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveStackRequest) ProtoMessage() {}
+
+func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveStackRequest.ProtoReflect.Descriptor instead.
+func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ResolveStackRequest) GetStackId() uint64 {
+	if x != nil {
+		return x.StackId
+	}
+	return 0
+}
+
+// ResolveStackResponse returns the leaf-first symbolized frames for the stack
+// id. found is false when the id is unknown — evicted from the kernel stack
+// map, never captured, or symbolization is unavailable on the server.
+type ResolveStackResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Frames        []*StackFrame          `protobuf:"bytes,1,rep,name=frames,proto3" json:"frames,omitempty"`
+	Found         bool                   `protobuf:"varint,2,opt,name=found,proto3" json:"found,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ResolveStackResponse) Reset() {
+	*x = ResolveStackResponse{}
+	mi := &file_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ResolveStackResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ResolveStackResponse) ProtoMessage() {}
+
+func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ResolveStackResponse.ProtoReflect.Descriptor instead.
+func (*ResolveStackResponse) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ResolveStackResponse) GetFrames() []*StackFrame {
+	if x != nil {
+		return x.Frames
+	}
+	return nil
+}
+
+func (x *ResolveStackResponse) GetFound() bool {
+	if x != nil {
+		return x.Found
+	}
+	return false
+}
+
 var File_service_proto protoreflect.FileDescriptor
 
 const file_service_proto_rawDesc = "" +
@@ -215,9 +317,15 @@ const file_service_proto_rawDesc = "" +
 	"\x11SubscribeResponse\x12&\n" +
 	"\x05event\x18\x01 \x01(\v2\x0e.ptop.v1.EventH\x00R\x05event\x12)\n" +
 	"\x04meta\x18\x02 \x01(\v2\x13.ptop.v1.StreamMetaH\x00R\x04metaB\x06\n" +
-	"\x04kind2Z\n" +
+	"\x04kind\"0\n" +
+	"\x13ResolveStackRequest\x12\x19\n" +
+	"\bstack_id\x18\x01 \x01(\x04R\astackId\"Y\n" +
+	"\x14ResolveStackResponse\x12+\n" +
+	"\x06frames\x18\x01 \x03(\v2\x13.ptop.v1.StackFrameR\x06frames\x12\x14\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found2\xa7\x01\n" +
 	"\x12EventStreamService\x12D\n" +
-	"\tSubscribe\x12\x19.ptop.v1.SubscribeRequest\x1a\x1a.ptop.v1.SubscribeResponse0\x01B\x87\x01\n" +
+	"\tSubscribe\x12\x19.ptop.v1.SubscribeRequest\x1a\x1a.ptop.v1.SubscribeResponse0\x01\x12K\n" +
+	"\fResolveStack\x12\x1c.ptop.v1.ResolveStackRequest\x1a\x1d.ptop.v1.ResolveStackResponseB\x87\x01\n" +
 	"\vcom.ptop.v1B\fServiceProtoP\x01Z-github.com/trentas/ptop/pkg/streampb;streampb\xa2\x02\x03PXX\xaa\x02\aPtop.V1\xca\x02\aPtop\\V1\xe2\x02\x13Ptop\\V1\\GPBMetadata\xea\x02\bPtop::V1b\x06proto3"
 
 var (
@@ -232,25 +340,31 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_service_proto_goTypes = []any{
-	(*SubscribeRequest)(nil),  // 0: ptop.v1.SubscribeRequest
-	(*StreamMeta)(nil),        // 1: ptop.v1.StreamMeta
-	(*SubscribeResponse)(nil), // 2: ptop.v1.SubscribeResponse
-	(Category)(0),             // 3: ptop.v1.Category
-	(*Event)(nil),             // 4: ptop.v1.Event
+	(*SubscribeRequest)(nil),     // 0: ptop.v1.SubscribeRequest
+	(*StreamMeta)(nil),           // 1: ptop.v1.StreamMeta
+	(*SubscribeResponse)(nil),    // 2: ptop.v1.SubscribeResponse
+	(*ResolveStackRequest)(nil),  // 3: ptop.v1.ResolveStackRequest
+	(*ResolveStackResponse)(nil), // 4: ptop.v1.ResolveStackResponse
+	(Category)(0),                // 5: ptop.v1.Category
+	(*Event)(nil),                // 6: ptop.v1.Event
+	(*StackFrame)(nil),           // 7: ptop.v1.StackFrame
 }
 var file_service_proto_depIdxs = []int32{
-	3, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
-	4, // 1: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
+	5, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
+	6, // 1: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
 	1, // 2: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	0, // 3: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	2, // 4: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	7, // 3: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
+	0, // 4: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	3, // 5: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
+	2, // 6: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	4, // 7: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
+	6, // [6:8] is the sub-list for method output_type
+	4, // [4:6] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -269,7 +383,7 @@ func file_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   5,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -28,6 +28,9 @@ type Symbolizer struct {
 
 	mu   sync.Mutex
 	mods map[string]*Module // by resolved path; nil value = open failed
+
+	buildOnce   sync.Once
+	execBuildID string
 }
 
 // NewSymbolizer snapshots pid's executable mappings. The set of mapped modules
@@ -60,6 +63,26 @@ func (s *Symbolizer) Symbolize(addr uint64) Frame {
 }
 
 func (s *Symbolizer) Close() error { return nil }
+
+// ProcessBuildID returns the GNU build-id (hex) of the target's main
+// executable, or "" if it has none / can't be read. It is a stable per-process
+// key for the stack ids this symbolizer's process hands out: the same stack id
+// denotes a different stack once the binary changes. Computed once, lazily.
+func (s *Symbolizer) ProcessBuildID() string {
+	s.buildOnce.Do(func() {
+		// /proc/<pid>/exe is a magic symlink the kernel resolves to the running
+		// image — readable even when the on-disk path is gone (deleted/overlay).
+		f, err := os.Open(fmt.Sprintf("/proc/%d/exe", s.pid))
+		if err != nil {
+			return
+		}
+		defer f.Close()
+		if m, err := OpenModule(f, "exe"); err == nil {
+			s.execBuildID = m.buildID
+		}
+	})
+	return s.execBuildID
+}
 
 func (s *Symbolizer) segFor(addr uint64) (segment, bool) {
 	for _, sg := range s.segs {

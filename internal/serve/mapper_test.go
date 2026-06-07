@@ -10,6 +10,7 @@ import (
 
 func TestToEventCategoriesAndPayloads(t *testing.T) {
 	const pid = 1234
+	const buildID = "bid-abc"
 	cases := []struct {
 		name string
 		in   interface{}
@@ -31,7 +32,7 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 			LiveHeapBytes: 4096, AllocRate: 12.5, SuspectedLeakBytes: 1024,
 			TopCallSites: []collector.HeapCallSite{{CallSite: 0xabc, AddrHex: "0xabc",
 				Func: "main.leak", File: "/build/main.go", Line: 42, Module: "app", Offset: 0x1a3,
-				LiveBytes: 4096, Suspected: true}},
+				StackID: 7, LiveBytes: 4096, Suspected: true}},
 			Timestamp: time.Unix(6, 0),
 		}, pb.Category_CATEGORY_MEMORY, func(e *pb.Event) bool {
 			h := e.GetHeap()
@@ -41,12 +42,14 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 			cs := h.GetTopCallSites()[0]
 			return cs.GetAddrHex() == "0xabc" && cs.GetFunc() == "main.leak" &&
 				cs.GetFile() == "/build/main.go" && cs.GetLine() == 42 &&
-				cs.GetModule() == "app" && cs.GetOffset() == 0x1a3
+				cs.GetModule() == "app" && cs.GetOffset() == 0x1a3 && cs.GetStackId() == 7
 		}},
-		{"heap_event", collector.HeapEvent{Op: "free", Size: 256, Addr: 0xdead, LifetimeMs: 7.5, CallSite: 0xabc, Large: false},
+		// heap_event carries a StackRef{stack_id, build_id} on the envelope.
+		{"heap_event", collector.HeapEvent{Op: "free", Size: 256, Addr: 0xdead, LifetimeMs: 7.5, CallSite: 0xabc, StackID: 9, Large: false},
 			pb.Category_CATEGORY_MEMORY, func(e *pb.Event) bool {
 				he := e.GetHeapEvent()
-				return he.GetOp() == "free" && he.GetSize() == 256 && he.GetLifetimeMs() == 7.5
+				return he.GetOp() == "free" && he.GetSize() == 256 && he.GetLifetimeMs() == 7.5 &&
+					e.GetStack().GetStackId() == 9 && e.GetStack().GetBuildId() == buildID
 			}},
 		{"threads", []collector.ThreadInfo{{TID: 11, Name: "main", CtxSwitches: 4}},
 			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
@@ -84,7 +87,7 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ev := toEvent(pid, tc.in)
+			ev := toEvent(pid, buildID, tc.in)
 			if ev == nil {
 				t.Fatalf("toEvent returned nil for %T", tc.in)
 			}
@@ -105,24 +108,40 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 }
 
 func TestToEventUnknownReturnsNil(t *testing.T) {
-	if ev := toEvent(1, "not a collector value"); ev != nil {
+	if ev := toEvent(1, "", "not a collector value"); ev != nil {
 		t.Errorf("expected nil for unknown type, got %v", ev)
 	}
-	if ev := toEvent(1, 42); ev != nil {
+	if ev := toEvent(1, "", 42); ev != nil {
 		t.Errorf("expected nil for unknown type, got %v", ev)
+	}
+}
+
+// A failed stack walk (negative kernel sentinel) must not surface a dead id:
+// the heap event gets no StackRef and a snapshot site reports stack_id 0.
+func TestToEventNegativeStackID(t *testing.T) {
+	ev := toEvent(1, "bid", collector.HeapEvent{Op: "malloc", StackID: -1})
+	if ev.GetStack() != nil {
+		t.Errorf("Stack = %v, want nil for a failed stack walk", ev.GetStack())
+	}
+
+	ev = toEvent(1, "bid", collector.HeapStats{
+		TopCallSites: []collector.HeapCallSite{{AddrHex: "unknown", StackID: -1}},
+	})
+	if id := ev.GetHeap().GetTopCallSites()[0].GetStackId(); id != 0 {
+		t.Errorf("StackId = %d, want 0 for a failed stack walk", id)
 	}
 }
 
 // A value carrying a timestamp uses it; one without falls back to now.
 func TestToEventTimestamp(t *testing.T) {
 	ts := time.Unix(100, 500)
-	ev := toEvent(1, collector.CpuSample{UsagePct: 1, Timestamp: ts})
+	ev := toEvent(1, "", collector.CpuSample{UsagePct: 1, Timestamp: ts})
 	if ev.GetTsUnixNano() != ts.UnixNano() {
 		t.Errorf("ts = %d, want %d", ev.GetTsUnixNano(), ts.UnixNano())
 	}
 
 	before := time.Now().UnixNano()
-	ev = toEvent(1, collector.MemStats{RSSBytes: 1})
+	ev = toEvent(1, "", collector.MemStats{RSSBytes: 1})
 	if ev.GetTsUnixNano() < before {
 		t.Errorf("ts = %d, expected >= %d (now)", ev.GetTsUnixNano(), before)
 	}

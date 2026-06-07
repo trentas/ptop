@@ -24,7 +24,7 @@ func TestHubFanOut(t *testing.T) {
 	defer cancel()
 
 	f := newFake(8)
-	h := NewHub(7)
+	h := NewHub(7, "")
 	sub := h.subscribe(nil)
 	h.Start(ctx, []collector.Collector{f})
 
@@ -52,7 +52,7 @@ func TestHubCategoryFilter(t *testing.T) {
 	defer cancel()
 
 	f := newFake(8)
-	h := NewHub(1)
+	h := NewHub(1, "")
 	sub := h.subscribe([]pb.Category{pb.Category_CATEGORY_NETWORK})
 	h.Start(ctx, []collector.Collector{f})
 
@@ -84,7 +84,7 @@ func TestHubBackpressureDrops(t *testing.T) {
 
 	// Source channel large enough to hold every emit without blocking the test.
 	f := newFake(subBuffer + 200)
-	h := NewHub(1)
+	h := NewHub(1, "")
 	sub := h.subscribe(nil) // never read → its buffer fills, then drops
 	h.Start(ctx, []collector.Collector{f})
 
@@ -107,7 +107,7 @@ func TestHubBackpressureDrops(t *testing.T) {
 }
 
 func TestHubUnsubscribe(t *testing.T) {
-	h := NewHub(1)
+	h := NewHub(1, "")
 	sub := h.subscribe(nil)
 	if h.sinkCount() != 1 {
 		t.Fatalf("count = %d, want 1", h.sinkCount())

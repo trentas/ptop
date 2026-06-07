@@ -42,7 +42,7 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}()
 
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, 99, []collector.Collector{f}, Options{}) }()
+	go func() { runErr <- Run(ctx, addr, 99, []collector.Collector{f}, nil, Options{}) }()
 
 	// Wait for the listener socket to appear before dialing.
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
@@ -108,7 +108,7 @@ func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 
 	f := newFake(8192) // holds the burst without blocking the producer
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, 1, []collector.Collector{f}, Options{}) }()
+	go func() { runErr <- Run(ctx, addr, 1, []collector.Collector{f}, nil, Options{}) }()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -176,7 +176,7 @@ func TestServeJSONLExport(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, "unix://"+sock, 5, []collector.Collector{f}, Options{JSONLPath: jsonl})
+		runErr <- Run(ctx, "unix://"+sock, 5, []collector.Collector{f}, nil, Options{JSONLPath: jsonl})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 

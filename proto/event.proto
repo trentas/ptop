@@ -20,11 +20,27 @@ enum Category {
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
-// (#54 — stack symbolization). It stays empty until that lands; consumers
-// fetch frames via a side-channel keyed by stack_id (+ build_id for caching).
+// (#54 — stack symbolization). stack_id is the kernel stack-map id; build_id is
+// the target executable's GNU build-id, a stable per-process cache key (the
+// same stack_id means a different stack once the binary changes). Consumers
+// fetch the frames via EventStreamService.ResolveStack.
 message StackRef {
   uint64 stack_id = 1;
   string build_id = 2;
+}
+
+// StackFrame is one symbolized frame of a captured stack (#54), leaf-first.
+// func is "" when the address couldn't be resolved to a function (stripped
+// non-Go module — module+offset still locate it); file/line are populated only
+// for Go modules in this cut (C/C++ file:line needs DWARF). offset is
+// module-relative, so it is comparable across runs/ASLR.
+message StackFrame {
+  string func = 1;
+  string file = 2;
+  int32 line = 3;
+  string module = 4;
+  uint64 offset = 5;
+  string build_id = 6;
 }
 
 // Event is the single unified message on the stream. The envelope carries the
@@ -136,6 +152,10 @@ message HeapCallSite {
   int32 line = 9; // source line (0 if unknown)
   string module = 10; // backing module basename ("" if unresolved)
   uint64 offset = 11; // module-relative offset of the call site
+  // Kernel stack-map id of the alloc site, for EventStreamService.ResolveStack
+  // (the full leaf-first stack). A sentinel (resolves to not-found) when the
+  // stack walk failed.
+  uint64 stack_id = 12;
 }
 
 // HeapSnapshot is the periodic heap aggregate. live_heap_bytes and

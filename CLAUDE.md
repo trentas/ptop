@@ -346,6 +346,16 @@ The gRPC subscriber and the JSONL writer are interchangeable `Sink`s
 sink: it writes one protojson `Event` per line to `ptop-events-<ts>.jsonl`
 (event-level — distinct from the TUI's state-snapshot `ptop-export-<ts>.jsonl`).
 
+Stack symbolization (#54) rides this surface: heap events carry a
+`StackRef{stack_id, build_id}` on the envelope (high-rate events stay small —
+they reference a stack, not its frames), and the `ResolveStack(stack_id)` RPC
+resolves it to leaf-first `StackFrame`s on demand. The heap collector owns the
+stack tracer + `symbol.Symbolizer`, so it backs both — `serve.Run` takes it as
+the optional `StackResolver`; a nil resolver simply omits stack refs and reports
+`found=false`. `build_id` is the target executable's GNU build-id, a stable
+per-process cache key (the same `stack_id` denotes a different stack once the
+binary changes).
+
 Version metadata is injected via `-ldflags` at release time
 (`main.version`, `main.commit`, `main.buildDate`). In dev they stay as
 `"dev"`/`"none"`/`"unknown"`.

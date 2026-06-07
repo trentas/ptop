@@ -13,13 +13,14 @@ import (
 // of the unified event stream: a gRPC subscriber and a JSONL writer are both
 // just Sinks (see sink.go).
 type Hub struct {
-	pid   int
-	mu    sync.Mutex
-	sinks map[Sink]struct{}
+	pid     int
+	buildID string // target exec build-id, stamped onto every StackRef (#54)
+	mu      sync.Mutex
+	sinks   map[Sink]struct{}
 }
 
-func NewHub(pid int) *Hub {
-	return &Hub{pid: pid, sinks: make(map[Sink]struct{})}
+func NewHub(pid int, buildID string) *Hub {
+	return &Hub{pid: pid, buildID: buildID, sinks: make(map[Sink]struct{})}
 }
 
 // Start launches one fan-in goroutine per collector. Each maps published values
@@ -44,7 +45,7 @@ func (h *Hub) drain(ctx context.Context, ch <-chan interface{}) {
 			if !ok {
 				return
 			}
-			if ev := toEvent(h.pid, v); ev != nil {
+			if ev := toEvent(h.pid, h.buildID, v); ev != nil {
 				h.broadcast(ev)
 			}
 		}

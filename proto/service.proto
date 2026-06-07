@@ -30,10 +30,30 @@ message SubscribeResponse {
   }
 }
 
+// ResolveStackRequest asks the server to symbolize a stack id referenced by an
+// event (Event.stack.stack_id or HeapCallSite.stack_id). The id is only valid
+// for the build identified by the accompanying StackRef.build_id.
+message ResolveStackRequest {
+  uint64 stack_id = 1;
+}
+
+// ResolveStackResponse returns the leaf-first symbolized frames for the stack
+// id. found is false when the id is unknown — evicted from the kernel stack
+// map, never captured, or symbolization is unavailable on the server.
+message ResolveStackResponse {
+  repeated StackFrame frames = 1;
+  bool found = 2;
+}
+
 // EventStreamService is ptop's headless collection surface. ptop runs with the
 // elevated capabilities (CAP_BPF/CAP_PERFMON); subscribers connect with none.
 service EventStreamService {
   // Subscribe streams collector events for the server's target PID until the
   // client disconnects. Multiple subscribers fan out from one collector.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+
+  // ResolveStack symbolizes a stack id seen on the stream into its leaf-first
+  // frames — an out-of-band lookup so high-rate events stay small (they carry
+  // only the id). Resolution is best-effort; see ResolveStackResponse.found.
+  rpc ResolveStack(ResolveStackRequest) returns (ResolveStackResponse);
 }
