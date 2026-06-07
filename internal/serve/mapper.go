@@ -53,6 +53,24 @@ func toEvent(pid int, v interface{}) *pb.Event {
 			PageFaults: x.PageFaults, AllocsPerS: x.AllocsPerS,
 		}}
 
+	case collector.HeapStats:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_MEMORY
+		ev.Payload = &pb.Event_Heap{Heap: &pb.HeapSnapshot{
+			LiveHeapBytes:      x.LiveHeapBytes,
+			AllocRate:          x.AllocRate,
+			SuspectedLeakBytes: x.SuspectedLeakBytes,
+			TopCallSites:       heapCallSites(x.TopCallSites),
+		}}
+
+	case collector.HeapEvent:
+		ev.TsUnixNano = nowNano()
+		ev.Category = pb.Category_CATEGORY_MEMORY
+		ev.Payload = &pb.Event_HeapEvent{HeapEvent: &pb.HeapEvent{
+			Op: x.Op, Size: x.Size, Addr: x.Addr,
+			LifetimeMs: x.LifetimeMs, CallSite: x.CallSite, Large: x.Large,
+		}}
+
 	case []collector.ThreadInfo:
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_THREAD
@@ -126,6 +144,17 @@ func toEvent(pid int, v interface{}) *pb.Event {
 	}
 
 	return ev
+}
+
+func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
+	out := make([]*pb.HeapCallSite, len(in))
+	for i, s := range in {
+		out[i] = &pb.HeapCallSite{
+			CallSite: s.CallSite, AddrHex: s.AddrHex, LiveBytes: s.LiveBytes,
+			AllocCount: s.AllocCount, AvgLifetimeMs: s.AvgLifetimeMs, Suspected: s.Suspected,
+		}
+	}
+	return out
 }
 
 func fileStats(in []collector.IOFileStats) []*pb.IoFileStats {

@@ -76,6 +76,7 @@ ptop/
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
+│   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
 │   │   │   └── futex.bpf.c        futex wait/wake → lock graph
 │   │   ├── available.go           runtime feature flag (build-tag based)
 │   │   ├── target.go              pid-namespace target resolver (shared)
@@ -87,6 +88,7 @@ ptop/
 │   │   ├── network.go             sock tracepoints + connection seeding
 │   │   ├── io.go                  VFS syscall tracker loader
 │   │   ├── memory.go              memory counter loader
+│   │   ├── heap.go                libc allocator uprobe loader (#53)
 │   │   ├── threads.go             sched_switch loader
 │   │   ├── futex.go               futex wait/wake loader
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
@@ -133,6 +135,7 @@ ptop/
 │       ├── threads_ebpf.go        sched_switch → CPU% real-time
 │       ├── mem_proc.go            /proc/<pid>/statm + faults
 │       ├── mem_ebpf.go            kprobe + syscall tracepoints
+│       ├── heap_ebpf.go           libc malloc/free pairing → live-heap + leak (#53)
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
 │       ├── io_ebpf.go             top files + per-op latency
