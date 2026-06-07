@@ -15,7 +15,7 @@ import (
 )
 
 func TestServeUnixEndToEnd(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "ptop.sock")
+	sock := shortSock(t)
 	addr := "unix://" + sock
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,6 +93,60 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}
 }
 
+// A slow consumer that falls behind must receive a StreamMeta reporting drops,
+// exercised through the real gRPC stream (not just the hub). We never call Recv
+// during a large burst, so the transport stalls, the subscriber's bounded
+// buffer overflows, and the service surfaces the drop count.
+func TestServeBackpressureMetaOverGRPC(t *testing.T) {
+	sock := shortSock(t)
+	addr := "unix://" + sock
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := newFake(8192) // holds the burst without blocking the producer
+	runErr := make(chan error, 1)
+	go func() { runErr <- Run(ctx, addr, 1, []collector.Collector{f}) }()
+	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	recvCtx, recvCancel := context.WithTimeout(ctx, 5*time.Second)
+	defer recvCancel()
+	stream, err := pb.NewEventStreamServiceClient(conn).Subscribe(recvCtx, &pb.SubscribeRequest{})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	// Burst far more than subBuffer (256) while the client is not reading.
+	for i := 0; i < 5000; i++ {
+		f.ch <- collector.CpuSample{UsagePct: float64(i), Timestamp: time.Now()}
+	}
+
+	// Now read; a StreamMeta with dropped > 0 must appear.
+	var sawMeta bool
+	for i := 0; i < 6000; i++ {
+		resp, err := stream.Recv()
+		if err != nil {
+			break
+		}
+		if m := resp.GetMeta(); m != nil && m.GetDropped() > 0 {
+			sawMeta = true
+			break
+		}
+	}
+	if !sawMeta {
+		t.Fatal("expected a StreamMeta with dropped>0 under backpressure")
+	}
+
+	cancel()
+	<-runErr
+}
+
 func TestListenRefusesAllInterfaces(t *testing.T) {
 	for _, addr := range []string{"tcp://0.0.0.0:50051", "tcp://:50051", "tcp://[::]:50051"} {
 		if _, _, err := listen(addr); err == nil {
@@ -105,6 +159,19 @@ func TestListenRejectsUnknownScheme(t *testing.T) {
 	if _, _, err := listen("http://localhost:8080"); err == nil {
 		t.Errorf("expected error for unsupported scheme")
 	}
+}
+
+// shortSock returns a unix socket path short enough for the OS limit. macOS
+// caps a socket path (sun_path) at ~104 bytes, and t.TempDir() embeds the test
+// name, so long-named tests can blow past it — use a minimal temp dir instead.
+func shortSock(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ptop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
 }
 
 func waitFor(t *testing.T, cond func() bool) {
