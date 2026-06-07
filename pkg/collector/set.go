@@ -21,6 +21,7 @@ type Sources struct {
 	CPU      string
 	Threads  string
 	Mem      string
+	Heap     string
 	Syscalls string
 	IOFiles  string
 	Net      string
@@ -39,6 +40,7 @@ type Set struct {
 	ThreadsEBPF  *ThreadsEBPFCollector
 	MemProc      *MemCollector
 	MemEBPF      *MemEBPFCollector
+	HeapEBPF     *HeapEBPFCollector
 	IOWait       *IOWaitCollector
 	IOThroughput *IOThroughputCollector
 	SyscallsEBPF *SyscallsEBPFCollector
@@ -162,6 +164,17 @@ func NewSet(cfg SetConfig) *Set {
 		} else {
 			warnEBPFFailure("futex", err)
 		}
+
+		// Heap (libc malloc/free pairing) augments the memory subsystem. No
+		// /proc fallback and no simulation — absent unless eBPF can attach the
+		// libc uprobes (so static / non-libc targets simply have no heap data).
+		c5 := NewHeapEBPFCollector()
+		if err := c5.Start(cfg.PID); err == nil {
+			s.HeapEBPF = c5
+			s.Sources.Heap = "eBPF"
+		} else {
+			warnEBPFFailure("heap", err)
+		}
 	}
 
 	return s
@@ -195,6 +208,9 @@ func (s *Set) Stop() {
 	}
 	if s.MemEBPF != nil {
 		s.MemEBPF.Stop()
+	}
+	if s.HeapEBPF != nil {
+		s.HeapEBPF.Stop()
 	}
 	if s.IOWait != nil {
 		s.IOWait.Stop()
@@ -237,6 +253,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.ThreadsEBPF, s.ThreadsEBPF != nil)
 	add(s.MemProc, s.MemProc != nil)
 	add(s.MemEBPF, s.MemEBPF != nil)
+	add(s.HeapEBPF, s.HeapEBPF != nil)
 	add(s.IOWait, s.IOWait != nil)
 	add(s.IOThroughput, s.IOThroughput != nil)
 	add(s.SyscallsEBPF, s.SyscallsEBPF != nil)
@@ -253,6 +270,7 @@ func (s *Set) MockFDs() bool          { return s.FD == nil }
 func (s *Set) MockCPU() bool          { return s.CPUEBPF == nil && s.CPUProc == nil }
 func (s *Set) MockThreads() bool      { return s.ThreadsEBPF == nil && s.ThreadsProc == nil }
 func (s *Set) MockMem() bool          { return s.MemEBPF == nil && s.MemProc == nil }
+func (s *Set) MockHeap() bool         { return s.HeapEBPF == nil }
 func (s *Set) MockIOWait() bool       { return s.IOWait == nil }
 func (s *Set) MockIOThroughput() bool { return s.IOThroughput == nil }
 func (s *Set) MockSyscalls() bool     { return s.SyscallsEBPF == nil }

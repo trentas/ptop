@@ -39,14 +39,53 @@ type MemStats struct {
 	AllocsPerS uint64
 }
 
+// ─── Heap allocations (eBPF libc malloc/free pairing — #53) ───────────────────
+
+// HeapEvent is a single allocation or free observed via libc uprobes.
+// Op is "malloc"|"calloc"|"realloc"|"free". LifetimeMs is set on free
+// (free.ts − alloc.ts). CallSite is the application call-site address (shown in
+// hex; #54 will symbolize it). Large flags allocations ≥ 128KB.
+type HeapEvent struct {
+	Op         string
+	Size       uint64
+	Addr       uint64
+	LifetimeMs float64
+	CallSite   uint64
+	Large      bool
+}
+
+// HeapCallSite aggregates the currently-live allocations attributed to one
+// application call site (by the alloc-site stack, so a free decrements the site
+// it was allocated from).
+type HeapCallSite struct {
+	CallSite      uint64  // raw application instruction pointer
+	AddrHex       string  // "0x…" display form ("unknown" when unresolved)
+	LiveBytes     uint64  // bytes still live from this site
+	AllocCount    uint64  // total allocations ever from this site
+	AvgLifetimeMs float64 // mean lifetime of freed allocations from this site
+	Suspected     bool    // has live allocations older than the leak threshold
+}
+
+// HeapStats is the periodic snapshot of heap behavior. LiveHeapBytes and
+// SuspectedLeakBytes derive from the kernel's live set, which LRU-evicts under
+// pressure — so both UNDERCOUNT on alloc-heavy targets (see heap.bpf.c); never
+// presented as exact. AllocRate is allocations per second over the last window.
+type HeapStats struct {
+	Timestamp          time.Time
+	LiveHeapBytes      uint64
+	AllocRate          float64
+	TopCallSites       []HeapCallSite
+	SuspectedLeakBytes uint64
+}
+
 // ─── Threads ─────────────────────────────────────────────────────────────────
 
 type ThreadInfo struct {
 	TID     int
 	Name    string
-	State   string  // "running" | "blocked" | "sleeping"
+	State   string // "running" | "blocked" | "sleeping"
 	CPUPct  float64
-	Waiting string  // name of the blocking lock/syscall, empty if none
+	Waiting string // name of the blocking lock/syscall, empty if none
 	// CtxSwitches: total context switches for the thread within the current
 	// window (interval between collector publishes). Only populated when the
 	// eBPF threads collector is active; via /proc this stays zero.
@@ -146,7 +185,7 @@ type FDEntry struct {
 	Flags  string // "O_RDONLY" | "O_WRONLY" | "O_RDWR"
 	Bytes  uint64
 	AgeMs  int64
-	Active bool   // had activity in the last cycle
+	Active bool // had activity in the last cycle
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────

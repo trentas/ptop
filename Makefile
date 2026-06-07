@@ -54,6 +54,7 @@ BPF_SRCS := \
 	internal/bpf/programs/network.bpf.c \
 	internal/bpf/programs/threads.bpf.c \
 	internal/bpf/programs/memory.bpf.c \
+	internal/bpf/programs/heap.bpf.c \
 	internal/bpf/programs/futex.bpf.c
 
 BPF_OBJS := $(BPF_SRCS:.c=.o)
