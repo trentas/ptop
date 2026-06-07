@@ -5,7 +5,6 @@ package collector
 import (
 	"fmt"
 	"sort"
-	"sync"
 	"time"
 )
 
@@ -34,7 +33,6 @@ type NetworkEBPFCollector struct {
 	pid  int
 	ch   chan interface{}
 	stop chan struct{}
-	mu   sync.Mutex
 }
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
