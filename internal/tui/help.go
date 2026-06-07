@@ -107,6 +107,15 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			m.usingMockIOFiles, m.ioFilesSource),
 		statusRow("network", m.usingMockNet, m.netSource),
 		statusRow("memory", m.usingMockMem, m.memSource),
+		// Heap (malloc/free) is eBPF-only and never simulated: it's "real via
+		// eBPF" when the libc uprobes attached, else genuinely unavailable
+		// (macOS, --no-ebpf, or a static / non-libc target) — never "mock".
+		func() string {
+			if m.heapSource != "" {
+				return statusRow("heap", false, m.heapSource)
+			}
+			return statusRowNA("heap", "needs eBPF + a libc-linked target")
+		}(),
 		statusRowMaybeNA("locks", locksUnavailable, "no public __ulock_wait hook on macOS (see #22)",
 			m.locksSource == "", m.locksSource),
 		statusRow("threads", m.usingMockThreads, m.threadsSource),

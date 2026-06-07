@@ -528,28 +528,101 @@ func renderNetMini(conns []collector.NetConn, w, h int, showTraffic bool) string
 
 // ─── Memory ──────────────────────────────────────────────────────────────────
 
-func renderMemMini(s collector.MemStats, w int) string {
-	rows := []struct {
-		label string
-		value string
-		color lipgloss.Color
-	}{
-		{"RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan},
-		{"Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple},
-		{"Page faults", fmt.Sprintf("%d", s.PageFaults), ColorAmber},
-		{"Allocs/s", fmt.Sprintf("%d", s.AllocsPerS), ColorGreen},
+// kvGap joins a pre-styled label and value, right-aligning the value to fill w.
+func kvGap(left, right string, w int) string {
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
 	}
-	lines := make([]string, 0, len(rows))
-	for _, r := range rows {
-		left := MutedStyle.Render(r.label)
-		right := lipgloss.NewStyle().Foreground(r.color).Background(ColorPanel).Render(r.value)
-		gap := w - lipgloss.Width(left) - lipgloss.Width(right)
-		if gap < 1 {
-			gap = 1
+	return left + panelGap(gap) + right
+}
+
+// kvLine renders a "label … value" row filling width w (value right-aligned).
+func kvLine(label, value string, color lipgloss.Color, w int) string {
+	return kvGap(MutedStyle.Render(label),
+		lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Render(value), w)
+}
+
+// renderMemMini renders the F1 Memory panel. Without eBPF heap data it shows the
+// classic RSS / Heap / Page-faults / Allocs rows (the mockup's MemPanel). When
+// the heap collector (#53) is active it adds a live-heap sparkline, the real
+// allocation rate, a suspected-leak summary, and the top allocating call sites.
+func renderMemMini(s collector.MemStats, heap collector.HeapStats, liveHist []float64, w, h int) string {
+	if len(heap.TopCallSites) == 0 {
+		return strings.Join([]string{
+			kvLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, w),
+			kvLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, w),
+			kvLine("Page faults", fmt.Sprintf("%d", s.PageFaults), ColorAmber, w),
+			kvLine("Allocs/s", fmt.Sprintf("%d", s.AllocsPerS), ColorGreen, w),
+		}, "\n")
+	}
+	return renderMemHeap(s, heap, liveHist, w, h)
+}
+
+func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []float64, w, h int) string {
+	lines := []string{
+		kvLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, w),
+		kvLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, w),
+	}
+
+	// Live heap: sparkline of the kernel live-set sum + its current value.
+	label := MutedStyle.Render("Live heap")
+	val := TealStyle.Render(fmtBytes(heap.LiveHeapBytes))
+	sparkW := w - lipgloss.Width(label) - lipgloss.Width(val) - 2
+	if sparkW < 4 {
+		sparkW = 4
+	}
+	lines = append(lines, label+panelSp1+Sparkline(liveHist, sparkW, ColorTeal)+panelSp1+val)
+
+	// Real allocation rate from malloc/free events (not the /proc fault proxy).
+	lines = append(lines, kvLine("Alloc rate", fmtRate(heap.AllocRate), ColorGreen, w))
+
+	// Suspected-leak summary — live allocations older than the leak threshold.
+	if heap.SuspectedLeakBytes > 0 {
+		nLeak := 0
+		for _, cs := range heap.TopCallSites {
+			if cs.Suspected {
+				nLeak++
+			}
 		}
-		lines = append(lines, left+panelGap(gap)+right)
+		lines = append(lines, kvGap(MutedStyle.Render("Suspected leak"),
+			RedStyle.Render(fmt.Sprintf("⚠ %s · %d site%s", fmtBytes(heap.SuspectedLeakBytes), nLeak, plural(nLeak))), w))
+	} else {
+		lines = append(lines, kvGap(MutedStyle.Render("Leaks"), GreenStyle.Render("✓ none"), w))
+	}
+
+	// Top allocating call sites — fill whatever vertical room is left (one line
+	// reserved for the header).
+	if avail := h - len(lines) - 1; avail >= 1 {
+		lines = append(lines, DimStyle.Render(truncate("─ top alloc sites ───────────────────────────────", w)))
+		sites := heap.TopCallSites
+		if len(sites) > avail {
+			sites = sites[:avail]
+		}
+		for _, cs := range sites {
+			lines = append(lines, renderHeapSiteRow(cs, w))
+		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// renderHeapSiteRow lays out one call site: leak marker, call-site address (hex
+// until #54 symbolizes it), live bytes, and cumulative allocation count.
+func renderHeapSiteRow(cs collector.HeapCallSite, w int) string {
+	leak := MutedStyle.Render("  ")
+	if cs.Suspected {
+		leak = RedStyle.Render("⚠ ")
+	}
+	const bytesW, countW = 8, 7
+	bytesSpan := BrightStyle.Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(cs.LiveBytes))
+	countSpan := MutedStyle.Width(countW).Align(lipgloss.Right).Render(fmt.Sprintf("×%d", cs.AllocCount))
+
+	addrW := w - lipgloss.Width(leak) - bytesW - countW - 2
+	if addrW < 6 {
+		addrW = 6
+	}
+	addrSpan := CyanStyle.Width(addrW).Render(truncate(cs.AddrHex, addrW))
+	return leak + addrSpan + panelSp1 + bytesSpan + panelSp1 + countSpan
 }
 
 // ─── Timeline ────────────────────────────────────────────────────────────────

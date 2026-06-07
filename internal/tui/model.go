@@ -76,6 +76,7 @@ type FDMsg []collector.FDEntry
 type CpuMsg collector.CpuSample
 type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
+type HeapMsg collector.HeapStats
 type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
@@ -108,6 +109,8 @@ type Model struct {
 	SyscallCounts  map[string]uint64
 	NetConns       []collector.NetConn
 	MemStats       collector.MemStats
+	HeapStats      collector.HeapStats // eBPF malloc/free pairing (#53); empty without eBPF
+	HeapLiveHist   []float64           // live-heap bytes history for the F1 sparkline
 	Threads        []collector.ThreadInfo
 	IOStats        collector.IOStats
 	IOReadHist     []float64
@@ -173,6 +176,7 @@ type Model struct {
 	netSource      string
 	threadsSource  string
 	memSource      string
+	heapSource     string
 	locksSource    string
 
 	// Stable caches to avoid visual reordering between ticks.
@@ -219,6 +223,7 @@ func NewModel(cfg Config) Model {
 	m.cpuSource = m.collectors.Sources.CPU
 	m.threadsSource = m.collectors.Sources.Threads
 	m.memSource = m.collectors.Sources.Mem
+	m.heapSource = m.collectors.Sources.Heap
 	m.syscallsSource = m.collectors.Sources.Syscalls
 	m.ioFilesSource = m.collectors.Sources.IOFiles
 	m.netSource = m.collectors.Sources.Net
@@ -287,6 +292,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.collectors.MemEBPF != nil {
 		cmds = append(cmds, waitForMemEBPF(m.collectors.MemEBPF))
+	}
+	if m.collectors.HeapEBPF != nil {
+		cmds = append(cmds, waitForHeapEBPF(m.collectors.HeapEBPF))
 	}
 	if m.collectors.FutexEBPF != nil {
 		cmds = append(cmds, waitForFutexEBPF(m.collectors.FutexEBPF))
@@ -372,6 +380,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForMemEBPF(m.collectors.MemEBPF)
 		}
 		return m, waitForMem(m.collectors.MemProc)
+
+	case HeapMsg:
+		m.HeapStats = collector.HeapStats(v)
+		m.HeapLiveHist = appendCapped(m.HeapLiveHist, float64(m.HeapStats.LiveHeapBytes), 60)
+		return m, waitForHeapEBPF(m.collectors.HeapEBPF)
 
 	case IOWaitMsg:
 		m.IOStats.IOWaitPct = collector.IOWaitSample(v).Pct
@@ -1121,6 +1134,30 @@ func waitForMemEBPF(c *collector.MemEBPFCollector) tea.Cmd {
 		v := <-ch
 		if s, ok := v.(collector.MemStats); ok {
 			return MemMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+// waitForHeapEBPF drains the heap collector's channel. It carries two payloads:
+// the periodic HeapStats aggregate (what the F1 panel renders) and per-alloc/free
+// HeapEvents (for the gRPC stream). The TUI only surfaces the aggregate, so it
+// blocks reading — discarding HeapEvents — until the next HeapStats, which avoids
+// a per-allocation render storm.
+func waitForHeapEBPF(c *collector.HeapEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		for v := range ch {
+			if s, ok := v.(collector.HeapStats); ok {
+				return HeapMsg(s)
+			}
+			// HeapEvent: not shown in the aggregate panel — keep reading.
 		}
 		return TickMsg(time.Now())
 	}
