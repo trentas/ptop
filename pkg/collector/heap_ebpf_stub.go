@@ -2,7 +2,11 @@
 
 package collector
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/trentas/ptop/pkg/symbol"
+)
 
 type HeapEBPFCollector struct{}
 
@@ -12,3 +16,9 @@ func (*HeapEBPFCollector) Start(int) error {
 }
 func (*HeapEBPFCollector) Stop()                         {}
 func (*HeapEBPFCollector) Subscribe() <-chan interface{} { return nil }
+
+// ResolveStack / ProcessBuildID satisfy the serve.StackResolver shape so the
+// headless server can hold a *HeapEBPFCollector uniformly; without eBPF there
+// is nothing to resolve.
+func (*HeapEBPFCollector) ResolveStack(uint64) ([]symbol.Frame, bool) { return nil, false }
+func (*HeapEBPFCollector) ProcessBuildID() string                     { return "" }

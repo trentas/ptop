@@ -14,3 +14,4 @@ func NewSymbolizer(int) (*Symbolizer, error) {
 
 func (*Symbolizer) Symbolize(uint64) Frame { return Frame{} }
 func (*Symbolizer) Close() error           { return nil }
+func (*Symbolizer) ProcessBuildID() string { return "" }

@@ -38,9 +38,10 @@ type HeapEBPFCollector struct {
 
 	allocCount uint64 // atomic; allocations since the last publish (rate)
 
-	mu        sync.Mutex
-	siteCache map[int32]heapSite // stack_id → resolved app call-site (cache)
-	lastAt    time.Time          // publishLoop-only; rate baseline
+	mu         sync.Mutex
+	siteCache  map[int32]heapSite       // stack_id → resolved app call-site (cache)
+	stackCache map[int32][]symbol.Frame // stack_id → full leaf-first frames (cache)
+	lastAt     time.Time                // publishLoop-only; rate baseline
 }
 
 // heapSite is the resolved application call site for a stack_id: the raw frame
@@ -63,6 +64,7 @@ func NewHeapEBPFCollector() *HeapEBPFCollector {
 		stop:          make(chan struct{}),
 		leakThreshold: heapDefaultLeakThreshold,
 		siteCache:     make(map[int32]heapSite),
+		stackCache:    make(map[int32][]symbol.Frame),
 	}
 }
 
@@ -117,6 +119,7 @@ func (c *HeapEBPFCollector) readLoop() {
 			Addr:       ev.Addr,
 			LifetimeMs: float64(ev.LifetimeNs) / 1e6,
 			CallSite:   c.resolveSite(ev.StackID).addr,
+			StackID:    ev.StackID,
 			Large:      ev.Flags&bpf.HeapFlagLarge != 0,
 		}
 		select {
@@ -154,6 +157,53 @@ func (c *HeapEBPFCollector) resolveSite(stackID int32) heapSite {
 	c.siteCache[stackID] = site
 	c.mu.Unlock()
 	return site
+}
+
+// ResolveStack returns the full leaf-first symbolized frames of a captured
+// stack id, or ok=false when the id is unknown (negative sentinel, evicted from
+// the kernel map, or empty). Results are cached (stacks are immutable for the
+// process lifetime). Safe for concurrent use — the headless server calls it
+// from gRPC handlers while readLoop/publishLoop run. Implements the resolver the
+// EventStreamService.ResolveStack RPC is built on (#54).
+func (c *HeapEBPFCollector) ResolveStack(stackID uint64) ([]symbol.Frame, bool) {
+	if c.tracer == nil || int32(stackID) < 0 {
+		return nil, false
+	}
+	sid := int32(stackID)
+	c.mu.Lock()
+	if fr, ok := c.stackCache[sid]; ok {
+		c.mu.Unlock()
+		return fr, true
+	}
+	c.mu.Unlock()
+
+	addrs, err := c.tracer.ResolveStack(sid)
+	if err != nil || len(addrs) == 0 {
+		return nil, false
+	}
+	frames := make([]symbol.Frame, len(addrs))
+	for i, a := range addrs {
+		if c.sym != nil {
+			frames[i] = c.sym.Symbolize(a)
+		} else {
+			frames[i] = symbol.Frame{Offset: a}
+		}
+	}
+
+	c.mu.Lock()
+	c.stackCache[sid] = frames
+	c.mu.Unlock()
+	return frames, true
+}
+
+// ProcessBuildID returns the target executable's GNU build-id — a stable key
+// for the stack ids this collector hands out (see symbol.Symbolizer). "" when
+// the process has no build-id or no symbolizer was built.
+func (c *HeapEBPFCollector) ProcessBuildID() string {
+	if c.sym == nil {
+		return ""
+	}
+	return c.sym.ProcessBuildID()
 }
 
 func (c *HeapEBPFCollector) publishLoop() {
@@ -214,6 +264,7 @@ func (c *HeapEBPFCollector) snapshot() (HeapStats, error) {
 			Line:          site.frame.Line,
 			Module:        site.frame.Module,
 			Offset:        site.frame.Offset,
+			StackID:       sid,
 			LiveBytes:     uint64(lb),
 			AllocCount:    raw.AllocCount,
 			AvgLifetimeMs: avgLifeMs,

@@ -128,7 +128,15 @@ func runServe(addr string, pid int, noEBPF, export bool) {
 	set := collector.NewSet(collector.SetConfig{PID: pid, NoEBPF: noEBPF})
 	defer set.Stop()
 
-	if err := serve.Run(ctx, addr, pid, set.Collectors(), opts); err != nil {
+	// The heap collector owns the stack tracer + symbolizer, so it backs stack
+	// references + the ResolveStack RPC. Pass an untyped nil when it never
+	// started (avoid a non-nil interface wrapping a nil pointer).
+	var resolver serve.StackResolver
+	if set.HeapEBPF != nil {
+		resolver = set.HeapEBPF
+	}
+
+	if err := serve.Run(ctx, addr, pid, set.Collectors(), resolver, opts); err != nil {
 		set.Stop() // os.Exit skips the defer
 		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
 		os.Exit(1)

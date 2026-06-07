@@ -94,8 +94,10 @@ func (Category) EnumDescriptor() ([]byte, []int) {
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
-// (#54 — stack symbolization). It stays empty until that lands; consumers
-// fetch frames via a side-channel keyed by stack_id (+ build_id for caching).
+// (#54 — stack symbolization). stack_id is the kernel stack-map id; build_id is
+// the target executable's GNU build-id, a stable per-process cache key (the
+// same stack_id means a different stack once the binary changes). Consumers
+// fetch the frames via EventStreamService.ResolveStack.
 type StackRef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StackId       uint64                 `protobuf:"varint,1,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
@@ -148,6 +150,95 @@ func (x *StackRef) GetBuildId() string {
 	return ""
 }
 
+// StackFrame is one symbolized frame of a captured stack (#54), leaf-first.
+// func is "" when the address couldn't be resolved to a function (stripped
+// non-Go module — module+offset still locate it); file/line are populated only
+// for Go modules in this cut (C/C++ file:line needs DWARF). offset is
+// module-relative, so it is comparable across runs/ASLR.
+type StackFrame struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Func          string                 `protobuf:"bytes,1,opt,name=func,proto3" json:"func,omitempty"`
+	File          string                 `protobuf:"bytes,2,opt,name=file,proto3" json:"file,omitempty"`
+	Line          int32                  `protobuf:"varint,3,opt,name=line,proto3" json:"line,omitempty"`
+	Module        string                 `protobuf:"bytes,4,opt,name=module,proto3" json:"module,omitempty"`
+	Offset        uint64                 `protobuf:"varint,5,opt,name=offset,proto3" json:"offset,omitempty"`
+	BuildId       string                 `protobuf:"bytes,6,opt,name=build_id,json=buildId,proto3" json:"build_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *StackFrame) Reset() {
+	*x = StackFrame{}
+	mi := &file_event_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *StackFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*StackFrame) ProtoMessage() {}
+
+func (x *StackFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_event_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use StackFrame.ProtoReflect.Descriptor instead.
+func (*StackFrame) Descriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *StackFrame) GetFunc() string {
+	if x != nil {
+		return x.Func
+	}
+	return ""
+}
+
+func (x *StackFrame) GetFile() string {
+	if x != nil {
+		return x.File
+	}
+	return ""
+}
+
+func (x *StackFrame) GetLine() int32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *StackFrame) GetModule() string {
+	if x != nil {
+		return x.Module
+	}
+	return ""
+}
+
+func (x *StackFrame) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
+}
+
+func (x *StackFrame) GetBuildId() string {
+	if x != nil {
+		return x.BuildId
+	}
+	return ""
+}
+
 // Event is the single unified message on the stream. The envelope carries the
 // common fields (time, pid/tid, category, optional stack); the category-
 // specific data lives in the payload oneof. Snapshot-style payloads (lists)
@@ -187,7 +278,7 @@ type Event struct {
 
 func (x *Event) Reset() {
 	*x = Event{}
-	mi := &file_event_proto_msgTypes[1]
+	mi := &file_event_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -199,7 +290,7 @@ func (x *Event) String() string {
 func (*Event) ProtoMessage() {}
 
 func (x *Event) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[1]
+	mi := &file_event_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -212,7 +303,7 @@ func (x *Event) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Event.ProtoReflect.Descriptor instead.
 func (*Event) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{1}
+	return file_event_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *Event) GetTsUnixNano() int64 {
@@ -482,7 +573,7 @@ type CpuSample struct {
 
 func (x *CpuSample) Reset() {
 	*x = CpuSample{}
-	mi := &file_event_proto_msgTypes[2]
+	mi := &file_event_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -494,7 +585,7 @@ func (x *CpuSample) String() string {
 func (*CpuSample) ProtoMessage() {}
 
 func (x *CpuSample) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[2]
+	mi := &file_event_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -507,7 +598,7 @@ func (x *CpuSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CpuSample.ProtoReflect.Descriptor instead.
 func (*CpuSample) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{2}
+	return file_event_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *CpuSample) GetUsagePct() float64 {
@@ -529,7 +620,7 @@ type SyscallStat struct {
 
 func (x *SyscallStat) Reset() {
 	*x = SyscallStat{}
-	mi := &file_event_proto_msgTypes[3]
+	mi := &file_event_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -541,7 +632,7 @@ func (x *SyscallStat) String() string {
 func (*SyscallStat) ProtoMessage() {}
 
 func (x *SyscallStat) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[3]
+	mi := &file_event_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -554,7 +645,7 @@ func (x *SyscallStat) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyscallStat.ProtoReflect.Descriptor instead.
 func (*SyscallStat) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{3}
+	return file_event_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SyscallStat) GetName() string {
@@ -587,7 +678,7 @@ type SyscallSnapshot struct {
 
 func (x *SyscallSnapshot) Reset() {
 	*x = SyscallSnapshot{}
-	mi := &file_event_proto_msgTypes[4]
+	mi := &file_event_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -599,7 +690,7 @@ func (x *SyscallSnapshot) String() string {
 func (*SyscallSnapshot) ProtoMessage() {}
 
 func (x *SyscallSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[4]
+	mi := &file_event_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -612,7 +703,7 @@ func (x *SyscallSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SyscallSnapshot.ProtoReflect.Descriptor instead.
 func (*SyscallSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{4}
+	return file_event_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SyscallSnapshot) GetStats() []*SyscallStat {
@@ -639,7 +730,7 @@ type NetConn struct {
 
 func (x *NetConn) Reset() {
 	*x = NetConn{}
-	mi := &file_event_proto_msgTypes[5]
+	mi := &file_event_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -651,7 +742,7 @@ func (x *NetConn) String() string {
 func (*NetConn) ProtoMessage() {}
 
 func (x *NetConn) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[5]
+	mi := &file_event_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -664,7 +755,7 @@ func (x *NetConn) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetConn.ProtoReflect.Descriptor instead.
 func (*NetConn) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{5}
+	return file_event_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *NetConn) GetFd() int32 {
@@ -732,7 +823,7 @@ type NetworkSnapshot struct {
 
 func (x *NetworkSnapshot) Reset() {
 	*x = NetworkSnapshot{}
-	mi := &file_event_proto_msgTypes[6]
+	mi := &file_event_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -744,7 +835,7 @@ func (x *NetworkSnapshot) String() string {
 func (*NetworkSnapshot) ProtoMessage() {}
 
 func (x *NetworkSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[6]
+	mi := &file_event_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -757,7 +848,7 @@ func (x *NetworkSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NetworkSnapshot.ProtoReflect.Descriptor instead.
 func (*NetworkSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{6}
+	return file_event_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *NetworkSnapshot) GetConns() []*NetConn {
@@ -780,7 +871,7 @@ type MemStats struct {
 
 func (x *MemStats) Reset() {
 	*x = MemStats{}
-	mi := &file_event_proto_msgTypes[7]
+	mi := &file_event_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -792,7 +883,7 @@ func (x *MemStats) String() string {
 func (*MemStats) ProtoMessage() {}
 
 func (x *MemStats) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[7]
+	mi := &file_event_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -805,7 +896,7 @@ func (x *MemStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemStats.ProtoReflect.Descriptor instead.
 func (*MemStats) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{7}
+	return file_event_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *MemStats) GetRssBytes() uint64 {
@@ -854,7 +945,7 @@ type HeapEvent struct {
 
 func (x *HeapEvent) Reset() {
 	*x = HeapEvent{}
-	mi := &file_event_proto_msgTypes[8]
+	mi := &file_event_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -866,7 +957,7 @@ func (x *HeapEvent) String() string {
 func (*HeapEvent) ProtoMessage() {}
 
 func (x *HeapEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[8]
+	mi := &file_event_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -879,7 +970,7 @@ func (x *HeapEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeapEvent.ProtoReflect.Descriptor instead.
 func (*HeapEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{8}
+	return file_event_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *HeapEvent) GetOp() string {
@@ -945,13 +1036,17 @@ type HeapCallSite struct {
 	Line          int32                  `protobuf:"varint,9,opt,name=line,proto3" json:"line,omitempty"`           // source line (0 if unknown)
 	Module        string                 `protobuf:"bytes,10,opt,name=module,proto3" json:"module,omitempty"`       // backing module basename ("" if unresolved)
 	Offset        uint64                 `protobuf:"varint,11,opt,name=offset,proto3" json:"offset,omitempty"`      // module-relative offset of the call site
+	// Kernel stack-map id of the alloc site, for EventStreamService.ResolveStack
+	// (the full leaf-first stack). A sentinel (resolves to not-found) when the
+	// stack walk failed.
+	StackId       uint64 `protobuf:"varint,12,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeapCallSite) Reset() {
 	*x = HeapCallSite{}
-	mi := &file_event_proto_msgTypes[9]
+	mi := &file_event_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -963,7 +1058,7 @@ func (x *HeapCallSite) String() string {
 func (*HeapCallSite) ProtoMessage() {}
 
 func (x *HeapCallSite) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[9]
+	mi := &file_event_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -976,7 +1071,7 @@ func (x *HeapCallSite) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeapCallSite.ProtoReflect.Descriptor instead.
 func (*HeapCallSite) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{9}
+	return file_event_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *HeapCallSite) GetCallSite() uint64 {
@@ -1056,6 +1151,13 @@ func (x *HeapCallSite) GetOffset() uint64 {
 	return 0
 }
 
+func (x *HeapCallSite) GetStackId() uint64 {
+	if x != nil {
+		return x.StackId
+	}
+	return 0
+}
+
 // HeapSnapshot is the periodic heap aggregate. live_heap_bytes and
 // suspected_leak_bytes derive from the kernel's LRU-bounded live set, so they
 // undercount on alloc-heavy targets — never exact. alloc_rate is allocations
@@ -1072,7 +1174,7 @@ type HeapSnapshot struct {
 
 func (x *HeapSnapshot) Reset() {
 	*x = HeapSnapshot{}
-	mi := &file_event_proto_msgTypes[10]
+	mi := &file_event_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1084,7 +1186,7 @@ func (x *HeapSnapshot) String() string {
 func (*HeapSnapshot) ProtoMessage() {}
 
 func (x *HeapSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[10]
+	mi := &file_event_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1097,7 +1199,7 @@ func (x *HeapSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeapSnapshot.ProtoReflect.Descriptor instead.
 func (*HeapSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{10}
+	return file_event_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *HeapSnapshot) GetLiveHeapBytes() uint64 {
@@ -1143,7 +1245,7 @@ type ThreadInfo struct {
 
 func (x *ThreadInfo) Reset() {
 	*x = ThreadInfo{}
-	mi := &file_event_proto_msgTypes[11]
+	mi := &file_event_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1155,7 +1257,7 @@ func (x *ThreadInfo) String() string {
 func (*ThreadInfo) ProtoMessage() {}
 
 func (x *ThreadInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[11]
+	mi := &file_event_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1168,7 +1270,7 @@ func (x *ThreadInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreadInfo.ProtoReflect.Descriptor instead.
 func (*ThreadInfo) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{11}
+	return file_event_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ThreadInfo) GetTid() int32 {
@@ -1222,7 +1324,7 @@ type ThreadSnapshot struct {
 
 func (x *ThreadSnapshot) Reset() {
 	*x = ThreadSnapshot{}
-	mi := &file_event_proto_msgTypes[12]
+	mi := &file_event_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1234,7 +1336,7 @@ func (x *ThreadSnapshot) String() string {
 func (*ThreadSnapshot) ProtoMessage() {}
 
 func (x *ThreadSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[12]
+	mi := &file_event_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1247,7 +1349,7 @@ func (x *ThreadSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ThreadSnapshot.ProtoReflect.Descriptor instead.
 func (*ThreadSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{12}
+	return file_event_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ThreadSnapshot) GetThreads() []*ThreadInfo {
@@ -1267,7 +1369,7 @@ type IoWaitSample struct {
 
 func (x *IoWaitSample) Reset() {
 	*x = IoWaitSample{}
-	mi := &file_event_proto_msgTypes[13]
+	mi := &file_event_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1279,7 +1381,7 @@ func (x *IoWaitSample) String() string {
 func (*IoWaitSample) ProtoMessage() {}
 
 func (x *IoWaitSample) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[13]
+	mi := &file_event_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1292,7 +1394,7 @@ func (x *IoWaitSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IoWaitSample.ProtoReflect.Descriptor instead.
 func (*IoWaitSample) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{13}
+	return file_event_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *IoWaitSample) GetPct() float64 {
@@ -1314,7 +1416,7 @@ type IoThroughputSample struct {
 
 func (x *IoThroughputSample) Reset() {
 	*x = IoThroughputSample{}
-	mi := &file_event_proto_msgTypes[14]
+	mi := &file_event_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1326,7 +1428,7 @@ func (x *IoThroughputSample) String() string {
 func (*IoThroughputSample) ProtoMessage() {}
 
 func (x *IoThroughputSample) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[14]
+	mi := &file_event_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1339,7 +1441,7 @@ func (x *IoThroughputSample) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IoThroughputSample.ProtoReflect.Descriptor instead.
 func (*IoThroughputSample) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{14}
+	return file_event_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *IoThroughputSample) GetReadBytesPerS() float64 {
@@ -1385,7 +1487,7 @@ type IoFileStats struct {
 
 func (x *IoFileStats) Reset() {
 	*x = IoFileStats{}
-	mi := &file_event_proto_msgTypes[15]
+	mi := &file_event_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1397,7 +1499,7 @@ func (x *IoFileStats) String() string {
 func (*IoFileStats) ProtoMessage() {}
 
 func (x *IoFileStats) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[15]
+	mi := &file_event_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1410,7 +1512,7 @@ func (x *IoFileStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IoFileStats.ProtoReflect.Descriptor instead.
 func (*IoFileStats) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{15}
+	return file_event_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *IoFileStats) GetPath() string {
@@ -1473,7 +1575,7 @@ type LatencyBucket struct {
 
 func (x *LatencyBucket) Reset() {
 	*x = LatencyBucket{}
-	mi := &file_event_proto_msgTypes[16]
+	mi := &file_event_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1485,7 +1587,7 @@ func (x *LatencyBucket) String() string {
 func (*LatencyBucket) ProtoMessage() {}
 
 func (x *LatencyBucket) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[16]
+	mi := &file_event_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1498,7 +1600,7 @@ func (x *LatencyBucket) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LatencyBucket.ProtoReflect.Descriptor instead.
 func (*LatencyBucket) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{16}
+	return file_event_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *LatencyBucket) GetLabel() string {
@@ -1539,7 +1641,7 @@ type IoSnapshot struct {
 
 func (x *IoSnapshot) Reset() {
 	*x = IoSnapshot{}
-	mi := &file_event_proto_msgTypes[17]
+	mi := &file_event_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1551,7 +1653,7 @@ func (x *IoSnapshot) String() string {
 func (*IoSnapshot) ProtoMessage() {}
 
 func (x *IoSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[17]
+	mi := &file_event_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1564,7 +1666,7 @@ func (x *IoSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IoSnapshot.ProtoReflect.Descriptor instead.
 func (*IoSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{17}
+	return file_event_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *IoSnapshot) GetReadBytesPerS() float64 {
@@ -1646,7 +1748,7 @@ type FdEntry struct {
 
 func (x *FdEntry) Reset() {
 	*x = FdEntry{}
-	mi := &file_event_proto_msgTypes[18]
+	mi := &file_event_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1658,7 +1760,7 @@ func (x *FdEntry) String() string {
 func (*FdEntry) ProtoMessage() {}
 
 func (x *FdEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[18]
+	mi := &file_event_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1671,7 +1773,7 @@ func (x *FdEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdEntry.ProtoReflect.Descriptor instead.
 func (*FdEntry) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{18}
+	return file_event_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *FdEntry) GetFd() int32 {
@@ -1732,7 +1834,7 @@ type FdSnapshot struct {
 
 func (x *FdSnapshot) Reset() {
 	*x = FdSnapshot{}
-	mi := &file_event_proto_msgTypes[19]
+	mi := &file_event_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1744,7 +1846,7 @@ func (x *FdSnapshot) String() string {
 func (*FdSnapshot) ProtoMessage() {}
 
 func (x *FdSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[19]
+	mi := &file_event_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1757,7 +1859,7 @@ func (x *FdSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdSnapshot.ProtoReflect.Descriptor instead.
 func (*FdSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{19}
+	return file_event_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *FdSnapshot) GetFds() []*FdEntry {
@@ -1778,7 +1880,7 @@ type FdEvent struct {
 
 func (x *FdEvent) Reset() {
 	*x = FdEvent{}
-	mi := &file_event_proto_msgTypes[20]
+	mi := &file_event_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1790,7 +1892,7 @@ func (x *FdEvent) String() string {
 func (*FdEvent) ProtoMessage() {}
 
 func (x *FdEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[20]
+	mi := &file_event_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1803,7 +1905,7 @@ func (x *FdEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdEvent.ProtoReflect.Descriptor instead.
 func (*FdEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{20}
+	return file_event_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *FdEvent) GetMessage() string {
@@ -1829,7 +1931,7 @@ type LockEntry struct {
 
 func (x *LockEntry) Reset() {
 	*x = LockEntry{}
-	mi := &file_event_proto_msgTypes[21]
+	mi := &file_event_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1841,7 +1943,7 @@ func (x *LockEntry) String() string {
 func (*LockEntry) ProtoMessage() {}
 
 func (x *LockEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[21]
+	mi := &file_event_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1854,7 +1956,7 @@ func (x *LockEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockEntry.ProtoReflect.Descriptor instead.
 func (*LockEntry) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{21}
+	return file_event_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *LockEntry) GetUaddr() uint64 {
@@ -1915,7 +2017,7 @@ type LockSnapshot struct {
 
 func (x *LockSnapshot) Reset() {
 	*x = LockSnapshot{}
-	mi := &file_event_proto_msgTypes[22]
+	mi := &file_event_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1927,7 +2029,7 @@ func (x *LockSnapshot) String() string {
 func (*LockSnapshot) ProtoMessage() {}
 
 func (x *LockSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[22]
+	mi := &file_event_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1940,7 +2042,7 @@ func (x *LockSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockSnapshot.ProtoReflect.Descriptor instead.
 func (*LockSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{22}
+	return file_event_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *LockSnapshot) GetLocks() []*LockEntry {
@@ -1961,7 +2063,7 @@ type TimelineEvent struct {
 
 func (x *TimelineEvent) Reset() {
 	*x = TimelineEvent{}
-	mi := &file_event_proto_msgTypes[23]
+	mi := &file_event_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1973,7 +2075,7 @@ func (x *TimelineEvent) String() string {
 func (*TimelineEvent) ProtoMessage() {}
 
 func (x *TimelineEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[23]
+	mi := &file_event_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1986,7 +2088,7 @@ func (x *TimelineEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineEvent.ProtoReflect.Descriptor instead.
 func (*TimelineEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{23}
+	return file_event_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *TimelineEvent) GetMessage() string {
@@ -2003,7 +2105,15 @@ const file_event_proto_rawDesc = "" +
 	"\vevent.proto\x12\aptop.v1\"@\n" +
 	"\bStackRef\x12\x19\n" +
 	"\bstack_id\x18\x01 \x01(\x04R\astackId\x12\x19\n" +
-	"\bbuild_id\x18\x02 \x01(\tR\abuildId\"\xe4\x06\n" +
+	"\bbuild_id\x18\x02 \x01(\tR\abuildId\"\x93\x01\n" +
+	"\n" +
+	"StackFrame\x12\x12\n" +
+	"\x04func\x18\x01 \x01(\tR\x04func\x12\x12\n" +
+	"\x04file\x18\x02 \x01(\tR\x04file\x12\x12\n" +
+	"\x04line\x18\x03 \x01(\x05R\x04line\x12\x16\n" +
+	"\x06module\x18\x04 \x01(\tR\x06module\x12\x16\n" +
+	"\x06offset\x18\x05 \x01(\x04R\x06offset\x12\x19\n" +
+	"\bbuild_id\x18\x06 \x01(\tR\abuildId\"\xe4\x06\n" +
 	"\x05Event\x12 \n" +
 	"\fts_unix_nano\x18\x01 \x01(\x03R\n" +
 	"tsUnixNano\x12\x10\n" +
@@ -2064,7 +2174,7 @@ const file_event_proto_rawDesc = "" +
 	"\vlifetime_ms\x18\x04 \x01(\x01R\n" +
 	"lifetimeMs\x12\x1b\n" +
 	"\tcall_site\x18\x05 \x01(\x04R\bcallSite\x12\x14\n" +
-	"\x05large\x18\x06 \x01(\bR\x05large\"\xb8\x02\n" +
+	"\x05large\x18\x06 \x01(\bR\x05large\"\xd3\x02\n" +
 	"\fHeapCallSite\x12\x1b\n" +
 	"\tcall_site\x18\x01 \x01(\x04R\bcallSite\x12\x19\n" +
 	"\baddr_hex\x18\x02 \x01(\tR\aaddrHex\x12\x1d\n" +
@@ -2079,7 +2189,8 @@ const file_event_proto_rawDesc = "" +
 	"\x04line\x18\t \x01(\x05R\x04line\x12\x16\n" +
 	"\x06module\x18\n" +
 	" \x01(\tR\x06module\x12\x16\n" +
-	"\x06offset\x18\v \x01(\x04R\x06offset\"\xc4\x01\n" +
+	"\x06offset\x18\v \x01(\x04R\x06offset\x12\x19\n" +
+	"\bstack_id\x18\f \x01(\x04R\astackId\"\xc4\x01\n" +
 	"\fHeapSnapshot\x12&\n" +
 	"\x0flive_heap_bytes\x18\x01 \x01(\x04R\rliveHeapBytes\x12\x1d\n" +
 	"\n" +
@@ -2181,59 +2292,60 @@ func file_event_proto_rawDescGZIP() []byte {
 }
 
 var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 24)
+var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
 var file_event_proto_goTypes = []any{
 	(Category)(0),              // 0: ptop.v1.Category
 	(*StackRef)(nil),           // 1: ptop.v1.StackRef
-	(*Event)(nil),              // 2: ptop.v1.Event
-	(*CpuSample)(nil),          // 3: ptop.v1.CpuSample
-	(*SyscallStat)(nil),        // 4: ptop.v1.SyscallStat
-	(*SyscallSnapshot)(nil),    // 5: ptop.v1.SyscallSnapshot
-	(*NetConn)(nil),            // 6: ptop.v1.NetConn
-	(*NetworkSnapshot)(nil),    // 7: ptop.v1.NetworkSnapshot
-	(*MemStats)(nil),           // 8: ptop.v1.MemStats
-	(*HeapEvent)(nil),          // 9: ptop.v1.HeapEvent
-	(*HeapCallSite)(nil),       // 10: ptop.v1.HeapCallSite
-	(*HeapSnapshot)(nil),       // 11: ptop.v1.HeapSnapshot
-	(*ThreadInfo)(nil),         // 12: ptop.v1.ThreadInfo
-	(*ThreadSnapshot)(nil),     // 13: ptop.v1.ThreadSnapshot
-	(*IoWaitSample)(nil),       // 14: ptop.v1.IoWaitSample
-	(*IoThroughputSample)(nil), // 15: ptop.v1.IoThroughputSample
-	(*IoFileStats)(nil),        // 16: ptop.v1.IoFileStats
-	(*LatencyBucket)(nil),      // 17: ptop.v1.LatencyBucket
-	(*IoSnapshot)(nil),         // 18: ptop.v1.IoSnapshot
-	(*FdEntry)(nil),            // 19: ptop.v1.FdEntry
-	(*FdSnapshot)(nil),         // 20: ptop.v1.FdSnapshot
-	(*FdEvent)(nil),            // 21: ptop.v1.FdEvent
-	(*LockEntry)(nil),          // 22: ptop.v1.LockEntry
-	(*LockSnapshot)(nil),       // 23: ptop.v1.LockSnapshot
-	(*TimelineEvent)(nil),      // 24: ptop.v1.TimelineEvent
+	(*StackFrame)(nil),         // 2: ptop.v1.StackFrame
+	(*Event)(nil),              // 3: ptop.v1.Event
+	(*CpuSample)(nil),          // 4: ptop.v1.CpuSample
+	(*SyscallStat)(nil),        // 5: ptop.v1.SyscallStat
+	(*SyscallSnapshot)(nil),    // 6: ptop.v1.SyscallSnapshot
+	(*NetConn)(nil),            // 7: ptop.v1.NetConn
+	(*NetworkSnapshot)(nil),    // 8: ptop.v1.NetworkSnapshot
+	(*MemStats)(nil),           // 9: ptop.v1.MemStats
+	(*HeapEvent)(nil),          // 10: ptop.v1.HeapEvent
+	(*HeapCallSite)(nil),       // 11: ptop.v1.HeapCallSite
+	(*HeapSnapshot)(nil),       // 12: ptop.v1.HeapSnapshot
+	(*ThreadInfo)(nil),         // 13: ptop.v1.ThreadInfo
+	(*ThreadSnapshot)(nil),     // 14: ptop.v1.ThreadSnapshot
+	(*IoWaitSample)(nil),       // 15: ptop.v1.IoWaitSample
+	(*IoThroughputSample)(nil), // 16: ptop.v1.IoThroughputSample
+	(*IoFileStats)(nil),        // 17: ptop.v1.IoFileStats
+	(*LatencyBucket)(nil),      // 18: ptop.v1.LatencyBucket
+	(*IoSnapshot)(nil),         // 19: ptop.v1.IoSnapshot
+	(*FdEntry)(nil),            // 20: ptop.v1.FdEntry
+	(*FdSnapshot)(nil),         // 21: ptop.v1.FdSnapshot
+	(*FdEvent)(nil),            // 22: ptop.v1.FdEvent
+	(*LockEntry)(nil),          // 23: ptop.v1.LockEntry
+	(*LockSnapshot)(nil),       // 24: ptop.v1.LockSnapshot
+	(*TimelineEvent)(nil),      // 25: ptop.v1.TimelineEvent
 }
 var file_event_proto_depIdxs = []int32{
 	0,  // 0: ptop.v1.Event.category:type_name -> ptop.v1.Category
 	1,  // 1: ptop.v1.Event.stack:type_name -> ptop.v1.StackRef
-	3,  // 2: ptop.v1.Event.cpu:type_name -> ptop.v1.CpuSample
-	5,  // 3: ptop.v1.Event.syscalls:type_name -> ptop.v1.SyscallSnapshot
-	7,  // 4: ptop.v1.Event.network:type_name -> ptop.v1.NetworkSnapshot
-	8,  // 5: ptop.v1.Event.memory:type_name -> ptop.v1.MemStats
-	13, // 6: ptop.v1.Event.threads:type_name -> ptop.v1.ThreadSnapshot
-	14, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
-	15, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
-	18, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
-	20, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
-	21, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
-	23, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
-	24, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
-	11, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
-	9,  // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
-	4,  // 16: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
-	6,  // 17: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
-	10, // 18: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
-	12, // 19: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
-	16, // 20: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
-	17, // 21: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
-	19, // 22: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
-	22, // 23: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
+	4,  // 2: ptop.v1.Event.cpu:type_name -> ptop.v1.CpuSample
+	6,  // 3: ptop.v1.Event.syscalls:type_name -> ptop.v1.SyscallSnapshot
+	8,  // 4: ptop.v1.Event.network:type_name -> ptop.v1.NetworkSnapshot
+	9,  // 5: ptop.v1.Event.memory:type_name -> ptop.v1.MemStats
+	14, // 6: ptop.v1.Event.threads:type_name -> ptop.v1.ThreadSnapshot
+	15, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
+	16, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
+	19, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
+	21, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
+	22, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
+	24, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
+	25, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
+	12, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
+	10, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
+	5,  // 16: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
+	7,  // 17: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
+	11, // 18: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
+	13, // 19: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
+	17, // 20: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
+	18, // 21: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
+	20, // 22: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
+	23, // 23: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
 	24, // [24:24] is the sub-list for method output_type
 	24, // [24:24] is the sub-list for method input_type
 	24, // [24:24] is the sub-list for extension type_name
@@ -2246,7 +2358,7 @@ func file_event_proto_init() {
 	if File_event_proto != nil {
 		return
 	}
-	file_event_proto_msgTypes[1].OneofWrappers = []any{
+	file_event_proto_msgTypes[2].OneofWrappers = []any{
 		(*Event_Cpu)(nil),
 		(*Event_Syscalls)(nil),
 		(*Event_Network)(nil),
@@ -2268,7 +2380,7 @@ func file_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_proto_rawDesc), len(file_event_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   24,
+			NumMessages:   25,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -45,13 +45,15 @@ type MemStats struct {
 // Op is "malloc"|"calloc"|"realloc"|"free". LifetimeMs is set on free
 // (free.ts − alloc.ts). CallSite is the application call-site address (raw
 // instruction pointer; the aggregate HeapCallSite carries the symbolized form).
-// Large flags allocations ≥ 128KB.
+// StackID is the kernel stack-map id of the captured stack (<0 when the walk
+// failed), resolvable to full frames out-of-band. Large flags allocations ≥ 128KB.
 type HeapEvent struct {
 	Op         string
 	Size       uint64
 	Addr       uint64
 	LifetimeMs float64
 	CallSite   uint64
+	StackID    int32
 	Large      bool
 }
 
@@ -72,6 +74,7 @@ type HeapCallSite struct {
 	Line          int     // source line (0 if unknown)
 	Module        string  // backing module basename ("" if unresolved)
 	Offset        uint64  // module-relative offset of the call site
+	StackID       int32   // kernel stack-map id (<0 unknown); resolves to full frames
 	LiveBytes     uint64  // bytes still live from this site
 	AllocCount    uint64  // total allocations ever from this site
 	AvgLifetimeMs float64 // mean lifetime of freed allocations from this site

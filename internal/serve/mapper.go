@@ -5,6 +5,7 @@ import (
 
 	"github.com/trentas/ptop/pkg/collector"
 	pb "github.com/trentas/ptop/pkg/streampb"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // toEvent converts a value published on a collector channel into a stream
@@ -13,9 +14,10 @@ import (
 // skipped by the hub.
 //
 // The envelope timestamp comes from the value's own Timestamp where it has one,
-// else the current time. Field copies are mechanical: the proto messages mirror
+// else the current time. buildID stamps the StackRef on stack-bearing events
+// (#54). Field copies are mechanical: the proto messages mirror
 // collector/types.go 1:1.
-func toEvent(pid int, v interface{}) *pb.Event {
+func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 	ev := &pb.Event{Pid: int32(pid)}
 
 	switch x := v.(type) {
@@ -66,6 +68,7 @@ func toEvent(pid int, v interface{}) *pb.Event {
 	case collector.HeapEvent:
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_MEMORY
+		ev.Stack = stackRef(x.StackID, buildID)
 		ev.Payload = &pb.Event_HeapEvent{HeapEvent: &pb.HeapEvent{
 			Op: x.Op, Size: x.Size, Addr: x.Addr,
 			LifetimeMs: x.LifetimeMs, CallSite: x.CallSite, Large: x.Large,
@@ -153,6 +156,39 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 			CallSite: s.CallSite, AddrHex: s.AddrHex, LiveBytes: s.LiveBytes,
 			AllocCount: s.AllocCount, AvgLifetimeMs: s.AvgLifetimeMs, Suspected: s.Suspected,
 			Func: s.Func, File: s.File, Line: int32(s.Line), Module: s.Module, Offset: s.Offset,
+			StackId: stackID(s.StackID),
+		}
+	}
+	return out
+}
+
+// stackRef builds the envelope StackRef for a stack-bearing event, or nil when
+// the stack walk failed (negative kernel sentinel) so consumers don't chase a
+// dead id.
+func stackRef(stackID int32, buildID string) *pb.StackRef {
+	if stackID < 0 {
+		return nil
+	}
+	return &pb.StackRef{StackId: uint64(stackID), BuildId: buildID}
+}
+
+// stackID widens a kernel stack id for the wire. A negative sentinel (walk
+// failed) becomes 0 — ResolveStack(0) reports not-found, the same as any id the
+// kernel has since evicted.
+func stackID(id int32) uint64 {
+	if id < 0 {
+		return 0
+	}
+	return uint64(id)
+}
+
+// stackFrames maps resolved symbol frames onto the wire form for ResolveStack.
+func stackFrames(in []symbol.Frame) []*pb.StackFrame {
+	out := make([]*pb.StackFrame, len(in))
+	for i, f := range in {
+		out[i] = &pb.StackFrame{
+			Func: f.Func, File: f.File, Line: int32(f.Line),
+			Module: f.Module, Offset: f.Offset, BuildId: f.BuildID,
 		}
 	}
 	return out

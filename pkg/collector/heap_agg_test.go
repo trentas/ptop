@@ -80,6 +80,20 @@ func TestHeapAddrHex(t *testing.T) {
 	}
 }
 
+// TestHeapResolverZeroValue locks in the StackResolver contract a not-yet-
+// Start()ed (or stub) collector must honor: no tracer/symbolizer → graceful
+// not-found and an empty build-id, never a panic. Holds on both lanes (the real
+// collector guards on a nil tracer; the stub returns the same).
+func TestHeapResolverZeroValue(t *testing.T) {
+	c := &HeapEBPFCollector{}
+	if fr, ok := c.ResolveStack(1); ok || fr != nil {
+		t.Errorf("ResolveStack = %v,%v; want nil,false", fr, ok)
+	}
+	if id := c.ProcessBuildID(); id != "" {
+		t.Errorf("ProcessBuildID = %q, want \"\"", id)
+	}
+}
+
 func TestHeapOpName(t *testing.T) {
 	cases := map[uint32]string{0: "malloc", 1: "calloc", 2: "realloc", 3: "free", 99: "?"}
 	for op, want := range cases {

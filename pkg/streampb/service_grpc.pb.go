@@ -19,7 +19,8 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	EventStreamService_Subscribe_FullMethodName = "/ptop.v1.EventStreamService/Subscribe"
+	EventStreamService_Subscribe_FullMethodName    = "/ptop.v1.EventStreamService/Subscribe"
+	EventStreamService_ResolveStack_FullMethodName = "/ptop.v1.EventStreamService/ResolveStack"
 )
 
 // EventStreamServiceClient is the client API for EventStreamService service.
@@ -32,6 +33,10 @@ type EventStreamServiceClient interface {
 	// Subscribe streams collector events for the server's target PID until the
 	// client disconnects. Multiple subscribers fan out from one collector.
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeResponse], error)
+	// ResolveStack symbolizes a stack id seen on the stream into its leaf-first
+	// frames — an out-of-band lookup so high-rate events stay small (they carry
+	// only the id). Resolution is best-effort; see ResolveStackResponse.found.
+	ResolveStack(ctx context.Context, in *ResolveStackRequest, opts ...grpc.CallOption) (*ResolveStackResponse, error)
 }
 
 type eventStreamServiceClient struct {
@@ -61,6 +66,16 @@ func (c *eventStreamServiceClient) Subscribe(ctx context.Context, in *SubscribeR
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type EventStreamService_SubscribeClient = grpc.ServerStreamingClient[SubscribeResponse]
 
+func (c *eventStreamServiceClient) ResolveStack(ctx context.Context, in *ResolveStackRequest, opts ...grpc.CallOption) (*ResolveStackResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ResolveStackResponse)
+	err := c.cc.Invoke(ctx, EventStreamService_ResolveStack_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EventStreamServiceServer is the server API for EventStreamService service.
 // All implementations must embed UnimplementedEventStreamServiceServer
 // for forward compatibility.
@@ -71,6 +86,10 @@ type EventStreamServiceServer interface {
 	// Subscribe streams collector events for the server's target PID until the
 	// client disconnects. Multiple subscribers fan out from one collector.
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error
+	// ResolveStack symbolizes a stack id seen on the stream into its leaf-first
+	// frames — an out-of-band lookup so high-rate events stay small (they carry
+	// only the id). Resolution is best-effort; see ResolveStackResponse.found.
+	ResolveStack(context.Context, *ResolveStackRequest) (*ResolveStackResponse, error)
 	mustEmbedUnimplementedEventStreamServiceServer()
 }
 
@@ -83,6 +102,9 @@ type UnimplementedEventStreamServiceServer struct{}
 
 func (UnimplementedEventStreamServiceServer) Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error {
 	return status.Errorf(codes.Unimplemented, "method Subscribe not implemented")
+}
+func (UnimplementedEventStreamServiceServer) ResolveStack(context.Context, *ResolveStackRequest) (*ResolveStackResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ResolveStack not implemented")
 }
 func (UnimplementedEventStreamServiceServer) mustEmbedUnimplementedEventStreamServiceServer() {}
 func (UnimplementedEventStreamServiceServer) testEmbeddedByValue()                            {}
@@ -116,13 +138,36 @@ func _EventStreamService_Subscribe_Handler(srv interface{}, stream grpc.ServerSt
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type EventStreamService_SubscribeServer = grpc.ServerStreamingServer[SubscribeResponse]
 
+func _EventStreamService_ResolveStack_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ResolveStackRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EventStreamServiceServer).ResolveStack(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EventStreamService_ResolveStack_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EventStreamServiceServer).ResolveStack(ctx, req.(*ResolveStackRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EventStreamService_ServiceDesc is the grpc.ServiceDesc for EventStreamService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var EventStreamService_ServiceDesc = grpc.ServiceDesc{
 	ServiceName: "ptop.v1.EventStreamService",
 	HandlerType: (*EventStreamServiceServer)(nil),
-	Methods:     []grpc.MethodDesc{},
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "ResolveStack",
+			Handler:    _EventStreamService_ResolveStack_Handler,
+		},
+	},
 	Streams: []grpc.StreamDesc{
 		{
 			StreamName:    "Subscribe",
