@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/ptop/internal/collector"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // renderThreadsView (F4) — assets/mockup.jsx → ThreadView

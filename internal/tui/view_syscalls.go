@@ -3,7 +3,7 @@ package tui
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/ptop/internal/collector"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // renderSyscallsView (F2) — assets/mockup.jsx → SyscallView

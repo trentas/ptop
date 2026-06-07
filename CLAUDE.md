@@ -3,7 +3,7 @@
 Interactive TUI for deep inspection of processes.
 Linux is the rich target (eBPF + /proc); macOS is a Tier 1 port via
 libproc + Mach with a reduced feature set (see the `*_darwin.go` files
-under `internal/collector/` and issue #22).
+under `pkg/collector/` and issue #22).
 
 This file documents the implementation: tech stack, project layout, type
 contracts, and the conventions every collector and view follows.
@@ -86,24 +86,6 @@ ptop/
 │   │   ├── threads.go             sched_switch loader
 │   │   ├── futex.go               futex wait/wake loader
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
-│   ├── collector/                 /proc + eBPF collectors + shared types
-│   │   ├── types.go               public type contracts (see below)
-│   │   ├── cpu_proc.go            /proc/<pid>/stat utime+stime
-│   │   ├── cpu_ebpf.go            eBPF perf_event sampling
-│   │   ├── threads_proc.go        /proc/<pid>/task/*/stat + wchan
-│   │   ├── threads_ebpf.go        sched_switch → CPU% real-time
-│   │   ├── mem_proc.go            /proc/<pid>/statm + faults
-│   │   ├── mem_ebpf.go            kprobe + syscall tracepoints
-│   │   ├── iowait_proc.go         /proc/<pid>/stat field 42
-│   │   ├── io_proc.go             /proc/<pid>/io throughput
-│   │   ├── io_ebpf.go             top files + per-op latency
-│   │   ├── network_ebpf.go        connections + RTT + bytes
-│   │   ├── syscalls_ebpf.go       per-syscall counts + latency
-│   │   ├── futex_ebpf.go          lock graph from futex tracking
-│   │   ├── fds.go                 /proc/<pid>/fd + fdinfo + events
-│   │   ├── sockets.go             inode → host:port via /proc/net/*
-│   │   ├── syscall_names.go       syscall id → name table
-│   │   └── *_test.go, *_stub.go
 │   └── tui/                       Bubbletea + Lipgloss
 │       ├── model.go               root model: state + msg routing
 │       ├── keys.go                keybindings F1-F7, q, p, /, s, e
@@ -125,6 +107,27 @@ ptop/
 │       ├── view_fd.go             F6
 │       ├── view_timeline.go       F7
 │       └── *_test.go              dump test, model test, snapshot test
+├── pkg/                           public API surface (importable externally)
+│   └── collector/                 /proc + eBPF collectors + shared types
+│       ├── types.go               public type contracts (see below)
+│       ├── set.go                 source-priority selection + lifecycle (Set)
+│       ├── source_{linux,darwin}.go  platform source labels (Source*)
+│       ├── cpu_proc.go            /proc/<pid>/stat utime+stime
+│       ├── cpu_ebpf.go            eBPF perf_event sampling
+│       ├── threads_proc.go        /proc/<pid>/task/*/stat + wchan
+│       ├── threads_ebpf.go        sched_switch → CPU% real-time
+│       ├── mem_proc.go            /proc/<pid>/statm + faults
+│       ├── mem_ebpf.go            kprobe + syscall tracepoints
+│       ├── iowait_proc.go         /proc/<pid>/stat field 42
+│       ├── io_proc.go             /proc/<pid>/io throughput
+│       ├── io_ebpf.go             top files + per-op latency
+│       ├── network_ebpf.go        connections + RTT + bytes
+│       ├── syscalls_ebpf.go       per-syscall counts + latency
+│       ├── futex_ebpf.go          lock graph from futex tracking
+│       ├── fds.go                 /proc/<pid>/fd + fdinfo + events
+│       ├── sockets.go             inode → host:port via /proc/net/*
+│       ├── syscall_names.go       syscall id → name table
+│       └── *_test.go, *_stub.go
 └── assets/
     ├── mockup.jsx                 authoritative visual spec
     └── screenshot-overview.txt    regression fixture
@@ -133,9 +136,16 @@ ptop/
 > View files live flat under `internal/tui/` (`view_*.go`), not under a
 > `views/` subpackage — they share unexported helpers with the model.
 
+> `collector` lives under `pkg/` (not `internal/`) so external programs can
+> import it — both as in-process embedders and as the foundation for the
+> headless gRPC stream (#51). Its emitted types are therefore a public API
+> surface: keep them deliberate. It may still import `internal/bpf` (same
+> module). The `tui` is a pure consumer of `collector` — no shared mutable
+> state, no reverse dependency.
+
 ---
 
-## Core data types (`internal/collector/types.go`)
+## Core data types (`pkg/collector/types.go`)
 
 All collectors publish typed values to a `chan interface{}` consumed by the
 model. The exact struct shapes are the source of truth — refer to `types.go`.

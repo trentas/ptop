@@ -2,7 +2,7 @@
 
 package tui
 
-import "github.com/trentas/ptop/internal/collector"
+import "github.com/trentas/ptop/pkg/collector"
 
 // osExePath resolves the absolute executable path for pid via libproc's
 // proc_pidpath — the macOS equivalent of readlink(/proc/<pid>/exe). Returns
