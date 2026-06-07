@@ -32,7 +32,15 @@ func renderOverviewView(m Model, w, h int) string {
 
 	leftW, rightW := splitOverviewWidth(w)
 	leftHs := splitFlex([]float64{1.0, 1.5, 1.4}, h)
-	rightHs := splitFlex([]float64{1.1, 0.9, 0.9, 0.65, 1.8}, h)
+
+	// The Memory panel grows to fit the heap detail (live-heap sparkline + top
+	// call sites) only when the eBPF heap collector (#53) has data; otherwise it
+	// keeps the compact mockup layout and the Event Stream keeps its height.
+	memRatio, evRatio := 0.65, 1.8
+	if len(m.HeapStats.TopCallSites) > 0 {
+		memRatio, evRatio = 1.55, 0.9
+	}
+	rightHs := splitFlex([]float64{1.1, 0.9, 0.9, memRatio, evRatio}, h)
 
 	// Coluna esquerda
 	cpu := Panel("CPU",
@@ -63,7 +71,7 @@ func renderOverviewView(m Model, w, h int) string {
 		rightW, rightHs[2])
 
 	memPanel := Panel("Memory",
-		renderMemMini(m.MemStats, rightW-2),
+		renderMemMini(m.MemStats, m.HeapStats, m.HeapLiveHist, rightW-2, rightHs[3]-3),
 		rightW, rightHs[3])
 
 	timelinePanel := Panel("Event Stream",

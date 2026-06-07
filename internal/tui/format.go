@@ -17,6 +17,26 @@ func fmtBytes(b uint64) string {
 	}
 }
 
+// fmtRate formats an allocations-per-second rate compactly:
+// 320 → "320/s", 1234 → "1.2k/s".
+func fmtRate(r float64) string {
+	if r < 0 {
+		r = 0
+	}
+	if r >= 1000 {
+		return fmt.Sprintf("%.1fk/s", r/1000)
+	}
+	return fmt.Sprintf("%.0f/s", r)
+}
+
+// plural returns the plural suffix "s" for counts other than 1.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 // fmtBytesPerSec is the same as fmtBytes but with a "/s" suffix.
 func fmtBytesPerSec(bps float64) string {
 	if bps < 0 {
