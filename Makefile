@@ -1,4 +1,4 @@
-.PHONY: all build build-ebpf run gen clean dev test test-all vet lint install install-bare install-ebpf uninstall
+.PHONY: all build build-ebpf run gen clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest
 
 .DEFAULT_GOAL := all
 
@@ -58,6 +58,10 @@ BPF_SRCS := \
 
 BPF_OBJS := $(BPF_SRCS:.c=.o)
 
+# Every BPF object includes the shared filter header — editing it must
+# trigger a rebuild (the %.bpf.o rule below only tracks the .c file).
+$(BPF_OBJS): internal/bpf/programs/target.bpf.h
+
 CLANG  ?= clang
 
 # Default rule: .bpf.c → .bpf.o via clang -target bpf.
@@ -93,6 +97,13 @@ run: build-ebpf
 # /proc-only mode — no root, no eBPF
 dev: build
 	./bin/$(BINARY) --pid $(PID) --no-ebpf
+
+# ebpf-selftest builds the eBPF self-diagnostic. Run the result as root:
+# `sudo ./bin/ebpf-selftest` — it reports whether the eBPF collectors can
+# observe the target process (useful inside containers / WSL).
+ebpf-selftest: gen
+	go build -tags=ebpf -o bin/ebpf-selftest ./cmd/ebpfselftest
+	@echo "built bin/ebpf-selftest — run as root: sudo ./bin/ebpf-selftest"
 
 # ─── test / lint ─────────────────────────────────────────────────────────────
 

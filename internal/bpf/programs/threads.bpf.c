@@ -10,25 +10,23 @@
 //   exactly what the kernel measured, in real time.
 //
 // Maps:
-//   threads_target_pid  ARRAY[1]  target pid (written by the Go loader)
-//   tracked_tids        HASH      TID → 1, populated periodically by
-//                                 user-space (Go walks /proc/<pid>/task/).
-//                                 Required because sched_switch fires
-//                                 GLOBALLY — filtering only by prev_pid
-//                                 would miss the "next ON-CPU" event.
-//   tid_state           HASH      TID → {last_on_ns, last_off_ns,
-//                                 on_cpu_ns_total, off_cpu_ns_total,
-//                                 ctx_switches}
+//   threads_target_pid  ARRAY[1]   struct target_filter (written by Go)
+//   root2ns             LRU_HASH   root-ns tid → namespace-local tid
+//   tid_state           HASH       ns-local tid → struct thread_state
 //
-// Filtering:
-//   Instead of bpf_get_current_pid_tgid() (which is reliable in syscall
-//   context, but in sched_switch `current` is prev and isn't always the
-//   target), we use a TID whitelist (`tracked_tids`) updated by the Go
-//   side every ~1s. Threads that are born/die within that interval may
-//   miss switches; acceptable for the UI.
+// PID-namespace handling:
+//   sched_switch delivers prev_pid/next_pid as ROOT-namespace TIDs, but the
+//   Go side and tid_state work in the target's namespace-local TIDs. At the
+//   tracepoint `current` == prev, so pid_target_ns() resolves prev's
+//   namespace-local tid; that {root_tid → ns_tid} pair is cached in root2ns.
+//   The `next` side then recovers the ns-local tid by looking up next_pid in
+//   root2ns (learned the previous time that thread was scheduled out). A
+//   brand-new thread is learned the first time it is `prev` — one context
+//   switch of warm-up, which the UI tolerates.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -56,16 +54,20 @@ struct thread_state {
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, __u32);
+    __type(value, struct target_filter);
     __uint(max_entries, 1);
 } threads_target_pid SEC(".maps");
 
+// root2ns maps a root-namespace TID to the target's namespace-local TID.
+// Self-populated from the `prev` side of sched_switch; LRU evicts dead TIDs.
+// Only target-process threads are ever inserted, so 8192 entries comfortably
+// covers any realistic thread count.
 struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __type(key, __u32);
-    __type(value, __u8);
+    __type(value, __u32);
     __uint(max_entries, 8192);
-} tracked_tids SEC(".maps");
+} root2ns SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
@@ -73,11 +75,6 @@ struct {
     __type(value, struct thread_state);
     __uint(max_entries, 8192);
 } tid_state SEC(".maps");
-
-static __always_inline int is_tracked(__u32 tid)
-{
-    return bpf_map_lookup_elem(&tracked_tids, &tid) != NULL;
-}
 
 // Get-or-create entry in tid_state. Returns ptr (always non-null on success).
 // On update failure (pathological case), returns NULL.
@@ -96,10 +93,15 @@ int handle_sched_switch(struct sched_switch_args *ctx)
 {
     __u64 now = bpf_ktime_get_ns();
 
-    // prev_pid is leaving CPU
-    __u32 prev_tid = (__u32)ctx->prev_pid;
-    if (prev_tid != 0 && is_tracked(prev_tid)) {
-        struct thread_state *s = get_or_create_state(prev_tid);
+    // prev == current at sched_switch. If it belongs to the target process,
+    // cache its root→ns TID mapping and do off-CPU accounting.
+    struct bpf_pidns_info ns = {};
+    if (pid_target_ns(&threads_target_pid, &ns)) {
+        __u32 root_tid = (__u32)ctx->prev_pid;
+        __u32 ns_tid = ns.pid;
+        bpf_map_update_elem(&root2ns, &root_tid, &ns_tid, BPF_ANY);
+
+        struct thread_state *s = get_or_create_state(ns_tid);
         if (s) {
             if (s->last_on_cpu_ns != 0) {
                 __u64 delta = now - s->last_on_cpu_ns;
@@ -110,10 +112,12 @@ int handle_sched_switch(struct sched_switch_args *ctx)
         }
     }
 
-    // next_pid is entering CPU
-    __u32 next_tid = (__u32)ctx->next_pid;
-    if (next_tid != 0 && is_tracked(next_tid)) {
-        struct thread_state *s = get_or_create_state(next_tid);
+    // next entering CPU: recover its ns-local TID from root2ns (learned the
+    // last time it was scheduled out).
+    __u32 next_root = (__u32)ctx->next_pid;
+    __u32 *next_ns = bpf_map_lookup_elem(&root2ns, &next_root);
+    if (next_ns) {
+        struct thread_state *s = get_or_create_state(*next_ns);
         if (s) {
             if (s->last_off_cpu_ns != 0) {
                 __u64 delta = now - s->last_off_cpu_ns;

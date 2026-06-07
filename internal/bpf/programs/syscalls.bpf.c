@@ -4,7 +4,7 @@
 // raw_syscalls of the target PID.
 //
 // Maps:
-//   target_pid     ARRAY[1]  target pid (written by the Go loader via map.Update)
+//   target_pid     ARRAY[1]  struct target_filter (written by the Go loader)
 //   syscall_count  HASH      syscall_id → {count, total_lat_ns}
 //   enter_ts       HASH      tgid_pid → {ts_ns, syscall_id}
 //                            correlates enter→exit to compute latency
@@ -20,6 +20,7 @@
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -52,7 +53,7 @@ struct enter_data {
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, __u32);
+    __type(value, struct target_filter);
     __uint(max_entries, 1);
 } target_pid SEC(".maps");
 
@@ -70,16 +71,11 @@ struct {
     __uint(max_entries, 10240);
 } enter_ts SEC(".maps");
 
-// is_target returns 1 if the current tgid is the configured target pid, 0 otherwise.
+// is_target returns 1 if the current task belongs to the target process,
+// resolving pids inside the target's PID namespace (see target.bpf.h).
 static __always_inline int is_target(void)
 {
-    __u32 key = 0;
-    __u32 *target = bpf_map_lookup_elem(&target_pid, &key);
-    if (!target || *target == 0)
-        return 0;
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(pid_tgid >> 32);
-    return tgid == *target;
+    return pid_is_target(&target_pid);
 }
 
 SEC("tracepoint/raw_syscalls/sys_enter")

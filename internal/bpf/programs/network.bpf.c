@@ -16,21 +16,22 @@
 // of the sock.
 //
 // Maps:
-//   net_target_pid   ARRAY[1]  target pid (written by the Go loader)
+//   net_target_pid   ARRAY[1]  struct target_filter (written by the Go loader)
 //   net_conn_map     HASH      net_key → net_val (state, RTT, tx/rx bytes)
 //   sock_to_key      HASH      sock_ptr → net_key (correlation)
 //
 // Limitations:
 //   - Pre-existing connections (opened before ptop attached) don't enter
 //     sock_to_key, so tx/rx stay 0 for them. New connections work.
-//   - bpf_get_current_pid_tgid() in softirq returns the interrupted task —
-//     may skip or misattribute on transitions in the softirq path.
+//   - the pid filter resolves the *current* task; in softirq that is the
+//     interrupted task, so it may skip or misattribute on the softirq path.
 //     tcp_sendmsg/cleanup_rbuf run in process context, so OK.
 
 #include <linux/bpf.h>
 #include <linux/ptrace.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -87,7 +88,7 @@ struct net_val {
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, __u32);
+    __type(value, struct target_filter);
     __uint(max_entries, 1);
 } net_target_pid SEC(".maps");
 
@@ -109,13 +110,7 @@ struct {
 
 static __always_inline int is_net_target(void)
 {
-    __u32 key = 0;
-    __u32 *target = bpf_map_lookup_elem(&net_target_pid, &key);
-    if (!target || *target == 0)
-        return 0;
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(pid_tgid >> 32);
-    return tgid == *target;
+    return pid_is_target(&net_target_pid);
 }
 
 SEC("tracepoint/sock/inet_sock_set_state")

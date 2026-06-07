@@ -10,12 +10,12 @@
 // Why kprobe handle_mm_fault and not the exceptions:page_fault_user tracepoint?
 //   exceptions:page_fault_user is x86-only (lives in arch/x86/). handle_mm_fault
 //   is the canonical function in mm/memory.c, exists on every Linux arch, is
-//   called in process context and bpf_get_current_pid_tgid() works.
+//   called in process context where the pid filter works.
 //   Trade-off: the kprobe can fail if the kernel has the symbol inlined or
 //   renamed (rare for handle_mm_fault). The Go loader treats it as a warning.
 //
 // Maps:
-//   mem_target_pid    ARRAY[1]  target pid (written by the Go loader)
+//   mem_target_pid    ARRAY[1]  struct target_filter (written by the Go loader)
 //   mem_counters      ARRAY[1]  struct {page_faults, mmaps, munmaps, brks}
 //
 // RSS is NOT sampled here — /proc/<pid>/statm is cheap and stable; doing RSS
@@ -26,6 +26,7 @@
 #include <linux/ptrace.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -39,7 +40,7 @@ struct mem_counters {
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
     __type(key, __u32);
-    __type(value, __u32);
+    __type(value, struct target_filter);
     __uint(max_entries, 1);
 } mem_target_pid SEC(".maps");
 
@@ -52,13 +53,7 @@ struct {
 
 static __always_inline int is_mem_target(void)
 {
-    __u32 key = 0;
-    __u32 *target = bpf_map_lookup_elem(&mem_target_pid, &key);
-    if (!target || *target == 0)
-        return 0;
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    __u32 tgid = (__u32)(pid_tgid >> 32);
-    return tgid == *target;
+    return pid_is_target(&mem_target_pid);
 }
 
 static __always_inline struct mem_counters *get_counters(void)
