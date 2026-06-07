@@ -35,7 +35,6 @@ func renderHeader(m Model) string {
 		Render(m.ProcessName)
 
 	pidBadge := Badge(fmt.Sprintf("PID %d", m.cfg.PID), ColorBlue)
-	rtBadge := Badge(m.Runtime, ColorCyan)
 
 	stateColor := ColorGreen
 	switch strings.ToUpper(m.State) {
@@ -55,10 +54,16 @@ func renderHeader(m Model) string {
 		{sep, 0},
 		{procName, 0},
 		{pidBadge, 0},
-		{rtBadge, 2},
-		{stateBadge, 1},
-		{fdBadge, 1},
 	}
+	// Only show the runtime badge if we actually know the runtime (see
+	// Model.Runtime). Empty → omit, rather than display a mock value.
+	if m.Runtime != "" {
+		leftSegs = append(leftSegs, seg{Badge(m.Runtime, ColorCyan), 2})
+	}
+	leftSegs = append(leftSegs,
+		seg{stateBadge, 1},
+		seg{fdBadge, 1},
+	)
 
 	uptime := time.Since(m.StartedAt)
 	upMin := int(uptime.Minutes())

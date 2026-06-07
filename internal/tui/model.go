@@ -213,8 +213,12 @@ func NewModel(cfg Config) Model {
 	m := Model{
 		cfg:              cfg,
 		ProcessName:      detectProcessName(cfg.PID),
-		Runtime:          "Go 1.22",
-		State:            "RUNNING",
+		// Runtime is the inspected process's language/runtime badge. We have
+		// no reliable way to detect it (it was previously hardcoded to a mock
+		// "Go 1.22", which lied for every non-Go process), so leave it empty
+		// and let the header omit the badge until a real detector exists.
+		Runtime:   "",
+		State:     "RUNNING",
 		StartedAt:        time.Now(),
 		ActiveTab:        TabOverview,
 		FDFilter:         "all",

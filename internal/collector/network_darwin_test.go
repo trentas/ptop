@@ -47,6 +47,25 @@ func TestSocketToNetConn_queuedBytes(t *testing.T) {
 	}
 }
 
+// TestConnRank pins the F3 ordering: an active peer connection outranks a
+// listener, which outranks an idle/unconnected socket. macOS processes hold
+// many idle UDP wildcard sockets that would otherwise bury real connections.
+func TestConnRank(t *testing.T) {
+	connected := NetConn{Type: "TCP", Dir: "↔", State: "ESTABLISHED", Remote: "[fe80::1]:1024"}
+	listener := NetConn{Type: "TCP", Dir: "←", State: "LISTEN", Remote: "0.0.0.0:443"}
+	idleUDP := NetConn{Type: "UDP", Dir: "←", State: "", Remote: "0.0.0.0:0"}
+
+	if connRank(connected) >= connRank(listener) {
+		t.Fatalf("connected (%d) should rank before listener (%d)", connRank(connected), connRank(listener))
+	}
+	if connRank(listener) >= connRank(idleUDP) {
+		t.Fatalf("listener (%d) should rank before idle UDP (%d)", connRank(listener), connRank(idleUDP))
+	}
+	if typeRank("TCP") >= typeRank("UDP") {
+		t.Fatalf("TCP should rank before UDP")
+	}
+}
+
 // TestFDSocketInfo_queuedBytes_live drives the wrapper against a real TCP
 // connection. We stuff the sender's buffer without ever reading on the peer,
 // so bytes pile up in either the send or receive buffer; FDSocketInfo must

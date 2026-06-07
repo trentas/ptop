@@ -4,6 +4,7 @@ package collector
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 )
@@ -101,7 +102,47 @@ func (c *NetworkEBPFCollector) collect() ([]NetConn, error) {
 		}
 		out = append(out, nc)
 	}
+
+	// A macOS process typically holds many idle UDP sockets bound to the
+	// wildcard address plus a few real connections. proc_pidinfo lists them
+	// in FD order, which buries the interesting ESTABLISHED connections at
+	// the bottom where the F3 panel's row limit clips them. Sort so the most
+	// useful rows surface first: connected (has a remote peer) before
+	// listeners/idle, TCP before UDP, then by remote for stable ordering.
+	sort.SliceStable(out, func(i, j int) bool {
+		if ri, rj := connRank(out[i]), connRank(out[j]); ri != rj {
+			return ri < rj
+		}
+		if out[i].Type != out[j].Type {
+			return typeRank(out[i].Type) < typeRank(out[j].Type)
+		}
+		return out[i].Remote < out[j].Remote
+	})
 	return out, nil
+}
+
+// connRank orders connections by usefulness: an active peer connection first,
+// then anything with a TCP state (e.g. a listener), then idle/unconnected.
+func connRank(c NetConn) int {
+	switch {
+	case c.Dir == "↔": // has a remote peer
+		return 0
+	case c.State != "": // TCP socket with a state but no peer (listener, etc.)
+		return 1
+	default: // unconnected UDP / wildcard
+		return 2
+	}
+}
+
+func typeRank(t string) int {
+	switch t {
+	case "TCP":
+		return 0
+	case "UDP":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // socketToNetConn maps the libproc LPSocketFDInfo into the public NetConn
