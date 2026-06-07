@@ -216,6 +216,36 @@ func (s *Set) Stop() {
 	}
 }
 
+// Collectors returns every started collector as a Collector. Used by consumers
+// that fan-in all subscriptions generically (the headless gRPC server). Nil
+// fields are skipped — appending a typed-nil pointer would yield a non-nil
+// interface, so the explicit checks matter.
+func (s *Set) Collectors() []Collector {
+	if s == nil {
+		return nil
+	}
+	var cs []Collector
+	add := func(c Collector, ok bool) {
+		if ok {
+			cs = append(cs, c)
+		}
+	}
+	add(s.FD, s.FD != nil)
+	add(s.CPUProc, s.CPUProc != nil)
+	add(s.CPUEBPF, s.CPUEBPF != nil)
+	add(s.ThreadsProc, s.ThreadsProc != nil)
+	add(s.ThreadsEBPF, s.ThreadsEBPF != nil)
+	add(s.MemProc, s.MemProc != nil)
+	add(s.MemEBPF, s.MemEBPF != nil)
+	add(s.IOWait, s.IOWait != nil)
+	add(s.IOThroughput, s.IOThroughput != nil)
+	add(s.SyscallsEBPF, s.SyscallsEBPF != nil)
+	add(s.IOEBPF, s.IOEBPF != nil)
+	add(s.NetworkEBPF, s.NetworkEBPF != nil)
+	add(s.FutexEBPF, s.FutexEBPF != nil)
+	return cs
+}
+
 // Mock* report whether a subsystem has no real collector and must be
 // simulated. They derive purely from which collectors started.
 

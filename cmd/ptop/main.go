@@ -1,14 +1,19 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"runtime"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/internal/serve"
 	"github.com/trentas/ptop/internal/tui"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // Variables injected via -ldflags in the release build (goreleaser).
@@ -24,6 +29,7 @@ func main() {
 	fps := flag.Int("fps", 5, "TUI refresh rate (frames per second)")
 	noEBPF := flag.Bool("no-ebpf", false, "Degraded mode: use only /proc, no eBPF (useful for development)")
 	export := flag.Bool("export", false, "Save JSON snapshot on exit (equivalent to the 'e' key)")
+	serveAddr := flag.String("serve", "", "Headless mode: stream events over gRPC instead of the TUI (unix:///path or tcp://host:port)")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -35,6 +41,7 @@ func main() {
 	if *pid == 0 {
 		fmt.Fprintln(os.Stderr, "error: --pid is required")
 		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
+		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
 	}
@@ -69,6 +76,12 @@ func main() {
 		}
 	}
 
+	// Headless mode: serve the collector stream over gRPC instead of the TUI.
+	if *serveAddr != "" {
+		runServe(*serveAddr, *pid, *noEBPF)
+		return
+	}
+
 	cfg := tui.Config{
 		PID:    *pid,
 		FPS:    *fps,
@@ -95,5 +108,22 @@ func main() {
 				fmt.Fprintf(os.Stderr, "warning: final snapshot failed: %v\n", err)
 			}
 		}
+	}
+}
+
+// runServe builds the collector Set and streams it over gRPC until SIGINT/
+// SIGTERM. The Set's lifecycle is owned here: serve.Run only stops the server,
+// so we stop the collectors after it returns.
+func runServe(addr string, pid int, noEBPF bool) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	set := collector.NewSet(collector.SetConfig{PID: pid, NoEBPF: noEBPF})
+	defer set.Stop()
+
+	if err := serve.Run(ctx, addr, pid, set.Collectors()); err != nil {
+		set.Stop() // os.Exit skips the defer
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+		os.Exit(1)
 	}
 }
