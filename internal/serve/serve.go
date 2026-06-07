@@ -34,7 +34,7 @@ func Run(ctx context.Context, addr string, pid int, cols []collector.Collector) 
 	hub.Start(ctx, cols)
 
 	srv := grpc.NewServer()
-	pb.RegisterEventStreamServer(srv, &eventStreamService{hub: hub})
+	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{hub: hub})
 
 	// On cancel, Stop() (not GracefulStop): Subscribe streams are long-lived and
 	// only end when the client disconnects, so GracefulStop would block forever.

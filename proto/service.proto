@@ -30,9 +30,9 @@ message SubscribeResponse {
   }
 }
 
-// EventStream is ptop's headless collection surface. ptop runs with the
+// EventStreamService is ptop's headless collection surface. ptop runs with the
 // elevated capabilities (CAP_BPF/CAP_PERFMON); subscribers connect with none.
-service EventStream {
+service EventStreamService {
   // Subscribe streams collector events for the server's target PID until the
   // client disconnects. Multiple subscribers fan out from one collector.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);

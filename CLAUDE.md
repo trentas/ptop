@@ -327,7 +327,7 @@ ptop --version              print version + commit + build date
 ```
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
-streams `streampb.Event`s over the `EventStream` gRPC service to any number of
+streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of
 subscribers (fan-out), with bounded per-subscriber buffers that drop-with-counter
 under backpressure (surfaced as `StreamMeta`). `addr` is `unix:///path` or
 `tcp://host:port`. SIGINT/SIGTERM shuts down and releases collectors. The

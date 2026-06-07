@@ -215,8 +215,8 @@ const file_service_proto_rawDesc = "" +
 	"\x11SubscribeResponse\x12&\n" +
 	"\x05event\x18\x01 \x01(\v2\x0e.ptop.v1.EventH\x00R\x05event\x12)\n" +
 	"\x04meta\x18\x02 \x01(\v2\x13.ptop.v1.StreamMetaH\x00R\x04metaB\x06\n" +
-	"\x04kind2S\n" +
-	"\vEventStream\x12D\n" +
+	"\x04kind2Z\n" +
+	"\x12EventStreamService\x12D\n" +
 	"\tSubscribe\x12\x19.ptop.v1.SubscribeRequest\x1a\x1a.ptop.v1.SubscribeResponse0\x01B\x87\x01\n" +
 	"\vcom.ptop.v1B\fServiceProtoP\x01Z-github.com/trentas/ptop/pkg/streampb;streampb\xa2\x02\x03PXX\xaa\x02\aPtop.V1\xca\x02\aPtop\\V1\xe2\x02\x13Ptop\\V1\\GPBMetadata\xea\x02\bPtop::V1b\x06proto3"
 
@@ -244,8 +244,8 @@ var file_service_proto_depIdxs = []int32{
 	3, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
 	4, // 1: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
 	1, // 2: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	0, // 3: ptop.v1.EventStream.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	2, // 4: ptop.v1.EventStream.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	0, // 3: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	2, // 4: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
 	4, // [4:5] is the sub-list for method output_type
 	3, // [3:4] is the sub-list for method input_type
 	3, // [3:3] is the sub-list for extension type_name

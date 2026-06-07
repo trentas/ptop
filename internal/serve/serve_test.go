@@ -58,7 +58,7 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := pb.NewEventStreamClient(conn)
+	client := pb.NewEventStreamServiceClient(conn)
 	recvCtx, recvCancel := context.WithTimeout(ctx, 3*time.Second)
 	defer recvCancel()
 	stream, err := client.Subscribe(recvCtx, &pb.SubscribeRequest{})

@@ -92,6 +92,7 @@ BUF         := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 
 proto:
 	$(BUF) format -w
+	$(BUF) lint
 	$(BUF) generate
 
 proto-lint:
