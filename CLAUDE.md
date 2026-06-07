@@ -60,6 +60,10 @@ ptop/
 ├── CLAUDE.md, README.md, CONTRIBUTING.md, SECURITY.md, LICENSE
 ├── go.mod, go.sum
 ├── Makefile, .goreleaser.yaml
+├── buf.yaml, buf.gen.yaml         protobuf codegen config (`make proto`)
+├── proto/                         event stream schema (pkg ptop.v1)
+│   ├── event.proto                unified Event + payloads
+│   └── service.proto              EventStream gRPC service
 ├── cmd/ptop/main.go               entrypoint: parse flags, start model
 ├── cmd/ebpfselftest/              root-only eBPF self-diagnostic
 ├── internal/
@@ -86,6 +90,11 @@ ptop/
 │   │   ├── threads.go             sched_switch loader
 │   │   ├── futex.go               futex wait/wake loader
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
+│   ├── serve/                     headless gRPC server (ptop --serve)
+│   │   ├── serve.go               addr parse + privilege boundary + Run
+│   │   ├── hub.go                 fan-in collectors → fan-out subscribers
+│   │   ├── service.go             EventStream gRPC service impl
+│   │   └── mapper.go              collector value → streampb.Event
 │   └── tui/                       Bubbletea + Lipgloss
 │       ├── model.go               root model: state + msg routing
 │       ├── keys.go                keybindings F1-F7, q, p, /, s, e
@@ -108,6 +117,11 @@ ptop/
 │       ├── view_timeline.go       F7
 │       └── *_test.go              dump test, model test, snapshot test
 ├── pkg/                           public API surface (importable externally)
+│   ├── streampb/                  generated gRPC/proto bindings (pkg ptop.v1)
+│   │   ├── event.pb.go            Event schema (generated)
+│   │   ├── service.pb.go          Subscribe messages (generated)
+│   │   ├── service_grpc.pb.go     EventStream service (generated)
+│   │   └── doc.go                 package doc
 │   └── collector/                 /proc + eBPF collectors + shared types
 │       ├── types.go               public type contracts (see below)
 │       ├── set.go                 source-priority selection + lifecycle (Set)
@@ -307,8 +321,17 @@ ptop --pid <PID>            inspect a specific process
 ptop --pid <PID> --fps 10   render rate (default: 5)
 ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
 ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
+ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gRPC, no TUI
+ptop --pid <PID> --serve tcp://127.0.0.1:50051   headless over TCP (loopback)
 ptop --version              print version + commit + build date
 ```
+
+`--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
+streams `streampb.Event`s over the `EventStream` gRPC service to any number of
+subscribers (fan-out), with bounded per-subscriber buffers that drop-with-counter
+under backpressure (surfaced as `StreamMeta`). `addr` is `unix:///path` or
+`tcp://host:port`. SIGINT/SIGTERM shuts down and releases collectors. The
+collector→`streampb` mapping + server live in `internal/serve`.
 
 Version metadata is injected via `-ldflags` at release time
 (`main.version`, `main.commit`, `main.buildDate`). In dev they stay as
@@ -326,5 +349,10 @@ Version metadata is injected via `-ldflags` at release time
 - Never `panic` in production paths — collectors log to stderr and continue.
 - The binary is built with `CGO_ENABLED=0` — no dynamic linking, no surprise
   shared-library footprint.
+- `--serve` is the privilege boundary: ptop holds `CAP_BPF`/`CAP_PERFMON` and
+  publishes events; subscribers connect with none. The unix socket is created
+  `0600` (owner-only) and removed on exit. For TCP, binding all interfaces
+  (`0.0.0.0`/`::`) is refused — the stream exposes process internals, so bind
+  loopback or a specific interface IP.
 
 See [`SECURITY.md`](SECURITY.md) for vulnerability reporting.

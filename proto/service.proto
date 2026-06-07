@@ -1,0 +1,39 @@
+syntax = "proto3";
+
+package ptop.v1;
+
+import "event.proto";
+
+option go_package = "github.com/trentas/ptop/pkg/streampb;streampb";
+
+// SubscribeRequest opens a stream. categories filters which Event categories
+// the server sends; empty means all. The target PID is fixed per server
+// instance (set via `ptop --serve --pid`), so it is not part of the request.
+message SubscribeRequest {
+  repeated Category categories = 1;
+}
+
+// StreamMeta is an out-of-band signal interleaved in the stream. It reports
+// backpressure: how many events the server dropped for this subscriber because
+// it could not keep up (cumulative). The collector is never blocked by a slow
+// consumer — events are dropped and counted instead.
+message StreamMeta {
+  uint64 dropped = 1;
+}
+
+// SubscribeResponse is one item in the stream: either a captured Event or a
+// StreamMeta backpressure notice.
+message SubscribeResponse {
+  oneof kind {
+    Event event = 1;
+    StreamMeta meta = 2;
+  }
+}
+
+// EventStream is ptop's headless collection surface. ptop runs with the
+// elevated capabilities (CAP_BPF/CAP_PERFMON); subscribers connect with none.
+service EventStream {
+  // Subscribe streams collector events for the server's target PID until the
+  // client disconnects. Multiple subscribers fan out from one collector.
+  rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
+}
