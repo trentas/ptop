@@ -71,7 +71,7 @@ func renderStatusBar(m Model) string {
 				Background(barBg).
 				Render("● REC"))
 		}
-		rightParts = append(rightParts, lblStyle.Render(statusBarSourceLabel))
+		rightParts = append(rightParts, lblStyle.Render(statusBarSourceLabel()))
 	}
 	right := strings.Join(rightParts, lblStyle.Render("  "))
 
