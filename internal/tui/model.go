@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"debug/buildinfo"
 	"fmt"
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -213,11 +215,10 @@ func NewModel(cfg Config) Model {
 	m := Model{
 		cfg:              cfg,
 		ProcessName:      detectProcessName(cfg.PID),
-		// Runtime is the inspected process's language/runtime badge. We have
-		// no reliable way to detect it (it was previously hardcoded to a mock
-		// "Go 1.22", which lied for every non-Go process), so leave it empty
-		// and let the header omit the badge until a real detector exists.
-		Runtime:   "",
+		// Runtime is the inspected process's language/runtime badge, best-effort
+		// detected from the executable (Go build info / interpreter basename).
+		// Empty when unknown — the header omits the badge rather than guess.
+		Runtime:   detectRuntime(cfg.PID),
 		State:     "RUNNING",
 		StartedAt:        time.Now(),
 		ActiveTab:        TabOverview,
@@ -1366,5 +1367,57 @@ func detectProcessName(pid int) string {
 		return "(?)"
 	}
 	return name
+}
+
+// detectRuntime best-effort identifies the inspected process's language or
+// runtime for the header badge. It resolves the executable path (per-OS, via
+// osExePath in process_path_{linux,darwin}.go), reads embedded Go build info,
+// and otherwise guesses from the binary basename. Returns "" when unknown —
+// the header omits the badge rather than ever showing a mock value.
+func detectRuntime(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	exe := osExePath(pid)
+	if exe == "" {
+		return ""
+	}
+	if bi, err := buildinfo.ReadFile(exe); err == nil && bi.GoVersion != "" {
+		return formatGoVersion(bi.GoVersion)
+	}
+	return runtimeFromBasename(filepath.Base(exe))
+}
+
+// formatGoVersion turns a runtime version string like "go1.22.3" into the
+// badge form "Go 1.22" (major.minor — patch is noise in a status badge).
+func formatGoVersion(v string) string {
+	v = strings.TrimPrefix(v, "go")
+	if parts := strings.Split(v, "."); len(parts) >= 2 {
+		return "Go " + parts[0] + "." + parts[1]
+	}
+	return "Go " + v
+}
+
+// runtimeFromBasename maps a known interpreter/executable name to a label.
+// Unknown names return "" so the badge stays hidden.
+func runtimeFromBasename(base string) string {
+	switch base = strings.ToLower(base); {
+	case strings.HasPrefix(base, "python"):
+		return "Python"
+	case base == "node" || base == "nodejs":
+		return "Node.js"
+	case base == "deno":
+		return "Deno"
+	case base == "bun":
+		return "Bun"
+	case base == "java":
+		return "JVM"
+	case base == "ruby":
+		return "Ruby"
+	case base == "perl":
+		return "Perl"
+	default:
+		return ""
+	}
 }
 

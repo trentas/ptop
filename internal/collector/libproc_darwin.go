@@ -84,6 +84,12 @@ static int wrap_proc_name(int pid, void *buf, uint32_t bufsize, int *out_errno) 
     return n;
 }
 
+static int wrap_proc_pidpath(int pid, void *buf, uint32_t bufsize, int *out_errno) {
+    int n = proc_pidpath(pid, buf, bufsize);
+    if (n <= 0) { *out_errno = errno; }
+    return n;
+}
+
 // inet_ntop for IPv4 / IPv6 addresses pulled from socket_fdinfo. Returns
 // length written or -1 on error.
 static int fmt_v4(const struct in_addr *a, char *out, size_t n) {
@@ -160,6 +166,19 @@ func ProcName(pid int) (string, error) {
 	n := C.wrap_proc_name(C.int(pid), unsafe.Pointer(&buf[0]), C.uint32_t(len(buf)), &cerrno)
 	if n <= 0 {
 		return "", fmt.Errorf("proc_name(%d): %w", pid, syscall.Errno(cerrno))
+	}
+	return string(buf[:n]), nil
+}
+
+// ProcPath returns the absolute executable path for pid via proc_pidpath —
+// the macOS equivalent of readlink(/proc/<pid>/exe). The buffer is sized to
+// PROC_PIDPATHINFO_MAXSIZE (4*MAXPATHLEN).
+func ProcPath(pid int) (string, error) {
+	var buf [4096]byte
+	var cerrno C.int
+	n := C.wrap_proc_pidpath(C.int(pid), unsafe.Pointer(&buf[0]), C.uint32_t(len(buf)), &cerrno)
+	if n <= 0 {
+		return "", fmt.Errorf("proc_pidpath(%d): %w", pid, syscall.Errno(cerrno))
 	}
 	return string(buf[:n]), nil
 }
