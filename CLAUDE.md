@@ -18,7 +18,7 @@ If something here drifts from reality, the code wins. Update this file.
 |--------|-----------|--------|
 | TUI    | [Bubbletea](https://github.com/charmbracelet/bubbletea) + [Lipgloss](https://github.com/charmbracelet/lipgloss) | Mature, composable, mouse support |
 | eBPF   | [cilium/ebpf](https://github.com/cilium/ebpf) | Pure-Go, no libbpf.so needed at runtime |
-| Build  | Go 1.22+, clang, libbpf-dev (build only) | Single static binary on Linux (`CGO_ENABLED=0`) |
+| Build  | Go 1.25+, clang, libbpf-dev (build only) | Single static binary on Linux (`CGO_ENABLED=0`) |
 | eBPF C | clang `-target bpf` → `.bpf.o` → `go:embed` | See `Makefile` |
 | macOS  | libproc + Mach via cgo (darwin-only build tag) | The only public path for per-process info on macOS |
 
@@ -125,7 +125,7 @@ ptop/
 │   │   ├── service.pb.go          Subscribe messages (generated)
 │   │   ├── service_grpc.pb.go     EventStream service (generated)
 │   │   └── doc.go                 package doc
-│   └── collector/                 /proc + eBPF collectors + shared types
+│   ├── collector/                 /proc + eBPF collectors + shared types
 │       ├── types.go               public type contracts (see below)
 │       ├── set.go                 source-priority selection + lifecycle (Set)
 │       ├── source_{linux,darwin}.go  platform source labels (Source*)
@@ -146,6 +146,10 @@ ptop/
 │       ├── sockets.go             inode → host:port via /proc/net/*
 │       ├── syscall_names.go       syscall id → name table
 │       └── *_test.go, *_stub.go
+│   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)
+│       ├── elf.go                 OS-agnostic ELF/gosym core (Module, build-id)
+│       ├── proc_linux.go          live-pid Symbolizer via /proc/<pid>/maps
+│       └── proc_other.go          non-Linux stub
 └── assets/
     ├── mockup.jsx                 authoritative visual spec
     └── screenshot-overview.txt    regression fixture
