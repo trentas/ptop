@@ -57,3 +57,32 @@ jobs:
 
       - name: go build (ebpf tag)
         run: go build -tags=ebpf -o /tmp/ptop-ebpf ./cmd/ptop
+
+  proto:
+    name: buf lint · format · generate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      # buf is pinned via `go run @version` (keep in sync with the Makefile's
+      # BUF_VERSION). The codegen plugin is a pinned remote plugin, so no local
+      # protoc-gen-go install is needed.
+      - name: buf lint
+        run: go run github.com/bufbuild/buf/cmd/buf@v1.70.0 lint
+
+      - name: buf format check
+        run: go run github.com/bufbuild/buf/cmd/buf@v1.70.0 format --diff --exit-code
+
+      # The generated bindings are committed; fail if they drift from the .proto.
+      - name: buf generate is up to date
+        run: |
+          go run github.com/bufbuild/buf/cmd/buf@v1.70.0 generate
+          git diff --exit-code
+
+      # NOTE: `buf breaking --against '.git#branch=main'` lands in a follow-up,
+      # once the schema exists on main and there's a baseline to compare against.

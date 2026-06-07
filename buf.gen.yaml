@@ -1,0 +1,13 @@
+version: v2
+# No `clean: true` — the output dir (pkg/streampb) also holds hand-written
+# files (doc.go, tests); cleaning would delete them. With a single generated
+# file this is safe.
+managed:
+  enabled: true
+plugins:
+  # Remote plugin (pinned): no local protoc-gen-go install needed. Codegen is
+  # infrequent (only when event.proto changes) and the output is committed, so
+  # the network dependency here doesn't reach `go build` / release.
+  - remote: buf.build/protocolbuffers/go:v1.36.6
+    out: pkg/streampb
+    opt: paths=source_relative

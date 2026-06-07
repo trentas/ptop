@@ -1,0 +1,190 @@
+syntax = "proto3";
+
+package ptop.v1;
+
+option go_package = "github.com/trentas/ptop/pkg/streampb;streampb";
+
+// Category mirrors the F7 Timeline taxonomy. Every Event carries one so a
+// consumer can filter without inspecting the payload oneof.
+enum Category {
+  CATEGORY_UNSPECIFIED = 0;
+  CATEGORY_CPU = 1;
+  CATEGORY_SYSCALL = 2;
+  CATEGORY_NETWORK = 3;
+  CATEGORY_MEMORY = 4;
+  CATEGORY_THREAD = 5;
+  CATEGORY_IO = 6;
+  CATEGORY_FD = 7;
+  CATEGORY_LOCK = 8;
+  CATEGORY_TIMELINE = 9;
+}
+
+// StackRef references a stack captured at event time and resolved out-of-band
+// (#54 — stack symbolization). It stays empty until that lands; consumers
+// fetch frames via a side-channel keyed by stack_id (+ build_id for caching).
+message StackRef {
+  uint64 stack_id = 1;
+  string build_id = 2;
+}
+
+// Event is the single unified message on the stream. The envelope carries the
+// common fields (time, pid/tid, category, optional stack); the category-
+// specific data lives in the payload oneof. Snapshot-style payloads (lists)
+// represent full current state, not deltas — the same semantics the in-process
+// collector channels use today.
+message Event {
+  // Wall-clock capture time in Unix nanoseconds (from the collector's
+  // time.Time). Per-payload timestamps collapse onto this envelope field.
+  int64 ts_unix_nano = 1;
+  int32 pid = 2;
+  // tid is 0 when the event is not thread-scoped (most snapshots).
+  int32 tid = 3;
+  Category category = 4;
+  // Optional; unset until #54.
+  StackRef stack = 5;
+
+  oneof payload {
+    CpuSample cpu = 10;
+    SyscallSnapshot syscalls = 11;
+    NetworkSnapshot network = 12;
+    MemStats memory = 13;
+    ThreadSnapshot threads = 14;
+    IoWaitSample io_wait = 15;
+    IoThroughputSample io_throughput = 16;
+    IoSnapshot io = 17;
+    FdSnapshot fds = 18;
+    FdEvent fd_event = 19;
+    LockSnapshot locks = 20;
+    TimelineEvent timeline = 21;
+    // 22+ reserved for #52 capabilities (malloc/free pairing, pre-encryption
+    // payload, signals, detailed net errors, fs semantics, security/LSM,
+    // exec-context enrichment).
+  }
+}
+
+// ─── CPU ──────────────────────────────────────────────────────────────────
+message CpuSample {
+  double usage_pct = 1;
+}
+
+// ─── Syscalls ───────────────────────────────────────────────────────────────
+message SyscallStat {
+  string name = 1;
+  uint64 count = 2;
+  uint64 latency_ns = 3;
+}
+message SyscallSnapshot {
+  repeated SyscallStat stats = 1;
+}
+
+// ─── Network ────────────────────────────────────────────────────────────────
+message NetConn {
+  int32 fd = 1;
+  string type = 2; // "TCP" | "UDP" | "UNIX"
+  string remote = 3;
+  string state = 4; // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
+  string dir = 5; // "→" | "←" | "↔"
+  double latency_ms = 6;
+  uint64 tx_bytes = 7;
+  uint64 rx_bytes = 8;
+}
+message NetworkSnapshot {
+  repeated NetConn conns = 1;
+}
+
+// ─── Memory ─────────────────────────────────────────────────────────────────
+message MemStats {
+  uint64 rss_bytes = 1;
+  uint64 heap_bytes = 2;
+  uint64 page_faults = 3;
+  uint64 allocs_per_s = 4;
+}
+
+// ─── Threads ────────────────────────────────────────────────────────────────
+message ThreadInfo {
+  int32 tid = 1;
+  string name = 2;
+  string state = 3; // "running" | "blocked" | "sleeping"
+  double cpu_pct = 4;
+  string waiting = 5; // blocking lock/syscall name, empty if none
+  uint64 ctx_switches = 6; // eBPF-only; 0 via /proc
+}
+message ThreadSnapshot {
+  repeated ThreadInfo threads = 1;
+}
+
+// ─── I/O ──────────────────────────────────────────────────────────────────
+message IoWaitSample {
+  double pct = 1;
+}
+message IoThroughputSample {
+  double read_bytes_per_s = 1;
+  double write_bytes_per_s = 2;
+  uint64 read_ops = 3; // cumulative since process start
+  uint64 write_ops = 4; // cumulative
+}
+message IoFileStats {
+  string path = 1;
+  string type = 2; // "db" | "log" | "cfg" | "tmp" | "proc"
+  uint64 reads = 3;
+  uint64 writes = 4;
+  uint64 bytes = 5;
+  double latency_ms = 6;
+  uint64 fsyncs = 7;
+}
+message LatencyBucket {
+  string label = 1;
+  double read = 2;
+  double write = 3;
+}
+message IoSnapshot {
+  double read_bytes_per_s = 1;
+  double write_bytes_per_s = 2;
+  uint64 read_ops = 3;
+  uint64 write_ops = 4;
+  uint64 fsyncs = 5;
+  uint64 opens = 6;
+  double io_wait_pct = 7;
+  repeated IoFileStats top_files = 8;
+  repeated LatencyBucket latency_buckets = 9;
+}
+
+// ─── File descriptors ───────────────────────────────────────────────────────
+message FdEntry {
+  int32 fd = 1;
+  string type = 2; // "file" | "socket" | "pipe" | "epoll" | "timer" | "event"
+  string desc = 3; // full path or remote address
+  string flags = 4; // "O_RDONLY" | "O_WRONLY" | "O_RDWR"
+  uint64 bytes = 5;
+  int64 age_ms = 6;
+  bool active = 7; // had activity in the last cycle
+}
+message FdSnapshot {
+  repeated FdEntry fds = 1;
+}
+
+// FdEvent is a change notification (openat/close/dup2/...); its timestamp is on
+// the Event envelope.
+message FdEvent {
+  string message = 1;
+}
+
+// ─── Locks (futex) ──────────────────────────────────────────────────────────
+message LockEntry {
+  uint64 uaddr = 1; // futex word virtual address (no symbols → shown in hex)
+  uint64 waiters = 2; // cumulative wait_count
+  uint64 wakers = 3; // cumulative wake_count
+  uint64 wait_delta = 4; // new waits in the current window
+  double latency_ms = 5; // average per call
+  int32 last_wait_tid = 6;
+  int32 last_wake_tid = 7;
+}
+message LockSnapshot {
+  repeated LockEntry locks = 1;
+}
+
+// ─── Timeline ───────────────────────────────────────────────────────────────
+// TimelineEvent's category and timestamp live on the Event envelope.
+message TimelineEvent {
+  string message = 1;
+}
