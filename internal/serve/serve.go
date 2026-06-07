@@ -18,12 +18,20 @@ import (
 	pb "github.com/trentas/ptop/pkg/streampb"
 )
 
+// Options tunes a Run beyond the address/PID. The zero value is the plain
+// gRPC-only server.
+type Options struct {
+	// JSONLPath, if set, also writes every event as one protojson line to this
+	// file (an interchangeable sink alongside the gRPC subscribers).
+	JSONLPath string
+}
+
 // Run starts the gRPC server bound to addr, streaming events for the given
 // target pid from cols. It blocks until ctx is cancelled, then stops the server
 // and returns. The caller owns the collectors' lifecycle (typically
 // set.Collectors() here and set.Stop() after Run returns). addr is
 // "unix:///path" or "tcp://host:port".
-func Run(ctx context.Context, addr string, pid int, cols []collector.Collector) error {
+func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, opts Options) error {
 	lis, cleanup, err := listen(addr)
 	if err != nil {
 		return err
@@ -32,6 +40,18 @@ func Run(ctx context.Context, addr string, pid int, cols []collector.Collector) 
 
 	hub := NewHub(pid)
 	hub.Start(ctx, cols)
+
+	// Optional JSONL sink: a non-gRPC consumer of the same event stream.
+	if opts.JSONLPath != "" {
+		js, err := newJSONLSink(opts.JSONLPath)
+		if err != nil {
+			return fmt.Errorf("serve: jsonl export: %w", err)
+		}
+		hub.AddSink(js)
+		// RemoveSink before Close so no Emit races the channel close.
+		defer func() { hub.RemoveSink(js); _ = js.Close() }()
+		fmt.Fprintf(os.Stderr, "[ptop] also exporting events to %s\n", opts.JSONLPath)
+	}
 
 	srv := grpc.NewServer()
 	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{hub: hub})

@@ -10,6 +10,11 @@
 *.prof
 coverage.out
 
+# Runtime exports (--export / 's' key / --serve --export)
+ptop-export-*.jsonl
+ptop-events-*.jsonl
+ptop-snapshot-*.json
+
 # IDE / editor
 .idea/
 .vscode/

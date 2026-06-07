@@ -109,11 +109,11 @@ func TestHubBackpressureDrops(t *testing.T) {
 func TestHubUnsubscribe(t *testing.T) {
 	h := NewHub(1)
 	sub := h.subscribe(nil)
-	if h.subscriberCount() != 1 {
-		t.Fatalf("count = %d, want 1", h.subscriberCount())
+	if h.sinkCount() != 1 {
+		t.Fatalf("count = %d, want 1", h.sinkCount())
 	}
 	h.unsubscribe(sub)
-	if h.subscriberCount() != 0 {
-		t.Fatalf("count = %d, want 0 after unsubscribe", h.subscriberCount())
+	if h.sinkCount() != 0 {
+		t.Fatalf("count = %d, want 0 after unsubscribe", h.sinkCount())
 	}
 }

@@ -92,7 +92,8 @@ ptop/
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
-│   │   ├── hub.go                 fan-in collectors → fan-out subscribers
+│   │   ├── hub.go                 fan-in collectors → fan-out to sinks
+│   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
 │   │   ├── service.go             EventStream gRPC service impl
 │   │   └── mapper.go              collector value → streampb.Event
 │   └── tui/                       Bubbletea + Lipgloss
@@ -332,6 +333,11 @@ subscribers (fan-out), with bounded per-subscriber buffers that drop-with-counte
 under backpressure (surfaced as `StreamMeta`). `addr` is `unix:///path` or
 `tcp://host:port`. SIGINT/SIGTERM shuts down and releases collectors. The
 collector→`streampb` mapping + server live in `internal/serve`.
+
+The gRPC subscriber and the JSONL writer are interchangeable `Sink`s
+(`internal/serve/sink.go`) fed by the hub. `--serve --export` adds the JSONL
+sink: it writes one protojson `Event` per line to `ptop-events-<ts>.jsonl`
+(event-level — distinct from the TUI's state-snapshot `ptop-export-<ts>.jsonl`).
 
 Version metadata is injected via `-ldflags` at release time
 (`main.version`, `main.commit`, `main.buildDate`). In dev they stay as

@@ -59,10 +59,12 @@ jobs:
         run: go build -tags=ebpf -o /tmp/ptop-ebpf ./cmd/ptop
 
   proto:
-    name: buf lint · format · generate
+    name: buf lint · format · generate · breaking
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # buf breaking compares against the main branch ref
 
       - uses: actions/setup-go@v5
         with:
@@ -84,5 +86,12 @@ jobs:
           go run github.com/bufbuild/buf/cmd/buf@v1.70.0 generate
           git diff --exit-code
 
-      # NOTE: `buf breaking --against '.git#branch=main'` lands in a follow-up,
-      # once the schema exists on main and there's a baseline to compare against.
+      # Wire-compatibility gate: fail if the schema breaks consumers pinned to
+      # the version on main. Skipped on push to main (it would compare against
+      # itself); runs on PRs, where it matters. The PR checkout is a detached
+      # HEAD with no local `main`, so fetch it first for buf to compare against.
+      - name: buf breaking (vs main)
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin main:main
+          go run github.com/bufbuild/buf/cmd/buf@v1.70.0 breaking --against '.git#branch=main'
