@@ -926,14 +926,25 @@ func (x *HeapEvent) GetLarge() bool {
 
 // HeapCallSite aggregates the live allocations attributed to one application
 // call site (by the alloc site, so a free decrements where it was allocated).
+//
+// call_site is the raw instruction pointer; func/file/line/module/offset are its
+// symbolization (#54). func is "" when the address can't be resolved to a
+// function (stripped non-Go module — module+offset still locate it); file/line
+// are set only for Go modules in this cut (C/C++ file:line needs DWARF). addr_hex
+// is the raw-address fallback ("0x…", or "unknown" when the stack walk failed).
 type HeapCallSite struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CallSite      uint64                 `protobuf:"varint,1,opt,name=call_site,json=callSite,proto3" json:"call_site,omitempty"`
-	AddrHex       string                 `protobuf:"bytes,2,opt,name=addr_hex,json=addrHex,proto3" json:"addr_hex,omitempty"` // "0x…" display form ("unknown" when unresolved)
+	AddrHex       string                 `protobuf:"bytes,2,opt,name=addr_hex,json=addrHex,proto3" json:"addr_hex,omitempty"` // raw-address fallback ("0x…"; "unknown" when unresolved)
 	LiveBytes     uint64                 `protobuf:"varint,3,opt,name=live_bytes,json=liveBytes,proto3" json:"live_bytes,omitempty"`
 	AllocCount    uint64                 `protobuf:"varint,4,opt,name=alloc_count,json=allocCount,proto3" json:"alloc_count,omitempty"`
 	AvgLifetimeMs float64                `protobuf:"fixed64,5,opt,name=avg_lifetime_ms,json=avgLifetimeMs,proto3" json:"avg_lifetime_ms,omitempty"`
 	Suspected     bool                   `protobuf:"varint,6,opt,name=suspected,proto3" json:"suspected,omitempty"` // has live allocations older than the leak threshold
+	Func          string                 `protobuf:"bytes,7,opt,name=func,proto3" json:"func,omitempty"`            // resolved function name ("" if unresolved)
+	File          string                 `protobuf:"bytes,8,opt,name=file,proto3" json:"file,omitempty"`            // source file (Go only in this cut; "" otherwise)
+	Line          int32                  `protobuf:"varint,9,opt,name=line,proto3" json:"line,omitempty"`           // source line (0 if unknown)
+	Module        string                 `protobuf:"bytes,10,opt,name=module,proto3" json:"module,omitempty"`       // backing module basename ("" if unresolved)
+	Offset        uint64                 `protobuf:"varint,11,opt,name=offset,proto3" json:"offset,omitempty"`      // module-relative offset of the call site
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1008,6 +1019,41 @@ func (x *HeapCallSite) GetSuspected() bool {
 		return x.Suspected
 	}
 	return false
+}
+
+func (x *HeapCallSite) GetFunc() string {
+	if x != nil {
+		return x.Func
+	}
+	return ""
+}
+
+func (x *HeapCallSite) GetFile() string {
+	if x != nil {
+		return x.File
+	}
+	return ""
+}
+
+func (x *HeapCallSite) GetLine() int32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *HeapCallSite) GetModule() string {
+	if x != nil {
+		return x.Module
+	}
+	return ""
+}
+
+func (x *HeapCallSite) GetOffset() uint64 {
+	if x != nil {
+		return x.Offset
+	}
+	return 0
 }
 
 // HeapSnapshot is the periodic heap aggregate. live_heap_bytes and
@@ -2018,7 +2064,7 @@ const file_event_proto_rawDesc = "" +
 	"\vlifetime_ms\x18\x04 \x01(\x01R\n" +
 	"lifetimeMs\x12\x1b\n" +
 	"\tcall_site\x18\x05 \x01(\x04R\bcallSite\x12\x14\n" +
-	"\x05large\x18\x06 \x01(\bR\x05large\"\xcc\x01\n" +
+	"\x05large\x18\x06 \x01(\bR\x05large\"\xb8\x02\n" +
 	"\fHeapCallSite\x12\x1b\n" +
 	"\tcall_site\x18\x01 \x01(\x04R\bcallSite\x12\x19\n" +
 	"\baddr_hex\x18\x02 \x01(\tR\aaddrHex\x12\x1d\n" +
@@ -2027,7 +2073,13 @@ const file_event_proto_rawDesc = "" +
 	"\valloc_count\x18\x04 \x01(\x04R\n" +
 	"allocCount\x12&\n" +
 	"\x0favg_lifetime_ms\x18\x05 \x01(\x01R\ravgLifetimeMs\x12\x1c\n" +
-	"\tsuspected\x18\x06 \x01(\bR\tsuspected\"\xc4\x01\n" +
+	"\tsuspected\x18\x06 \x01(\bR\tsuspected\x12\x12\n" +
+	"\x04func\x18\a \x01(\tR\x04func\x12\x12\n" +
+	"\x04file\x18\b \x01(\tR\x04file\x12\x12\n" +
+	"\x04line\x18\t \x01(\x05R\x04line\x12\x16\n" +
+	"\x06module\x18\n" +
+	" \x01(\tR\x06module\x12\x16\n" +
+	"\x06offset\x18\v \x01(\x04R\x06offset\"\xc4\x01\n" +
 	"\fHeapSnapshot\x12&\n" +
 	"\x0flive_heap_bytes\x18\x01 \x01(\x04R\rliveHeapBytes\x12\x1d\n" +
 	"\n" +

@@ -118,13 +118,24 @@ message HeapEvent {
 
 // HeapCallSite aggregates the live allocations attributed to one application
 // call site (by the alloc site, so a free decrements where it was allocated).
+//
+// call_site is the raw instruction pointer; func/file/line/module/offset are its
+// symbolization (#54). func is "" when the address can't be resolved to a
+// function (stripped non-Go module — module+offset still locate it); file/line
+// are set only for Go modules in this cut (C/C++ file:line needs DWARF). addr_hex
+// is the raw-address fallback ("0x…", or "unknown" when the stack walk failed).
 message HeapCallSite {
   uint64 call_site = 1;
-  string addr_hex = 2; // "0x…" display form ("unknown" when unresolved)
+  string addr_hex = 2; // raw-address fallback ("0x…"; "unknown" when unresolved)
   uint64 live_bytes = 3;
   uint64 alloc_count = 4;
   double avg_lifetime_ms = 5;
   bool suspected = 6; // has live allocations older than the leak threshold
+  string func = 7; // resolved function name ("" if unresolved)
+  string file = 8; // source file (Go only in this cut; "" otherwise)
+  int32 line = 9; // source line (0 if unknown)
+  string module = 10; // backing module basename ("" if unresolved)
+  uint64 offset = 11; // module-relative offset of the call site
 }
 
 // HeapSnapshot is the periodic heap aggregate. live_heap_bytes and

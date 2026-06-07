@@ -43,8 +43,9 @@ type MemStats struct {
 
 // HeapEvent is a single allocation or free observed via libc uprobes.
 // Op is "malloc"|"calloc"|"realloc"|"free". LifetimeMs is set on free
-// (free.ts − alloc.ts). CallSite is the application call-site address (shown in
-// hex; #54 will symbolize it). Large flags allocations ≥ 128KB.
+// (free.ts − alloc.ts). CallSite is the application call-site address (raw
+// instruction pointer; the aggregate HeapCallSite carries the symbolized form).
+// Large flags allocations ≥ 128KB.
 type HeapEvent struct {
 	Op         string
 	Size       uint64
@@ -57,9 +58,20 @@ type HeapEvent struct {
 // HeapCallSite aggregates the currently-live allocations attributed to one
 // application call site (by the alloc-site stack, so a free decrements the site
 // it was allocated from).
+//
+// CallSite is the raw instruction pointer; Func/File/Line/Module/Offset are its
+// symbolization (#54). Func is "" when the address can't be resolved to a
+// function (stripped non-Go module — Module+Offset still locate it); File/Line
+// are set only for Go modules in this cut (C/C++ file:line needs DWARF). AddrHex
+// is the raw-address fallback ("0x…", or "unknown" when the stack walk failed).
 type HeapCallSite struct {
 	CallSite      uint64  // raw application instruction pointer
-	AddrHex       string  // "0x…" display form ("unknown" when unresolved)
+	AddrHex       string  // "0x…" raw-address fallback ("unknown" when unresolved)
+	Func          string  // resolved function name ("" if unresolved)
+	File          string  // source file (Go only in this cut; "" otherwise)
+	Line          int     // source line (0 if unknown)
+	Module        string  // backing module basename ("" if unresolved)
+	Offset        uint64  // module-relative offset of the call site
 	LiveBytes     uint64  // bytes still live from this site
 	AllocCount    uint64  // total allocations ever from this site
 	AvgLifetimeMs float64 // mean lifetime of freed allocations from this site

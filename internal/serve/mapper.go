@@ -152,6 +152,7 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 		out[i] = &pb.HeapCallSite{
 			CallSite: s.CallSite, AddrHex: s.AddrHex, LiveBytes: s.LiveBytes,
 			AllocCount: s.AllocCount, AvgLifetimeMs: s.AvgLifetimeMs, Suspected: s.Suspected,
+			Func: s.Func, File: s.File, Line: int32(s.Line), Module: s.Module, Offset: s.Offset,
 		}
 	}
 	return out
