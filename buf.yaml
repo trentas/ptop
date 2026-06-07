@@ -1,0 +1,16 @@
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    # The single schema file lives flat at proto/event.proto (package ptop.v1)
+    # so the generated Go lands at pkg/streampb/event.pb.go — the import path
+    # #51 commits to — instead of a nested pkg/streampb/ptop/v1/. The wire
+    # version still lives in the package name (ptop.v1), which is what external
+    # consumers pin to. PACKAGE_DIRECTORY_MATCH is the only rule this trips.
+    - PACKAGE_DIRECTORY_MATCH
+breaking:
+  use:
+    - WIRE

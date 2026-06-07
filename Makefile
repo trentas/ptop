@@ -1,4 +1,4 @@
-.PHONY: all build build-ebpf run gen clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest
+.PHONY: all build build-ebpf run gen proto proto-lint clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest
 
 .DEFAULT_GOAL := all
 
@@ -78,6 +78,24 @@ CLANG  ?= clang
 
 # `make gen` produces all .o files from programs/. Requires libbpf-dev.
 gen: $(BPF_OBJS)
+
+# ─── protobuf codegen ─────────────────────────────────────────────────────────
+
+# buf is pinned via `go run @version` rather than added to go.mod — it keeps the
+# module lean (only google.golang.org/protobuf, the runtime dep, is required).
+# The codegen plugin is a pinned remote plugin (see buf.gen.yaml), so no local
+# protoc-gen-go install is needed. The generated pkg/streampb/*.pb.go is
+# committed, so this target is NOT part of `all` — only run it after editing
+# proto/event.proto.
+BUF_VERSION ?= v1.70.0
+BUF         := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+
+proto:
+	$(BUF) format -w
+	$(BUF) generate
+
+proto-lint:
+	$(BUF) lint
 
 # ─── builds ──────────────────────────────────────────────────────────────────
 
