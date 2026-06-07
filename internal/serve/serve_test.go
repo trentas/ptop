@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bufio"
 	"context"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/trentas/ptop/pkg/collector"
 	pb "github.com/trentas/ptop/pkg/streampb"
@@ -40,7 +42,7 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}()
 
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, 99, []collector.Collector{f}) }()
+	go func() { runErr <- Run(ctx, addr, 99, []collector.Collector{f}, Options{}) }()
 
 	// Wait for the listener socket to appear before dialing.
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
@@ -106,7 +108,7 @@ func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 
 	f := newFake(8192) // holds the burst without blocking the producer
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, 1, []collector.Collector{f}) }()
+	go func() { runErr <- Run(ctx, addr, 1, []collector.Collector{f}, Options{}) }()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -145,6 +147,62 @@ func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 
 	cancel()
 	<-runErr
+}
+
+// Run with Options{JSONLPath} writes an event-level JSONL alongside gRPC.
+func TestServeJSONLExport(t *testing.T) {
+	sock := shortSock(t)
+	jsonl := filepath.Join(t.TempDir(), "events.jsonl")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := newFake(64)
+	go func() {
+		tick := time.NewTicker(5 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-tick.C:
+				select {
+				case f.ch <- collector.CpuSample{UsagePct: 1, Timestamp: time.Now()}:
+				default:
+				}
+			}
+		}
+	}()
+
+	runErr := make(chan error, 1)
+	go func() {
+		runErr <- Run(ctx, "unix://"+sock, 5, []collector.Collector{f}, Options{JSONLPath: jsonl})
+	}()
+	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
+
+	time.Sleep(200 * time.Millisecond) // let some events flow to the sink
+	cancel()
+	if err := <-runErr; err != nil { // Run returns → jsonlSink flushed + closed
+		t.Fatalf("Run: %v", err)
+	}
+
+	f2, err := os.Open(jsonl)
+	if err != nil {
+		t.Fatalf("open jsonl: %v", err)
+	}
+	defer f2.Close()
+	var lines int
+	sc := bufio.NewScanner(f2)
+	for sc.Scan() {
+		var ev pb.Event
+		if err := protojson.Unmarshal(sc.Bytes(), &ev); err != nil {
+			t.Fatalf("line %d not valid Event: %v", lines, err)
+		}
+		lines++
+	}
+	if lines == 0 {
+		t.Fatal("expected at least one event line in the JSONL export")
+	}
 }
 
 func TestListenRefusesAllInterfaces(t *testing.T) {

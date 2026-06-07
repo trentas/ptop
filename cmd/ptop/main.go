@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"runtime"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/trentas/ptop/internal/bpf"
@@ -78,7 +79,7 @@ func main() {
 
 	// Headless mode: serve the collector stream over gRPC instead of the TUI.
 	if *serveAddr != "" {
-		runServe(*serveAddr, *pid, *noEBPF)
+		runServe(*serveAddr, *pid, *noEBPF, *export)
 		return
 	}
 
@@ -113,15 +114,21 @@ func main() {
 
 // runServe builds the collector Set and streams it over gRPC until SIGINT/
 // SIGTERM. The Set's lifecycle is owned here: serve.Run only stops the server,
-// so we stop the collectors after it returns.
-func runServe(addr string, pid int, noEBPF bool) {
+// so we stop the collectors after it returns. With export, it also writes an
+// event-level JSONL (distinct from the TUI's state-snapshot ptop-export-*.jsonl).
+func runServe(addr string, pid int, noEBPF, export bool) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	var opts serve.Options
+	if export {
+		opts.JSONLPath = fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405"))
+	}
 
 	set := collector.NewSet(collector.SetConfig{PID: pid, NoEBPF: noEBPF})
 	defer set.Stop()
 
-	if err := serve.Run(ctx, addr, pid, set.Collectors()); err != nil {
+	if err := serve.Run(ctx, addr, pid, set.Collectors(), opts); err != nil {
 		set.Stop() // os.Exit skips the defer
 		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
 		os.Exit(1)
