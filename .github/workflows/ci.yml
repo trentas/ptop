@@ -88,7 +88,10 @@ jobs:
 
       # Wire-compatibility gate: fail if the schema breaks consumers pinned to
       # the version on main. Skipped on push to main (it would compare against
-      # itself); runs on PRs, where it matters.
+      # itself); runs on PRs, where it matters. The PR checkout is a detached
+      # HEAD with no local `main`, so fetch it first for buf to compare against.
       - name: buf breaking (vs main)
         if: github.event_name == 'pull_request'
-        run: go run github.com/bufbuild/buf/cmd/buf@v1.70.0 breaking --against '.git#branch=main'
+        run: |
+          git fetch --no-tags origin main:main
+          go run github.com/bufbuild/buf/cmd/buf@v1.70.0 breaking --against '.git#branch=main'
