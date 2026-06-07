@@ -5,23 +5,19 @@ package tui
 import (
 	"os"
 	"strings"
+
+	"github.com/trentas/ptop/internal/collector"
 )
 
-// Platform-specific labels and feature availability flags. The help overlay
-// and the collector wiring code in model.go branch on these so the source
-// string ("/proc" vs "libproc") and the panel availability stay honest
-// without scattering runtime.GOOS checks across the package.
+// Platform-specific feature availability flags. The help overlay branches on
+// these so panel availability stays honest without scattering runtime.GOOS
+// checks across the package. The source-string labels are owned by the
+// collector package (collector.Source*) so collector.Set and the TUI agree on
+// them; the aliases below keep the TUI's existing references working.
 
 const (
-	// sourceProcEquivalent labels the non-eBPF fallback source. "/proc" on
-	// Linux, "libproc" on macOS.
-	sourceProcEquivalent = "/proc"
-
-	// sourceNetworkRich labels whatever path gives the rich network data
-	// (TX/RX bytes, RTT, etc.). On Linux that's eBPF; macOS Tier 1 only has
-	// the libproc-derived connection list, so it falls back to the
-	// equivalent label there.
-	sourceNetworkRich = "eBPF"
+	sourceProcEquivalent = collector.SourceProc
+	sourceNetworkRich    = collector.SourceNetworkRich
 
 	// Permanently-unavailable subsystems on this OS — the help overlay shows
 	// a distinct "unavailable" status for these, instead of "mock", because

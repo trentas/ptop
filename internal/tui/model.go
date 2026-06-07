@@ -14,20 +14,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/ptop/internal/bpf"
 	"github.com/trentas/ptop/internal/collector"
 )
-
-// warnEBPFFailure emits a stderr warning that a given eBPF collector failed
-// to start. We suppress it when the binary has no eBPF code embedded
-// (bpf.Available == false): there, every eBPF call would warn — pure noise.
-// main.go already prints a single up-front diagnostic in that case.
-func warnEBPFFailure(name string, err error) {
-	if !bpf.Available {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "warning: eBPF %s collector unavailable: %v\n", name, err)
-}
 
 // simInterval defines the granularity of the simulation. TickMsg fires at FPS
 // (5/s by default) to keep the clock fluid, but the sim only advances when
@@ -158,34 +146,24 @@ type Model struct {
 	showHelp   bool
 	helpScroll int
 
-	// Collectors
-	fdCollector           *collector.FDCollector
-	cpuCollector          *collector.CPUCollector
-	cpuEBPF               *collector.CPUEBPFCollector
-	threadsCollector      *collector.ThreadsCollector
-	memCollector          *collector.MemCollector
-	iowaitCollector       *collector.IOWaitCollector
-	ioThroughputCollector *collector.IOThroughputCollector
-	syscallsEBPF          *collector.SyscallsEBPFCollector
-	ioEBPF                *collector.IOEBPFCollector
-	networkEBPF           *collector.NetworkEBPFCollector
-	threadsEBPF           *collector.ThreadsEBPFCollector
-	memEBPF               *collector.MemEBPFCollector
-	futexEBPF             *collector.FutexEBPFCollector
+	// Collectors: the source-priority selection + lifecycle lives in
+	// collector.Set, shared with the headless gRPC server (#51). Never nil
+	// after NewModel — an empty Set (PID <= 0) leaves every Mock* true.
+	collectors *collector.Set
 
 	// Simulation
-	rng                  *rand.Rand
-	tickN                int
-	usingMockFDs         bool
-	usingMockCPU         bool
-	usingMockThreads     bool
-	usingMockMem         bool
-	usingMockIOWait      bool
-	usingMockIOThrough   bool
-	usingMockSyscalls    bool
-	usingMockIOFiles     bool
-	usingMockNet         bool
-	lastSimAt            time.Time
+	rng                *rand.Rand
+	tickN              int
+	usingMockFDs       bool
+	usingMockCPU       bool
+	usingMockThreads   bool
+	usingMockMem       bool
+	usingMockIOWait    bool
+	usingMockIOThrough bool
+	usingMockSyscalls  bool
+	usingMockIOFiles   bool
+	usingMockNet       bool
+	lastSimAt          time.Time
 
 	// Sources: indicate where the real data came from ("eBPF" | "/proc" | "" for mock).
 	// Shown in the help overlay (?) for debugging and visibility.
@@ -213,148 +191,48 @@ type Model struct {
 
 func NewModel(cfg Config) Model {
 	m := Model{
-		cfg:              cfg,
-		ProcessName:      detectProcessName(cfg.PID),
+		cfg:         cfg,
+		ProcessName: detectProcessName(cfg.PID),
 		// Runtime is the inspected process's language/runtime badge, best-effort
 		// detected from the executable (Go build info / interpreter basename).
 		// Empty when unknown — the header omits the badge rather than guess.
-		Runtime:   detectRuntime(cfg.PID),
-		State:     "RUNNING",
-		StartedAt:        time.Now(),
-		ActiveTab:        TabOverview,
-		FDFilter:         "all",
-		SyscallCounts:    make(map[string]uint64),
-		rng:              rand.New(rand.NewSource(time.Now().UnixNano())),
-		usingMockFDs:     true,
-		usingMockCPU:     true,
-		usingMockThreads: true,
-		usingMockMem:     true,
-		usingMockIOWait:    true,
-		usingMockIOThrough: true,
-		usingMockSyscalls:  true,
-		usingMockIOFiles:   true,
-		usingMockNet:       true,
+		Runtime:       detectRuntime(cfg.PID),
+		State:         "RUNNING",
+		StartedAt:     time.Now(),
+		ActiveTab:     TabOverview,
+		FDFilter:      "all",
+		SyscallCounts: make(map[string]uint64),
+		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
 	m.seedMockData()
 
-	// Try to start real collectors that read /proc (Linux only).
-	// Silent failure on non-Linux hosts: usingMock* stays true and the model
-	// keeps simulating that subsystem.
-	if cfg.PID > 0 {
-		if c := collector.NewFDCollector(); c.Start(cfg.PID) == nil {
-			m.fdCollector = c
-			m.usingMockFDs = false
-		} else if !cfg.NoEBPF {
-			fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
-		}
-		// CPU: try eBPF perf_event first (100Hz/CPU granularity);
-		// if it fails (no -tags=ebpf, no caps, etc.), fall back to /proc polling.
-		// eBPF error is exposed on stderr BEFORE the alt-screen so the user sees it.
-		if !cfg.NoEBPF {
-			c := collector.NewCPUEBPFCollector()
-			if err := c.Start(cfg.PID); err == nil {
-				m.cpuEBPF = c
-				m.usingMockCPU = false
-				m.cpuSource = "eBPF"
-			} else {
-				warnEBPFFailure("cpu", err)
-			}
-		}
-		if m.cpuEBPF == nil {
-			if c := collector.NewCPUCollector(); c.Start(cfg.PID) == nil {
-				m.cpuCollector = c
-				m.usingMockCPU = false
-				m.cpuSource = sourceProcEquivalent
-			}
-		}
-		// Threads: eBPF preferred (sched_switch gives real-time CPU% + ctx switches),
-		// /proc as fallback. eBPF collector already reads /proc internally, so we
-		// don't need to run both in parallel.
-		if !cfg.NoEBPF {
-			c := collector.NewThreadsEBPFCollector()
-			if err := c.Start(cfg.PID); err == nil {
-				m.threadsEBPF = c
-				m.usingMockThreads = false
-				m.threadsSource = "eBPF"
-			} else {
-				warnEBPFFailure("threads", err)
-			}
-		}
-		if m.threadsEBPF == nil {
-			if c := collector.NewThreadsCollector(); c.Start(cfg.PID) == nil {
-				m.threadsCollector = c
-				m.usingMockThreads = false
-				m.threadsSource = sourceProcEquivalent
-			}
-		}
-		// Memory: eBPF preferred (real allocs/s via mmap+brk syscalls,
-		// real-time page_faults via kprobe handle_mm_fault). /proc-only
-		// fallback uses /proc/<pid>/stat which accumulates minflt+majflt.
-		if !cfg.NoEBPF {
-			c := collector.NewMemEBPFCollector()
-			if err := c.Start(cfg.PID); err == nil {
-				m.memEBPF = c
-				m.usingMockMem = false
-				m.memSource = "eBPF"
-			} else {
-				warnEBPFFailure("memory", err)
-			}
-		}
-		if m.memEBPF == nil {
-			if c := collector.NewMemCollector(); c.Start(cfg.PID) == nil {
-				m.memCollector = c
-				m.usingMockMem = false
-				m.memSource = sourceProcEquivalent
-			}
-		}
-		if c := collector.NewIOWaitCollector(); c.Start(cfg.PID) == nil {
-			m.iowaitCollector = c
-			m.usingMockIOWait = false
-		}
-		if c := collector.NewIOThroughputCollector(); c.Start(cfg.PID) == nil {
-			m.ioThroughputCollector = c
-			m.usingMockIOThrough = false
-		}
-		// eBPF collector: only works with -tags=ebpf build, kernel >= 5.8
-		// and CAP_BPF/CAP_PERFMON. Error goes to stderr so the user sees it.
-		if !cfg.NoEBPF {
-			c := collector.NewSyscallsEBPFCollector()
-			if err := c.Start(cfg.PID); err == nil {
-				m.syscallsEBPF = c
-				m.usingMockSyscalls = false
-				m.syscallsSource = "eBPF"
-			} else {
-				warnEBPFFailure("syscalls", err)
-			}
+	// Source-priority selection + collector lifecycle live in collector.Set,
+	// shared with the headless gRPC server (#51) so the wiring isn't
+	// duplicated. PID <= 0 yields an empty Set: every Mock* stays true and the
+	// model simulates everything. eBPF start failures are logged to stderr by
+	// the Set (before the alt-screen) and fall back to /proc where possible.
+	m.collectors = collector.NewSet(collector.SetConfig{PID: cfg.PID, NoEBPF: cfg.NoEBPF})
 
-			c2 := collector.NewIOEBPFCollector()
-			if err := c2.Start(cfg.PID); err == nil {
-				m.ioEBPF = c2
-				m.usingMockIOFiles = false
-				m.ioFilesSource = "eBPF"
-			} else {
-				warnEBPFFailure("io", err)
-			}
+	// Mirror the Set's source labels + mock state into the model fields the
+	// help overlay (?) reads. Source "" means no real source started → mock.
+	m.cpuSource = m.collectors.Sources.CPU
+	m.threadsSource = m.collectors.Sources.Threads
+	m.memSource = m.collectors.Sources.Mem
+	m.syscallsSource = m.collectors.Sources.Syscalls
+	m.ioFilesSource = m.collectors.Sources.IOFiles
+	m.netSource = m.collectors.Sources.Net
+	m.locksSource = m.collectors.Sources.Locks
 
-			c3 := collector.NewNetworkEBPFCollector()
-			if err := c3.Start(cfg.PID); err == nil {
-				m.networkEBPF = c3
-				m.usingMockNet = false
-				m.netSource = sourceNetworkRich
-			} else {
-				warnEBPFFailure("network", err)
-			}
-
-			c4 := collector.NewFutexEBPFCollector()
-			if err := c4.Start(cfg.PID); err == nil {
-				m.futexEBPF = c4
-				m.locksSource = "eBPF"
-			} else {
-				warnEBPFFailure("futex", err)
-			}
-		}
-	}
+	m.usingMockFDs = m.collectors.MockFDs()
+	m.usingMockCPU = m.collectors.MockCPU()
+	m.usingMockThreads = m.collectors.MockThreads()
+	m.usingMockMem = m.collectors.MockMem()
+	m.usingMockIOWait = m.collectors.MockIOWait()
+	m.usingMockIOThrough = m.collectors.MockIOThroughput()
+	m.usingMockSyscalls = m.collectors.MockSyscalls()
+	m.usingMockIOFiles = m.collectors.MockIOFiles()
+	m.usingMockNet = m.collectors.MockNet()
 
 	// --export: open the JSONL file right away. If it fails, just warn
 	// (doesn't block launch — user can still use the TUI normally).
@@ -374,44 +252,44 @@ func NewModel(cfg Config) Model {
 
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{tick(m.cfg.FPS)}
-	if m.fdCollector != nil {
-		cmds = append(cmds, waitForFD(m.fdCollector))
+	if m.collectors.FD != nil {
+		cmds = append(cmds, waitForFD(m.collectors.FD))
 	}
-	if m.cpuCollector != nil {
-		cmds = append(cmds, waitForCPU(m.cpuCollector))
+	if m.collectors.CPUProc != nil {
+		cmds = append(cmds, waitForCPU(m.collectors.CPUProc))
 	}
-	if m.cpuEBPF != nil {
-		cmds = append(cmds, waitForCPUEBPF(m.cpuEBPF))
+	if m.collectors.CPUEBPF != nil {
+		cmds = append(cmds, waitForCPUEBPF(m.collectors.CPUEBPF))
 	}
-	if m.threadsCollector != nil {
-		cmds = append(cmds, waitForThreads(m.threadsCollector))
+	if m.collectors.ThreadsProc != nil {
+		cmds = append(cmds, waitForThreads(m.collectors.ThreadsProc))
 	}
-	if m.memCollector != nil {
-		cmds = append(cmds, waitForMem(m.memCollector))
+	if m.collectors.MemProc != nil {
+		cmds = append(cmds, waitForMem(m.collectors.MemProc))
 	}
-	if m.iowaitCollector != nil {
-		cmds = append(cmds, waitForIOWait(m.iowaitCollector))
+	if m.collectors.IOWait != nil {
+		cmds = append(cmds, waitForIOWait(m.collectors.IOWait))
 	}
-	if m.ioThroughputCollector != nil {
-		cmds = append(cmds, waitForIOThroughput(m.ioThroughputCollector))
+	if m.collectors.IOThroughput != nil {
+		cmds = append(cmds, waitForIOThroughput(m.collectors.IOThroughput))
 	}
-	if m.syscallsEBPF != nil {
-		cmds = append(cmds, waitForSyscalls(m.syscallsEBPF))
+	if m.collectors.SyscallsEBPF != nil {
+		cmds = append(cmds, waitForSyscalls(m.collectors.SyscallsEBPF))
 	}
-	if m.ioEBPF != nil {
-		cmds = append(cmds, waitForIOEBPF(m.ioEBPF))
+	if m.collectors.IOEBPF != nil {
+		cmds = append(cmds, waitForIOEBPF(m.collectors.IOEBPF))
 	}
-	if m.networkEBPF != nil {
-		cmds = append(cmds, waitForNetEBPF(m.networkEBPF))
+	if m.collectors.NetworkEBPF != nil {
+		cmds = append(cmds, waitForNetEBPF(m.collectors.NetworkEBPF))
 	}
-	if m.threadsEBPF != nil {
-		cmds = append(cmds, waitForThreadsEBPF(m.threadsEBPF))
+	if m.collectors.ThreadsEBPF != nil {
+		cmds = append(cmds, waitForThreadsEBPF(m.collectors.ThreadsEBPF))
 	}
-	if m.memEBPF != nil {
-		cmds = append(cmds, waitForMemEBPF(m.memEBPF))
+	if m.collectors.MemEBPF != nil {
+		cmds = append(cmds, waitForMemEBPF(m.collectors.MemEBPF))
 	}
-	if m.futexEBPF != nil {
-		cmds = append(cmds, waitForFutexEBPF(m.futexEBPF))
+	if m.collectors.FutexEBPF != nil {
+		cmds = append(cmds, waitForFutexEBPF(m.collectors.FutexEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -449,7 +327,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.FDs = []collector.FDEntry(v)
 		m.usingMockFDs = false
 		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
-		return m, waitForFD(m.fdCollector)
+		return m, waitForFD(m.collectors.FD)
 
 	case TimelineMsg:
 		// Timeline is prepended; most recent on top. Cap at 120 (same limit
@@ -458,47 +336,47 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForFD(m.fdCollector)
+		return m, waitForFD(m.collectors.FD)
 
 	case FDEventMsg:
 		m.FDEvents = append([]collector.FDEvent{collector.FDEvent(v)}, m.FDEvents...)
 		if len(m.FDEvents) > 60 {
 			m.FDEvents = m.FDEvents[:60]
 		}
-		return m, waitForFD(m.fdCollector)
+		return m, waitForFD(m.collectors.FD)
 
 	case CpuMsg:
 		s := collector.CpuSample(v)
 		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
 		m.usingMockCPU = false
 		// Reschedule on the active source: eBPF takes priority when available.
-		if m.cpuEBPF != nil {
-			return m, waitForCPUEBPF(m.cpuEBPF)
+		if m.collectors.CPUEBPF != nil {
+			return m, waitForCPUEBPF(m.collectors.CPUEBPF)
 		}
-		return m, waitForCPU(m.cpuCollector)
+		return m, waitForCPU(m.collectors.CPUProc)
 
 	case ThreadsMsg:
 		m.Threads = []collector.ThreadInfo(v)
 		m.usingMockThreads = false
 		// ThreadsMsg can come from eBPF or /proc — reschedule on the active source.
-		if m.threadsEBPF != nil {
-			return m, waitForThreadsEBPF(m.threadsEBPF)
+		if m.collectors.ThreadsEBPF != nil {
+			return m, waitForThreadsEBPF(m.collectors.ThreadsEBPF)
 		}
-		return m, waitForThreads(m.threadsCollector)
+		return m, waitForThreads(m.collectors.ThreadsProc)
 
 	case MemMsg:
 		m.MemStats = collector.MemStats(v)
 		m.usingMockMem = false
 		// Reschedule on the active source.
-		if m.memEBPF != nil {
-			return m, waitForMemEBPF(m.memEBPF)
+		if m.collectors.MemEBPF != nil {
+			return m, waitForMemEBPF(m.collectors.MemEBPF)
 		}
-		return m, waitForMem(m.memCollector)
+		return m, waitForMem(m.collectors.MemProc)
 
 	case IOWaitMsg:
 		m.IOStats.IOWaitPct = collector.IOWaitSample(v).Pct
 		m.usingMockIOWait = false
-		return m, waitForIOWait(m.iowaitCollector)
+		return m, waitForIOWait(m.collectors.IOWait)
 
 	case clearToastMsg:
 		m.toast = ""
@@ -523,16 +401,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// We overwrite the entire counts: the tracer keeps the per-pid cumulative.
 		m.SyscallCounts = map[string]uint64(v)
 		m.usingMockSyscalls = false
-		return m, waitForSyscalls(m.syscallsEBPF)
+		return m, waitForSyscalls(m.collectors.SyscallsEBPF)
 
 	case NetMsg:
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
-		return m, waitForNetEBPF(m.networkEBPF)
+		return m, waitForNetEBPF(m.collectors.NetworkEBPF)
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
-		return m, waitForFutexEBPF(m.futexEBPF)
+		return m, waitForFutexEBPF(m.collectors.FutexEBPF)
 
 	case LockTimelineMsg:
 		ev := collector.TimelineEvent(v)
@@ -540,7 +418,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForFutexEBPF(m.futexEBPF)
+		return m, waitForFutexEBPF(m.collectors.FutexEBPF)
 
 	case IOEBPFMsg:
 		s := collector.IOEBPFSnapshot(v)
@@ -556,7 +434,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.IOStats.LatencyBuckets = s.Buckets
 		}
 		m.usingMockIOFiles = false
-		return m, waitForIOEBPF(m.ioEBPF)
+		return m, waitForIOEBPF(m.collectors.IOEBPF)
 
 	case IOThroughputMsg:
 		s := collector.IOThroughputSample(v)
@@ -575,7 +453,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ioMaxWrite = 100 * 1024
 		}
 		m.usingMockIOThrough = false
-		return m, waitForIOThroughput(m.ioThroughputCollector)
+		return m, waitForIOThroughput(m.collectors.IOThroughput)
 	}
 	return m, nil
 }
@@ -1120,12 +998,14 @@ func clearToastAfter(d time.Duration) tea.Cmd {
 	return tea.Tick(d, func(time.Time) tea.Msg { return clearToastMsg{} })
 }
 
-// Close releases resources opened by the model — currently the export file.
+// Close releases resources opened by the model: the export file and the
+// collectors (which stops any eBPF tracers so they don't linger after exit).
 // main.go calls this after p.Run() returns to ensure flush.
 func (m Model) Close() {
 	if m.exportFile != nil {
 		_ = m.exportFile.Close()
 	}
+	m.collectors.Stop()
 }
 
 // waitForFD blocks until receiving a message from the FD collector and delivers it to Update.
@@ -1420,4 +1300,3 @@ func runtimeFromBasename(base string) string {
 		return ""
 	}
 }
-
