@@ -2,6 +2,8 @@
 
 package tui
 
+import "github.com/trentas/ptop/internal/collector"
+
 // See platform_linux.go for what these constants do.
 //
 // On macOS the "rich" eBPF tier doesn't exist; libproc is the public path.
@@ -11,8 +13,8 @@ package tui
 // unavailable so the user understands the panels stay empty by design.
 
 const (
-	sourceProcEquivalent = "libproc"
-	sourceNetworkRich    = "libproc"
+	sourceProcEquivalent = collector.SourceProc
+	sourceNetworkRich    = collector.SourceNetworkRich
 
 	syscallsUnavailable = true
 	ioFilesUnavailable  = true
