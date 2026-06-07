@@ -2,7 +2,7 @@
 
 package tui
 
-import "github.com/trentas/ptop/internal/collector"
+import "github.com/trentas/ptop/pkg/collector"
 
 // osProcessName returns libproc's proc_name(), the macOS equivalent of
 // /proc/<pid>/comm — same field `top -stats command` displays.

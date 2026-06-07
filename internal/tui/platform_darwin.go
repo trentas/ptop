@@ -2,7 +2,7 @@
 
 package tui
 
-import "github.com/trentas/ptop/internal/collector"
+import "github.com/trentas/ptop/pkg/collector"
 
 // See platform_linux.go for what these constants do.
 //

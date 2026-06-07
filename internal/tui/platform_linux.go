@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/trentas/ptop/internal/collector"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // Platform-specific feature availability flags. The help overlay branches on

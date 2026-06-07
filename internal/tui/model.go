@@ -14,7 +14,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/ptop/internal/collector"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // simInterval defines the granularity of the simulation. TickMsg fires at FPS

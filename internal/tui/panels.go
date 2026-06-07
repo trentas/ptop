@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/trentas/ptop/internal/collector"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // ─── CPU ─────────────────────────────────────────────────────────────────────

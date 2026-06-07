@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/trentas/ptop/internal/collector"
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // snapshotSchemaVersion matches semver in the JSON format. Bumping requires
