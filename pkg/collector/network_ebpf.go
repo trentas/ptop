@@ -3,7 +3,9 @@
 package collector
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"time"
@@ -12,15 +14,23 @@ import (
 )
 
 // NetworkEBPFCollector combines:
+//
 //   - tracepoint sock:inet_sock_set_state — discovers 5-tuple + state +
 //     handshake RTT (SYN_SENT → ESTABLISHED).
+//
 //   - kprobes on tcp_sendmsg/tcp_cleanup_rbuf — Tx/Rx bytes per connection,
 //     correlated via the auxiliary sock_to_key map (skaddr → 5-tuple)
 //     populated by the tracepoint itself.
 //
-// Publishes []NetConn every 500ms. Pre-existing connections (opened before
-// attach) don't appear — a tracepoint limitation, since it only fires on
-// state transitions.
+//   - kprobes on tcp_reset/tcp_retransmit_skb — network errors (#56): a
+//     received RST (classified refused vs reset from the tracked state) and
+//     retransmits, correlated through the same sock_to_key map and delivered
+//     per-event via a ring buffer.
+//
+// Publishes []NetConn every 500ms, plus a NetError per error event. Pre-existing
+// connections (opened before attach) don't appear — a tracepoint limitation,
+// since it only fires on state transitions; their errors likewise don't
+// correlate (no sock_to_key entry) and are skipped.
 type NetworkEBPFCollector struct {
 	tracer   *bpf.NetTracer
 	pid      int
@@ -31,7 +41,9 @@ type NetworkEBPFCollector struct {
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
 	return &NetworkEBPFCollector{
-		ch:       make(chan interface{}, 4),
+		// Buffered for the snapshot ticker plus bursty per-event net errors
+		// (matches the heap collector's depth); both senders drop on overflow.
+		ch:       make(chan interface{}, 64),
 		stop:     make(chan struct{}),
 		resolver: NewSocketResolver(),
 	}
@@ -49,6 +61,10 @@ func (c *NetworkEBPFCollector) Start(pid int) error {
 	// Without this, processes with keep-alive look empty until some transition.
 	c.bootstrapFromProc()
 	go c.publishLoop()
+	// Drain net-error events. tracer is passed explicitly (not read from the
+	// field) so Stop()'s `c.tracer = nil` can't race this goroutine; Close()
+	// shuts the ring-buffer reader, unblocking NextError with io.EOF.
+	go c.readLoop(tracer)
 	return nil
 }
 
@@ -85,6 +101,32 @@ func (c *NetworkEBPFCollector) publishLoop() {
 			case c.ch <- conns:
 			default:
 			}
+		}
+	}
+}
+
+// readLoop drains the net-error ring buffer, decoding each record into a
+// NetError and publishing it on the shared channel. It exits on io.EOF (the
+// tracer was closed). A garbled record is logged-by-skip — the stream
+// continues. Sends are non-blocking: under backpressure errors are dropped,
+// consistent with every other collector.
+func (c *NetworkEBPFCollector) readLoop(tracer *bpf.NetTracer) {
+	if tracer == nil {
+		return
+	}
+	for {
+		rec, err := tracer.NextError()
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			continue // transient (short/garbled record) — keep reading
+		}
+		ne := decodeNetError(time.Now(), rec.Key.DAddr, rec.Key.DPort,
+			rec.Key.Family, rec.Kind, rec.Retransmits, rec.DetailNs)
+		select {
+		case c.ch <- ne:
+		default:
 		}
 	}
 }

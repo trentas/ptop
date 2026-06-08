@@ -47,6 +47,14 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		}
 		ev.Payload = &pb.Event_Network{Network: &pb.NetworkSnapshot{Conns: conns}}
 
+	case collector.NetError:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_NETWORK
+		ev.Payload = &pb.Event_NetError{NetError: &pb.NetErrorEvent{
+			Kind: x.Kind, Remote: x.Remote,
+			Retransmits: x.Retransmits, DetailMs: x.DetailMs,
+		}}
+
 	case collector.MemStats:
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_MEMORY

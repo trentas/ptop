@@ -5,12 +5,16 @@ package bpf
 import (
 	"bytes"
 	_ "embed"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
+	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
@@ -39,7 +43,26 @@ type NetConnVal struct {
 	TxBytes       uint64
 	RxBytes       uint64
 	State         uint32
-	_             uint32 // pad
+	Retransmits   uint32 // #56 — running tcp_retransmit_skb count
+}
+
+// Net error kinds — must match NET_ERR_* in programs/network.bpf.c.
+const (
+	NetErrRefused    uint32 = 0
+	NetErrReset      uint32 = 1
+	NetErrRetransmit uint32 = 2
+)
+
+// NetErrorRecord is the 1:1 layout of struct net_error_event in
+// programs/network.bpf.c. Fixed size 64 bytes; binary.LittleEndian parses it
+// directly from the ring buffer. Key is the connection 5-tuple (network-order
+// addrs, host-order ports), decoded the same way as net_conn_map keys.
+type NetErrorRecord struct {
+	TsNs        uint64
+	Key         NetConnKey // 40 bytes
+	Kind        uint32
+	Retransmits uint32
+	DetailNs    uint64
 }
 
 // NetSnapshot is the user-friendly format returned by Stats() — the 5-tuple
@@ -64,6 +87,7 @@ type NetTracer struct {
 	coll  *ebpf.Collection
 	links []link.Link
 	cmap  *ebpf.Map
+	rb    *ringbuf.Reader // #56 — net_error_events channel
 }
 
 func OpenNetTracer(pid int) (*NetTracer, error) {
@@ -139,7 +163,67 @@ func OpenNetTracer(pid int) (*NetTracer, error) {
 		t.links = append(t.links, l)
 	}
 
+	// Net error probes (#56). Non-fatal — unlike the byte kprobes above, a
+	// kernel without these symbols (renamed, or CONFIG_KPROBES off) simply
+	// yields no net-error events; connection tracking is unaffected, so we log
+	// and continue rather than failing the whole tracer.
+	errKprobes := []struct{ sym, prog string }{
+		{"tcp_reset", "handle_tcp_reset"},
+		{"tcp_retransmit_skb", "handle_tcp_retransmit"},
+	}
+	for _, kp := range errKprobes {
+		p := coll.Programs[kp.prog]
+		if p == nil {
+			fmt.Fprintf(os.Stderr, "network: program %s missing; net errors degraded\n", kp.prog)
+			continue
+		}
+		l, err := link.Kprobe(kp.sym, p, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "network: attach kprobe %s failed (%v); net errors degraded\n", kp.sym, err)
+			continue
+		}
+		t.links = append(t.links, l)
+	}
+
+	// Open the net-error ring buffer. This map is part of our own program, so
+	// a miss here means a corrupt object — fatal, matching io.go/heap.go.
+	errMap := coll.Maps["net_error_events"]
+	if errMap == nil {
+		t.Close()
+		return nil, errors.New("net_error_events ringbuf missing")
+	}
+	rb, err := ringbuf.NewReader(errMap)
+	if err != nil {
+		t.Close()
+		return nil, fmt.Errorf("net error ringbuf reader: %w", err)
+	}
+	t.rb = rb
+
 	return t, nil
+}
+
+// NextError blocks until the next net-error event arrives from the kernel.
+// Returns io.EOF once the tracer is closed. A short/garbled record is reported
+// as an error but does not close the stream — the caller keeps reading.
+func (t *NetTracer) NextError() (NetErrorRecord, error) {
+	var rec NetErrorRecord
+	if t == nil || t.rb == nil {
+		return rec, errors.New("tracer not initialized")
+	}
+	r, err := t.rb.Read()
+	if err != nil {
+		if errors.Is(err, ringbuf.ErrClosed) {
+			return rec, io.EOF
+		}
+		return rec, err
+	}
+	if len(r.RawSample) < 64 {
+		return rec, fmt.Errorf("short net error event: %d bytes", len(r.RawSample))
+	}
+	if err := binary.Read(bytes.NewReader(r.RawSample), binary.LittleEndian, &rec); err != nil {
+		return rec, fmt.Errorf("decode net error: %w", err)
+	}
+	return rec, nil
 }
 
 // SeedConnection inserts an entry into net_conn_map for a 5-tuple that was
@@ -210,6 +294,11 @@ func ipFromKey(b [16]byte, family uint16) net.IP {
 func (t *NetTracer) Close() error {
 	if t == nil {
 		return nil
+	}
+	// Close the reader first so a blocked NextError unblocks with io.EOF.
+	if t.rb != nil {
+		_ = t.rb.Close()
+		t.rb = nil
 	}
 	for _, l := range t.links {
 		_ = l.Close()
