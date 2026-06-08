@@ -45,17 +45,22 @@ char LICENSE[] SEC("license") = "GPL";
 #define COMM_LEN 16
 #define FILENAME_LEN 128
 
-// Tracepoint layouts, hand-laid from the stable `format` files (offsets after
-// the 8-byte common header common_type/flags/preempt_count/pid).
+// Tracepoint layouts, hand-laid from the `format` files (offsets after the
+// 8-byte common header common_type/flags/preempt_count/pid).
 //
-// sched/sched_process_fork: parent_comm[16]@8, parent_pid@24, child_comm[16]@28,
-// child_pid@44.
+// sched/sched_process_fork is special: its comm fields are __data_loc (a 4-byte
+// offset/len descriptor), NOT a fixed char[16] like sched_process_exit /
+// sched_switch — so parent_pid is at offset 12 and child_pid at offset 20 (not
+// 24/44). This is a property of the tracepoint's definition, stable across
+// kernels. We only ever read child_pid from this struct; the parent pid and
+// comm come from offset-free helpers (current == parent at fork), so a layout
+// surprise can at most misread child_pid.
 struct sched_process_fork_args {
     unsigned long long _pad;
-    char parent_comm[COMM_LEN];
-    int parent_pid;
-    char child_comm[COMM_LEN];
-    int child_pid;
+    unsigned int parent_comm; // __data_loc @8
+    int parent_pid;           // @12
+    unsigned int child_comm;  // __data_loc @16
+    int child_pid;            // @20
 };
 
 // sched/sched_process_exec: __data_loc filename@8 (u32: low16 offset, high16
@@ -108,7 +113,9 @@ static __always_inline int is_tracked(__u32 pid)
 SEC("tracepoint/sched/sched_process_fork")
 int handle_fork(struct sched_process_fork_args *ctx)
 {
-    __u32 ppid = (__u32)ctx->parent_pid;
+    // current == parent at sched_process_fork, so the parent's global pid comes
+    // from the helper (offset-free — avoids depending on the __data_loc layout).
+    __u32 ppid = (__u32)bpf_get_current_pid_tgid();
     if (!is_tracked(ppid))
         return 0;
 
@@ -125,8 +132,10 @@ int handle_fork(struct sched_process_fork_args *ctx)
     e->ts_ns = bpf_ktime_get_ns();
     e->kind = PROC_FORK;
     e->pid = ctx->child_pid;
-    e->ppid = ctx->parent_pid;
-    __builtin_memcpy(e->comm, ctx->child_comm, sizeof(e->comm));
+    e->ppid = (__s32)ppid;
+    // The child inherits the parent's comm at fork (the post-exec name shows in
+    // the subsequent exec event); bpf_get_current_comm gives it offset-free.
+    bpf_get_current_comm(e->comm, sizeof(e->comm));
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
