@@ -5,6 +5,8 @@
 //   1. tracepoint sock:inet_sock_set_state → discovers 5-tuple + state
 //   2. kprobe   tcp_sendmsg                → Tx bytes
 //   3. kprobe   tcp_cleanup_rbuf           → Rx bytes
+//   4. kprobe   tcp_reset                  → connection refused / reset (#56)
+//   5. kprobe   tcp_retransmit_skb         → retransmit / timeout backoff (#56)
 //
 // Trick to avoid dereferencing `struct sock` (which would require vmlinux.h
 // or fragile manual offsets): the inet_sock_set_state tracepoint already
@@ -16,13 +18,28 @@
 // of the sock.
 //
 // Maps:
-//   net_target_pid   ARRAY[1]  struct target_filter (written by the Go loader)
-//   net_conn_map     HASH      net_key → net_val (state, RTT, tx/rx bytes)
-//   sock_to_key      HASH      sock_ptr → net_key (correlation)
+//   net_target_pid    ARRAY[1]  struct target_filter (written by the Go loader)
+//   net_conn_map      HASH      net_key → net_val (state, RTT, tx/rx, retransmits)
+//   sock_to_key       HASH      sock_ptr → net_key (correlation)
+//   net_error_events  RINGBUF   per-event channel → user-space (#56 net errors)
+//
+// Net errors (#56): tcp_reset fires on an incoming RST — we classify it as
+// "refused" (RST while we still track the conn as SYN_SENT) vs "reset"
+// (RST on an ESTABLISHED conn) from the state we already hold in net_conn_map.
+// tcp_retransmit_skb fires per retransmit, carrying the conn's running count
+// (backoff is visible as the count grows).
+//
+// Target filtering on these two probes is DIFFERENT from the byte kprobes:
+// RST handling and the retransmit timer run in softirq/timer context, where
+// the "current task" is whoever was interrupted — almost never our target, so
+// pid_is_target() would drop nearly every event. Instead these probes rely
+// purely on sock_to_key membership: that map is only ever populated under
+// pid_is_target() (in the process-context connect/accept path of
+// inet_sock_set_state), so a hit there already means "the target's socket".
 //
 // Limitations:
 //   - Pre-existing connections (opened before ptop attached) don't enter
-//     sock_to_key, so tx/rx stay 0 for them. New connections work.
+//     sock_to_key, so tx/rx and net errors stay absent for them. New ones work.
 //   - the pid filter resolves the *current* task; in softirq that is the
 //     interrupted task, so it may skip or misattribute on the softirq path.
 //     tcp_sendmsg/cleanup_rbuf run in process context, so OK.
@@ -82,7 +99,23 @@ struct net_val {
     __u64 tx_bytes;
     __u64 rx_bytes;
     __u32 state;
-    __u32 _pad;
+    __u32 retransmits; // #56 — running tcp_retransmit_skb count for this conn
+};
+
+// Net error kinds — must match netErrKind* in internal/bpf/network.go.
+#define NET_ERR_REFUSED    0 // RST received while the conn was still SYN_SENT
+#define NET_ERR_RESET      1 // RST received on an ESTABLISHED conn
+#define NET_ERR_RETRANSMIT 2 // tcp_retransmit_skb fired
+
+// net_error_event is published to user-space via the net_error_events ring
+// buffer. Fixed layout (64 bytes), read with binary.LittleEndian on the Go
+// side — keep in sync with NetErrorRecord in internal/bpf/network.go.
+struct net_error_event {
+    __u64 ts_ns;
+    struct net_key key;   // 5-tuple, to correlate with a connection (40 bytes)
+    __u32 kind;           // NET_ERR_*
+    __u32 retransmits;    // running retransmit count (RETRANSMIT kind)
+    __u64 detail_ns;      // latency-to-RST (refused/reset); 0 otherwise
 };
 
 struct {
@@ -107,6 +140,11 @@ struct {
     __type(value, struct net_key);
     __uint(max_entries, 4096);
 } sock_to_key SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 1 << 18); // 256KB — net errors are low-rate
+} net_error_events SEC(".maps");
 
 static __always_inline int is_net_target(void)
 {
@@ -214,5 +252,79 @@ int BPF_KPROBE(handle_tcp_cleanup_rbuf, void *sk, int copied)
     if (copied <= 0)
         return 0;
     add_bytes((__u64)(unsigned long)sk, (__u64)copied, 0);
+    return 0;
+}
+
+// emit_net_error reserves a ring-buffer slot and publishes one error event.
+// kp points at a stack copy of the 5-tuple (never into map memory).
+static __always_inline void emit_net_error(struct net_key *kp, __u32 kind,
+                                           __u32 retransmits, __u64 detail_ns)
+{
+    struct net_error_event *e = bpf_ringbuf_reserve(&net_error_events, sizeof(*e), 0);
+    if (!e)
+        return;
+    e->ts_ns       = bpf_ktime_get_ns();
+    e->key         = *kp;
+    e->kind        = kind;
+    e->retransmits = retransmits;
+    e->detail_ns   = detail_ns;
+    bpf_ringbuf_submit(e, 0);
+}
+
+// tcp_reset(struct sock *sk, ...) runs when an incoming RST tears the conn
+// down. PARM1 = sk. No pid filter here (softirq context) — sock_to_key
+// membership is the target filter (see the file header). The conn's CURRENT
+// state in net_conn_map distinguishes a refused connect (SYN_SENT) from a
+// mid-stream reset (ESTABLISHED): this kprobe fires before the subsequent
+// inet_sock_set_state(→CLOSE), so the pre-reset state is still recorded.
+SEC("kprobe/tcp_reset")
+int BPF_KPROBE(handle_tcp_reset, void *sk)
+{
+    __u64 skaddr = (__u64)(unsigned long)sk;
+    struct net_key *kp = bpf_map_lookup_elem(&sock_to_key, &skaddr);
+    if (!kp)
+        return 0;
+    struct net_key k = *kp; // stack copy before the second lookup (verifier)
+    struct net_val *v = bpf_map_lookup_elem(&net_conn_map, &k);
+    if (!v)
+        return 0;
+
+    __u64 now = bpf_ktime_get_ns();
+    __u32 kind;
+    __u64 detail = 0;
+    if (v->state == TCP_SYN_SENT) {
+        kind = NET_ERR_REFUSED;
+        if (v->syn_sent_ns)
+            detail = now - v->syn_sent_ns;
+    } else {
+        kind = NET_ERR_RESET;
+        if (v->established_ns)
+            detail = now - v->established_ns;
+    }
+    emit_net_error(&k, kind, v->retransmits, detail);
+    return 0;
+}
+
+// tcp_retransmit_skb(struct sock *sk, ...) fires once per retransmitted skb.
+// PARM1 = sk. Same softirq/timer-context reasoning as tcp_reset: filter by
+// sock_to_key membership, not the current task. Each fire bumps the conn's
+// running count and emits it (RTO backoff shows up as the count climbing).
+SEC("kprobe/tcp_retransmit_skb")
+int BPF_KPROBE(handle_tcp_retransmit, void *sk)
+{
+    __u64 skaddr = (__u64)(unsigned long)sk;
+    struct net_key *kp = bpf_map_lookup_elem(&sock_to_key, &skaddr);
+    if (!kp)
+        return 0;
+    struct net_key k = *kp;
+    struct net_val *v = bpf_map_lookup_elem(&net_conn_map, &k);
+    if (!v)
+        return 0;
+    // Increment as a statement, then read the field back: the BPF target
+    // rejects using the XADD return value as an rvalue ("Invalid usage of the
+    // XADD return value") on the default cpu. The read may race a concurrent
+    // bump, but a slightly-ahead retransmit counter is fine for display.
+    __sync_fetch_and_add(&v->retransmits, 1);
+    emit_net_error(&k, NET_ERR_RETRANSMIT, v->retransmits, 0);
     return 0;
 }

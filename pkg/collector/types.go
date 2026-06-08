@@ -30,6 +30,21 @@ type NetConn struct {
 	RxBytes   uint64
 }
 
+// NetError is a kernel-observed network failure (#56), correlated to a
+// connection by its peer 5-tuple. Kind is "refused" (RST while still
+// connecting), "reset" (RST mid-stream), or "retransmit" (a tcp_retransmit_skb
+// fired). DetailMs is the latency from the relevant baseline to the RST
+// (SYN_SENT→RST for refused, ESTABLISHED→RST for reset); 0 for retransmit.
+// Retransmits is the connection's running retransmit count at event time — the
+// live count for "retransmit", or how many retransmits preceded an RST.
+type NetError struct {
+	Timestamp   time.Time
+	Kind        string
+	Remote      string // peer host:port
+	Retransmits uint32
+	DetailMs    float64
+}
+
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
 type MemStats struct {
