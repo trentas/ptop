@@ -319,6 +319,41 @@ type ProcLifecycleEvent struct {
 	Filename  string // executed path (exec only; "" otherwise)
 }
 
+// ─── Security (#59) ──────────────────────────────────────────────────────────
+
+// SecurityEvent surfaces a kernel security-relevant action on the target. Kind
+// is "exec-map" (a runtime mmap/mprotect that set PROT_EXEC — code mapped
+// executable after start: dlopen, JIT, or RWX injection) or "lsm-decision" (a
+// SELinux AVC denial, best-effort; absent where the hook isn't exposed).
+//
+// For exec-map: Op is "mmap"|"mprotect"; Addr/Len/Prot describe the mapping
+// (Prot is the PROT_* bitmask); WriteExec flags simultaneous write+exec (W^X)
+// and Anon a non-file-backed mapping (mmap only) — the higher-signal cases. The
+// Func/File/Line/Module/Offset/AddrHex fields are the symbolized originating
+// application call site (#54; Func "" and Offset = raw address when unresolved,
+// AddrHex "unknown" when the stack walk failed). For lsm-decision: Detail
+// carries the human summary and the mapping/call-site fields are zero. Emitted
+// only by the eBPF security collector (never simulated).
+type SecurityEvent struct {
+	Timestamp time.Time
+	Kind      string // "exec-map" | "lsm-decision"
+	Op        string // "mmap" | "mprotect" (exec-map); "" for lsm
+	Addr      uint64
+	Len       uint64
+	Prot      uint32
+	WriteExec bool
+	Anon      bool
+	Detail    string
+	// Symbolized originating call site (exec-map only):
+	CallSite uint64
+	Func     string
+	File     string
+	Line     int
+	Module   string
+	Offset   uint64
+	AddrHex  string
+}
+
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
 type TimelineEvent struct {

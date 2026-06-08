@@ -163,6 +163,15 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			}
 			return statusRowNA("lifecycle", "needs eBPF (sched fork/exec/exit)")
 		}(),
+		// Security (#59) is eBPF-only and never simulated: "real via eBPF" when
+		// the mmap/mprotect tracepoints attached (LSM is best-effort on top),
+		// else unavailable (macOS, --no-ebpf, or attach failure) — never "mock".
+		func() string {
+			if m.securitySource != "" {
+				return statusRow("security", false, m.securitySource)
+			}
+			return statusRowNA("security", "needs eBPF (PROT_EXEC mmap/mprotect, SELinux AVC)")
+		}(),
 	}
 
 	// Scroll: card has border (2 lines) + padding (2 lines) = 4 overhead;

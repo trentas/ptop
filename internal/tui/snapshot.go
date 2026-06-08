@@ -46,6 +46,7 @@ type SnapshotData struct {
 	TLSPayloads    []collector.TLSPayload         `json:"tls_payloads,omitempty"`
 	ProcContext    collector.ProcContext          `json:"proc_context"`
 	ProcEvents     []collector.ProcLifecycleEvent `json:"proc_lifecycle"`
+	SecurityEvents []collector.SecurityEvent      `json:"security_events"`
 }
 
 // buildSnapshot extracts a Snapshot from the current model state.
@@ -76,6 +77,7 @@ func buildSnapshot(m Model) Snapshot {
 			TLSPayloads:    append([]collector.TLSPayload(nil), m.TLSPayloads...),
 			ProcContext:    m.ProcCtx,
 			ProcEvents:     append([]collector.ProcLifecycleEvent(nil), m.ProcEvents...),
+			SecurityEvents: append([]collector.SecurityEvent(nil), m.SecurityEvents...),
 		},
 	}
 }

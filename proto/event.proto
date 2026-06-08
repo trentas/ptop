@@ -19,6 +19,7 @@ enum Category {
   CATEGORY_TIMELINE = 9;
   CATEGORY_SIGNAL = 10; // #58 — signals delivered to the target
   CATEGORY_PROCESS = 11; // #60 — execution context + exec lineage
+  CATEGORY_SECURITY = 12; // #59 — LSM decisions + runtime executable mappings
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
@@ -93,7 +94,7 @@ message Event {
     TLSPayloadEvent tls = 27; // #55 — pre-encryption / post-decryption plaintext
     ProcContext proc_context = 28; // #60 — periodic namespace/cgroup/identity snapshot
     ProcLifecycleEvent proc_lifecycle = 29; // #60 — exec lineage (fork/exec/exit)
-    // 30+ reserved for the remaining #52 capabilities (security/LSM — #59).
+    SecurityEvent security = 30; // #59 — LSM decision / runtime executable mapping
   }
 }
 
@@ -340,6 +341,33 @@ message ProcLifecycleEvent {
   int32 ppid = 3; // parent pid (fork only; 0 otherwise)
   string comm = 4; // subject command name
   string filename = 5; // executed path (exec only; "" otherwise)
+}
+
+// ─── Security (#59) ──────────────────────────────────────────────────────────
+// SecurityEvent surfaces a kernel security-relevant action on the target. kind
+// is "exec-map" (a runtime mmap/mprotect that set PROT_EXEC — code mapped
+// executable after start: dlopen, JIT, or RWX injection) or "lsm-decision" (a
+// kernel LSM denial, best-effort via the SELinux AVC tracepoint; absent where
+// the hook isn't exposed).
+//
+// For exec-map: op is "mmap"|"mprotect"; addr/len/prot describe the mapping
+// (prot is the PROT_* bitmask); write_exec flags simultaneous write+exec (W^X),
+// anon flags a non-file-backed mapping (mmap only) — the two higher-signal
+// cases. call_site is the symbolized originating application frame (#54; func ""
+// and offset = raw address when unresolved). For lsm-decision: detail carries
+// the human summary (denied perms, class, contexts) and the mmap fields are 0.
+// Category on the envelope is SECURITY; the event time lives on the envelope.
+// eBPF-only — never simulated.
+message SecurityEvent {
+  string kind = 1; // "exec-map" | "lsm-decision"
+  string op = 2; // "mmap" | "mprotect" (exec-map); "" for lsm
+  uint64 addr = 3;
+  uint64 len = 4;
+  uint32 prot = 5; // PROT_* bitmask (exec-map)
+  bool write_exec = 6; // PROT_WRITE & PROT_EXEC (W^X)
+  bool anon = 7; // non-file-backed mapping (mmap only)
+  string detail = 8; // lsm summary, or extra exec-map context
+  StackFrame call_site = 9; // exec-map originating frame (symbolized, #54)
 }
 
 // ─── File descriptors ───────────────────────────────────────────────────────

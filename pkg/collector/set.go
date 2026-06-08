@@ -36,6 +36,7 @@ type Sources struct {
 	TLS       string
 	Context   string
 	Lifecycle string
+	Security  string
 }
 
 // Set owns the live collectors for a single target PID, chosen by the
@@ -61,6 +62,7 @@ type Set struct {
 	TLSEBPF           *TLSEBPFCollector
 	ProcContext       *ProcContextCollector
 	ProcLifecycleEBPF *ProcLifecycleEBPFCollector
+	SecurityEBPF      *SecurityEBPFCollector
 
 	Sources Sources
 }
@@ -219,6 +221,16 @@ func NewSet(cfg SetConfig) *Set {
 			warnEBPFFailure("lifecycle", err)
 		}
 
+		// Security: runtime PROT_EXEC mappings + best-effort SELinux LSM
+		// denials (#59). eBPF-only — no /proc fallback, never simulated.
+		c9 := NewSecurityEBPFCollector()
+		if err := c9.Start(cfg.PID); err == nil {
+			s.SecurityEBPF = c9
+			s.Sources.Security = "eBPF"
+		} else {
+			warnEBPFFailure("security", err)
+		}
+
 		// TLS payload capture (#55) — OFF unless explicitly opted in (--tls),
 		// because it observes plaintext. eBPF-only (libssl uprobes), no /proc
 		// fallback, never simulated.
@@ -298,6 +310,9 @@ func (s *Set) Stop() {
 	if s.ProcLifecycleEBPF != nil {
 		s.ProcLifecycleEBPF.Stop()
 	}
+	if s.SecurityEBPF != nil {
+		s.SecurityEBPF.Stop()
+	}
 }
 
 // Collectors returns every started collector as a Collector. Used by consumers
@@ -332,6 +347,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.TLSEBPF, s.TLSEBPF != nil)
 	add(s.ProcContext, s.ProcContext != nil)
 	add(s.ProcLifecycleEBPF, s.ProcLifecycleEBPF != nil)
+	add(s.SecurityEBPF, s.SecurityEBPF != nil)
 	return cs
 }
 

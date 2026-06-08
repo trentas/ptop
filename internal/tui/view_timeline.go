@@ -44,6 +44,60 @@ func procLifecycleMessage(e collector.ProcLifecycleEvent) string {
 	}
 }
 
+// securityMessage renders a SecurityEvent as a one-line entry for the F7
+// timeline. exec-map → "mmap rwx anon @0x… (func)" with W^X/anon called out;
+// lsm-decision → the detail summary.
+func securityMessage(e collector.SecurityEvent) string {
+	if e.Kind == "lsm-decision" {
+		return "lsm: " + e.Detail
+	}
+	tags := ""
+	if e.WriteExec {
+		tags += " W^X"
+	}
+	if e.Anon {
+		tags += " anon"
+	}
+	site := securityCallSiteLabel(e)
+	if site != "" {
+		site = " " + site
+	}
+	return fmt.Sprintf("%s %s%s @0x%x%s", e.Op, protBits(e.Prot), tags, e.Addr, site)
+}
+
+// securityCallSiteLabel renders the symbolized originating call site, preferring
+// "func (file:line)" → "func" → "module+0xoffset" → the raw hex / "unknown".
+func securityCallSiteLabel(e collector.SecurityEvent) string {
+	switch {
+	case e.Func != "" && e.File != "":
+		return fmt.Sprintf("%s (%s:%d)", e.Func, e.File, e.Line)
+	case e.Func != "":
+		return e.Func
+	case e.Module != "":
+		return fmt.Sprintf("%s+0x%x", e.Module, e.Offset)
+	case e.AddrHex != "":
+		return e.AddrHex
+	default:
+		return ""
+	}
+}
+
+// protBits renders a PROT_* bitmask as rwx (mirrors the collector's protString,
+// kept here so the TUI doesn't reach into the collector's unexported helper).
+func protBits(prot uint32) string {
+	b := []byte("---")
+	if prot&0x1 != 0 {
+		b[0] = 'r'
+	}
+	if prot&0x2 != 0 {
+		b[1] = 'w'
+	}
+	if prot&0x4 != 0 {
+		b[2] = 'x'
+	}
+	return string(b)
+}
+
 // renderTimelineView (F7) — assets/mockup.jsx → TimelineView
 // Stream completo de eventos com badge por categoria.
 func renderTimelineView(m Model, w, h int) string {

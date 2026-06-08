@@ -188,6 +188,21 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Comm: x.Comm, Filename: x.Filename,
 		}}
 
+	case collector.SecurityEvent:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_SECURITY
+		sec := &pb.SecurityEvent{
+			Kind: x.Kind, Op: x.Op, Addr: x.Addr, Len: x.Len, Prot: x.Prot,
+			WriteExec: x.WriteExec, Anon: x.Anon, Detail: x.Detail,
+		}
+		if x.Kind == "exec-map" {
+			sec.CallSite = &pb.StackFrame{
+				Func: x.Func, File: x.File, Line: int32(x.Line),
+				Module: x.Module, Offset: x.Offset,
+			}
+		}
+		ev.Payload = &pb.Event_Security{Security: sec}
+
 	case collector.TimelineEvent:
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = timelineCategory(x.Category)
@@ -287,6 +302,8 @@ func timelineCategory(s string) pb.Category {
 		return pb.Category_CATEGORY_SIGNAL
 	case "proc":
 		return pb.Category_CATEGORY_PROCESS
+	case "sec":
+		return pb.Category_CATEGORY_SECURITY
 	default:
 		return pb.Category_CATEGORY_TIMELINE
 	}
