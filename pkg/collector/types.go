@@ -358,7 +358,7 @@ type SecurityEvent struct {
 
 type TimelineEvent struct {
 	Timestamp time.Time
-	Category  string // "syscall"|"net"|"mem"|"cpu"|"lock"|"io"|"fd"
+	Category  string // "syscall"|"net"|"mem"|"cpu"|"lock"|"io"|"fd"|"sig"|"proc"|"sec"
 	Message   string
 }
 

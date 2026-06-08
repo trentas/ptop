@@ -13,7 +13,7 @@ in the target.
 
 | Tab | Shows | eBPF source |
 |---|---|---|
-| **F1 Overview** | CPU sparkline, top syscalls, threads, I/O, FDs, network, events | aggregate |
+| **F1 Overview** | CPU sparkline, top syscalls, threads, I/O, FDs, network, heap/leak, events | aggregate |
 | **F2 Syscalls** | per-call frequency, latency, live event stream | `raw_syscalls:sys_{enter,exit}` |
 | **F3 Network**  | TCP/UDP/UNIX connections with state, RTT, Tx/Rx | `sock:inet_sock_set_state` + tcp_sendmsg/cleanup_rbuf kprobes |
 | **F4 Threads**  | per-TID state, on-CPU%, lock graph (futex) | `sched:sched_switch` + futex tracepoints |
@@ -27,7 +27,7 @@ A real `go test` dump from `internal/tui/dump_test.go`. Every panel matches
 what the live binary renders against a real PID.
 
 ```text
-⬡ ptop │ api-server  PID 1   Go 1.22   RUNNING   15 fds                                                          uptime 00:00  │  18:06:31
+⬡ ptop │ api-server  PID 1   Go 1.25   RUNNING   15 fds                                                          uptime 00:00  │  18:06:31
   F1 Overview  │  F2 Syscalls  │  F3 Network  │  F4 Threads  │  F5 I/O  │  F6 FD  │  F7 Timeline               q quit · / filter · p pause
 ┌──────────────────────────────────────────────────────────────────────────────────┐┌──────────────────────────────────────────────────────┐
 │ ▸ CPU                                                                            ││ ▸ I/O THROUGHPUT                                     │
@@ -66,7 +66,7 @@ replace this section soon.
 - Linux, kernel **5.8+** (BTF + ring buffer + `CAP_BPF`)
 - `amd64` or `arm64`
 - For full mode: root, or the binary with `cap_bpf,cap_perfmon+ep`
-- For building from source: Go **1.22+**, `clang`, `libbpf-dev`, `bpftool`
+- For building from source: Go **1.25+**, `clang`, `libbpf-dev`, `bpftool`
 
 ## Install
 
@@ -173,21 +173,70 @@ eBPF programs in `internal/bpf/programs/`:
 
 - `syscalls.bpf.c` — raw_syscalls/sys_{enter,exit}
 - `cpu.bpf.c` — perf_event @ 100Hz/CPU
-- `io.bpf.c` — VFS read/write/fsync
-- `network.bpf.c` — sock tracepoints + tcp kprobes
+- `io.bpf.c` — VFS read/write/fsync + filesystem semantics (denials/deletes/renames)
+- `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit)
 - `threads.bpf.c` — sched_switch
 - `futex.bpf.c` — wait/wake → lock graph
 - `memory.bpf.c` — mmap/brk/page-fault counters
+- `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
+- `signal.bpf.c` — `signal:signal_generate` → signals delivered, with sender
+- `proc.bpf.c` — `sched_process_{fork,exec,exit}` → exec-lineage subtree
+- `security.bpf.c` — PROT_EXEC `mmap`/`mprotect` + SELinux AVC denials
+- `tls.bpf.c` — libssl `SSL_write`/`SSL_read` uprobes → plaintext (opt-in `--tls`)
+
+## Event stream (`--serve`)
+
+The TUI is one consumer of a richer event model. `ptop --pid <PID> --serve
+<addr>` runs headless and streams every observation as a typed protobuf `Event`
+over gRPC (package `ptop.v1`) to any number of unprivileged subscribers — and,
+with `--export`, also as one protojson line per event to a JSONL file. ptop
+holds `CAP_BPF`/`CAP_PERFMON`; subscribers connect with none (the unix socket is
+`0600`, TCP refuses non-loopback binds).
+
+Beyond the seven TUI tabs, the stream carries the full process-behavior surface
+(each event tagged by `category`, with `uid`/`gid`/`cgroup_id` stamped on every
+envelope):
+
+| Category | Event | What it captures |
+|---|---|---|
+| `MEMORY` | `HeapEvent` / `HeapSnapshot` | libc malloc/free paired → live-heap, lifetime, leak suspects, top call sites (symbolized) |
+| `NETWORK` | `NetErrorEvent` | TCP failures: connection refused, reset, retransmits |
+| `NETWORK` | `TLSPayloadEvent` | pre-encryption / post-decryption plaintext (opt-in `--tls`) |
+| `IO` | `FSEvent` | filesystem semantics: permission denials, deletes, renames (real paths) |
+| `SIGNAL` | `SignalEvent` | signals delivered to the target, with the sending process |
+| `PROCESS` | `ProcContext` | namespace + cgroup + uid/gid (container/execution context) |
+| `PROCESS` | `ProcLifecycleEvent` | exec lineage: fork/exec/exit across the descendant subtree |
+| `SECURITY` | `SecurityEvent` | runtime PROT_EXEC mappings (JIT/RWX), SELinux LSM denials |
+
+High-rate events reference a captured stack by id; the `ResolveStack` RPC
+symbolizes it on demand (`addr → func (file:line)`, build-id keyed).
+
+```jsonl
+{"tsUnixNano":"…","pid":4242,"category":"CATEGORY_PROCESS","uid":1000,"gid":1000,"cgroupId":"2817","procContext":{"pidNs":"4026532630","cgroup":"/docker/3127f7e31dab…","container":"docker:3127f7e31dab"}}
+{"tsUnixNano":"…","pid":4242,"category":"CATEGORY_PROCESS","procLifecycle":{"kind":"exec","pid":4310,"comm":"sh","filename":"/usr/bin/sh"}}
+{"tsUnixNano":"…","pid":4242,"category":"CATEGORY_NETWORK","netError":{"kind":"refused","remote":"10.0.0.9:5432"}}
+{"tsUnixNano":"…","pid":4242,"category":"CATEGORY_SIGNAL","tid":4242,"signal":{"signal":"SIGPIPE","signo":13,"code":128,"targetTid":4242}}
+{"tsUnixNano":"…","pid":4242,"category":"CATEGORY_SECURITY","security":{"kind":"exec-map","op":"mprotect","prot":5,"callSite":{"func":"jit_emit"}}}
+```
+
+The schema lives in [`proto/event.proto`](proto/event.proto); collectors and
+their source-priority selection are shared verbatim between the TUI and the
+server, so both see identical data.
 
 ## Architecture
 
 ```
 ptop/
 ├── cmd/ptop/                 entrypoint
+├── proto/                    event-stream schema (package ptop.v1)
 ├── internal/
 │   ├── bpf/                  eBPF programs + loader (build tag `ebpf`)
-│   ├── collector/            /proc + eBPF collectors + shared types
+│   ├── serve/                headless gRPC server (ptop --serve)
 │   └── tui/                  Bubbletea + Lipgloss views
+├── pkg/                      importable API surface
+│   ├── collector/            /proc + eBPF collectors + shared types
+│   ├── streampb/             generated gRPC / protobuf bindings
+│   └── symbol/               ELF → symbol resolution (addr → func/file:line)
 └── assets/                   visual references + vhs script
 ```
 
