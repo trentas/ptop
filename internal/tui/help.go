@@ -118,6 +118,15 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		}(),
 		statusRowMaybeNA("locks", locksUnavailable, "no public __ulock_wait hook on macOS (see #22)",
 			m.locksSource == "", m.locksSource),
+		// Signals (#58) are eBPF-only and never simulated: "real via eBPF" when
+		// the signal_generate tracepoint attached, else genuinely unavailable
+		// (macOS, --no-ebpf, or attach failure) — never "mock".
+		func() string {
+			if m.signalsSource != "" {
+				return statusRow("signals", false, m.signalsSource)
+			}
+			return statusRowNA("signals", "needs eBPF (signal_generate tracepoint)")
+		}(),
 		statusRow("threads", m.usingMockThreads, m.threadsSource),
 		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
 		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),

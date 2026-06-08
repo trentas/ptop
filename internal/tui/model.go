@@ -86,6 +86,7 @@ type IOEBPFMsg collector.IOEBPFSnapshot
 type FSEventMsg collector.FSEvent
 type NetMsg []collector.NetConn
 type NetErrorMsg collector.NetError
+type SignalMsg collector.SignalEvent
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
@@ -123,6 +124,7 @@ type Model struct {
 	FDCountHistory []float64
 	FDEvents       []collector.FDEvent
 	Timeline       []collector.TimelineEvent
+	Signals        []collector.SignalEvent // eBPF signals delivered to the target (#58), newest-first
 	LockGraph      []collector.LockEntry
 
 	// UI state
@@ -182,6 +184,7 @@ type Model struct {
 	memSource      string
 	heapSource     string
 	locksSource    string
+	signalsSource  string
 
 	// Stable caches to avoid visual reordering between ticks.
 	// topSyscallNames is recomputed every `topRefreshInterval`; between refreshes
@@ -232,6 +235,7 @@ func NewModel(cfg Config) Model {
 	m.ioFilesSource = m.collectors.Sources.IOFiles
 	m.netSource = m.collectors.Sources.Net
 	m.locksSource = m.collectors.Sources.Locks
+	m.signalsSource = m.collectors.Sources.Signals
 
 	m.usingMockFDs = m.collectors.MockFDs()
 	m.usingMockCPU = m.collectors.MockCPU()
@@ -302,6 +306,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.collectors.FutexEBPF != nil {
 		cmds = append(cmds, waitForFutexEBPF(m.collectors.FutexEBPF))
+	}
+	if m.collectors.SignalEBPF != nil {
+		cmds = append(cmds, waitForSignalEBPF(m.collectors.SignalEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -444,6 +451,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Timeline = m.Timeline[:120]
 		}
 		return m, waitForNetEBPF(m.collectors.NetworkEBPF)
+
+	case SignalMsg:
+		// Real signal delivered to the target (#58) — record it (newest-first,
+		// capped, for export) and surface it in the unified timeline under the
+		// "sig" category (F7). Only the real eBPF collector emits these.
+		se := collector.SignalEvent(v)
+		m.Signals = append([]collector.SignalEvent{se}, m.Signals...)
+		if len(m.Signals) > 40 {
+			m.Signals = m.Signals[:40]
+		}
+		m.Timeline = append([]collector.TimelineEvent{{
+			Timestamp: se.Timestamp,
+			Category:  "sig",
+			Message:   signalMessage(se),
+		}}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
+		return m, waitForSignalEBPF(m.collectors.SignalEBPF)
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
@@ -1162,6 +1188,22 @@ func waitForFutexEBPF(c *collector.FutexEBPFCollector) tea.Cmd {
 			return LockGraphMsg(t)
 		case collector.TimelineEvent:
 			return LockTimelineMsg(t)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForSignalEBPF(c *collector.SignalEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		if s, ok := (<-ch).(collector.SignalEvent); ok {
+			return SignalMsg(s)
 		}
 		return TickMsg(time.Now())
 	}
