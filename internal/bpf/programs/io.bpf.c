@@ -68,7 +68,7 @@ struct io_inflight {
 
 // Event published to user-space via ring buffer. Fixed layout, read with
 // binary.LittleEndian on the Go side. Keep in sync with IOEvent in
-// internal/collector/io_ebpf.go.
+// pkg/collector/io_ebpf.go.
 struct io_event {
     __u64 ts_ns;
     __u64 lat_ns;
