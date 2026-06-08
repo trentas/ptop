@@ -185,6 +185,7 @@ func TestFilterFDView_substring(t *testing.T) {
 
 	// Apply filter "TCP"
 	m.filter = "TCP"
+	m.render.commit = true // direct state mutation (no Update) — force a fresh render
 	out = m.View()
 	if !strings.Contains(out, "TCP") {
 		t.Error("after filter=TCP, expected to see TCP")

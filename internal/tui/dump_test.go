@@ -25,6 +25,7 @@ func TestDumpFrames(t *testing.T) {
 	m.Height = h
 	for tab := 0; tab < TabCount; tab++ {
 		m.ActiveTab = tab
+		m.render.commit = true // bypass frame memoization: force a fresh render
 		out := m.View()
 		safe := strings.ReplaceAll(tabNames[tab], "/", "-")
 		safe = strings.ReplaceAll(safe, " ", "_")

@@ -4,6 +4,8 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof handlers on http.DefaultServeMux
 	"os"
 	"os/signal"
 	"runtime"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/trentas/ptop/internal/bpf"
 	"github.com/trentas/ptop/internal/serve"
 	"github.com/trentas/ptop/internal/tui"
@@ -33,6 +36,7 @@ func main() {
 	serveAddr := flag.String("serve", "", "Headless mode: stream events over gRPC instead of the TUI (unix:///path or tcp://host:port)")
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
+	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -47,6 +51,20 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
+	}
+
+	// Profiling endpoint (dev tool, opt-in). Serves /debug/pprof for inspecting
+	// ptop's own CPU/heap/goroutines — dogfood with `ptop --pid $(pgrep ptop)`.
+	// It exposes process internals, so prefer a loopback addr.
+	if *pprofAddr != "" {
+		addr := *pprofAddr
+		fmt.Fprintf(os.Stderr, "[ptop] pprof listening on http://%s/debug/pprof/\n", addr)
+		go func() {
+			srv := &http.Server{Addr: addr, ReadHeaderTimeout: 5 * time.Second}
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				fmt.Fprintf(os.Stderr, "[ptop] pprof server error: %v\n", err)
+			}
+		}()
 	}
 
 	if !*noEBPF {
@@ -110,6 +128,11 @@ func main() {
 		TLS:         tlsEnabled,
 		TLSMaxBytes: tlsCap,
 	}
+
+	// Resolve the terminal color profile once and pin it. Otherwise lipgloss
+	// re-resolves it lazily and each styled segment re-probes the profile when
+	// converting the 24-bit palette to ANSI — wasteful on the render hot path.
+	lipgloss.SetColorProfile(lipgloss.ColorProfile())
 
 	m := tui.NewModel(cfg)
 	p := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion())

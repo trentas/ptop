@@ -348,8 +348,16 @@ ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gR
 ptop --pid <PID> --serve tcp://127.0.0.1:50051   headless over TCP (loopback)
 ptop --pid <PID> --tls       TLS payload metadata (libssl uprobes) — OFF by default (#55)
 ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (implies --tls)
+ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
 ptop --version              print version + commit + build date
 ```
+
+`--pprof <addr>` is a dev-only profiling endpoint: it starts `net/http/pprof`
+on `addr` (works in both TUI and `--serve` modes) so you can profile ptop's own
+CPU/heap/goroutines — e.g. dogfood with `ptop --pid $(pgrep ptop) --pprof
+localhost:6060`, then `go tool pprof http://localhost:6060/debug/pprof/profile`.
+It exposes process internals, so bind a loopback addr. Off when the flag is
+empty (no server, zero cost).
 
 `--tls` opts into pre-encryption/post-decryption payload capture via uprobes on
 the target's libssl (`SSL_write`/`SSL_read`, resolved by symbol — Go targets have

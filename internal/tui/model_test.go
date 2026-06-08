@@ -31,6 +31,7 @@ func TestRenderAllTabs(t *testing.T) {
 		m.Height = sz.h
 		for tab := 0; tab < TabCount; tab++ {
 			m.ActiveTab = tab
+			m.render.commit = true // bypass frame memoization: force a fresh render
 			out := m.View()
 			if out == "" {
 				t.Errorf("size=%dx%d tab=%d: empty", sz.w, sz.h, tab)
