@@ -115,6 +115,14 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			LatencyBuckets: latencyBuckets(x.Buckets),
 		}}
 
+	case collector.FSEvent:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_IO
+		ev.Payload = &pb.Event_FsEvent{FsEvent: &pb.FSEvent{
+			Op: x.Op, Path: x.Path, NewPath: x.NewPath,
+			Errno: x.Errno, Err: x.Err,
+		}}
+
 	case []collector.FDEntry:
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_FD

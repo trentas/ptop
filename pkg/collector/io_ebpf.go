@@ -51,7 +51,9 @@ const ioPathCacheTTL = 2 * time.Second
 
 func NewIOEBPFCollector() *IOEBPFCollector {
 	return &IOEBPFCollector{
-		ch:      make(chan interface{}, 16),
+		// Buffered for the 500ms snapshot ticker plus bursty per-event fs
+		// events (#57); all senders drop on overflow.
+		ch:      make(chan interface{}, 64),
 		stop:    make(chan struct{}),
 		files:   make(map[string]*ioFileAgg),
 		pathFor: make(map[uint32]pathCacheEntry),
@@ -72,8 +74,12 @@ func (c *IOEBPFCollector) Start(pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
-	go c.readLoop()    // consumes ringbuf, populates c.files
+	go c.readLoop()    // consumes io_events ringbuf, populates c.files
 	go c.publishLoop() // every 500ms publishes a snapshot of the aggregates
+	// Drain fs-semantics events (#57). tracer is passed explicitly (not read
+	// from the field) so Stop()'s `c.tracer = nil` can't race this goroutine;
+	// Close() shuts the fs ring-buffer reader, unblocking NextFSEvent with io.EOF.
+	go c.fsReadLoop(tracer)
 	return nil
 }
 
@@ -103,6 +109,31 @@ func (c *IOEBPFCollector) readLoop() {
 			continue
 		}
 		c.processEvent(ev)
+	}
+}
+
+// fsReadLoop drains the fs-semantics ring buffer (#57), decoding each record
+// into an FSEvent and publishing it on the shared channel. It exits on io.EOF
+// (the tracer was closed). A garbled record is logged-by-skip — the stream
+// continues. Sends are non-blocking: under backpressure fs events are dropped,
+// consistent with every other collector.
+func (c *IOEBPFCollector) fsReadLoop(tracer *bpf.IOTracer) {
+	if tracer == nil {
+		return
+	}
+	for {
+		rec, err := tracer.NextFSEvent()
+		if err != nil {
+			if err == io.EOF {
+				return
+			}
+			continue // transient (short/garbled record) — keep reading
+		}
+		fe := decodeFSEvent(time.Now(), rec.Op, rec.Ret, rec.Path[:], rec.NewPath[:])
+		select {
+		case c.ch <- fe:
+		default:
+		}
 	}
 }
 

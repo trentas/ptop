@@ -35,6 +35,7 @@ type SnapshotData struct {
 	HeapStats      collector.HeapStats       `json:"heap"`
 	Threads        []collector.ThreadInfo    `json:"threads"`
 	IOStats        collector.IOStats         `json:"io"`
+	FSEvents       []collector.FSEvent       `json:"fs_events"`
 	IOReadHist     []float64                 `json:"io_read_history"`
 	IOWriteHist    []float64                 `json:"io_write_history"`
 	FDs            []collector.FDEntry       `json:"fds"`
@@ -60,6 +61,7 @@ func buildSnapshot(m Model) Snapshot {
 			HeapStats:      m.HeapStats,
 			Threads:        append([]collector.ThreadInfo(nil), m.Threads...),
 			IOStats:        m.IOStats,
+			FSEvents:       append([]collector.FSEvent(nil), m.FSEvents...),
 			IOReadHist:     append([]float64(nil), m.IOReadHist...),
 			IOWriteHist:    append([]float64(nil), m.IOWriteHist...),
 			FDs:            append([]collector.FDEntry(nil), m.FDs...),

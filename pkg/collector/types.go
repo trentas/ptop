@@ -170,6 +170,22 @@ type IOEvent struct {
 	FD        int
 }
 
+// FSEvent is a kernel-observed filesystem *semantic* event (#57): a permission
+// denial on open/openat ("denied"), a delete ("deleted"), or a rename
+// ("renamed"), captured with the real path(s). Op carries the semantic verb;
+// Errno/Err carry the syscall result (0/"" on success — deletes and renames are
+// emitted on success too, denials only on EACCES/EPERM). NewPath is the rename
+// destination, "" otherwise. Emitted only by the eBPF io collector (never
+// simulated); paths are kernel-truncated to 255 bytes.
+type FSEvent struct {
+	Timestamp time.Time
+	Op        string // "denied" | "deleted" | "renamed"
+	Path      string
+	NewPath   string // rename destination; "" otherwise
+	Errno     int32  // 0 on success; positive errno (EACCES=13, EPERM=1, …)
+	Err       string // "EACCES" | "EPERM" | "ENOENT" | "" …
+}
+
 type IOFileStats struct {
 	Path      string
 	Type      string // "db" | "log" | "cfg" | "tmp" | "proc"

@@ -83,6 +83,7 @@ type TimelineMsg collector.TimelineEvent
 type FDEventMsg collector.FDEvent
 type SyscallsMsg map[string]uint64
 type IOEBPFMsg collector.IOEBPFSnapshot
+type FSEventMsg collector.FSEvent
 type NetMsg []collector.NetConn
 type NetErrorMsg collector.NetError
 type LockGraphMsg []collector.LockEntry
@@ -115,6 +116,7 @@ type Model struct {
 	HeapLiveHist   []float64           // live-heap bytes history for the F1 sparkline
 	Threads        []collector.ThreadInfo
 	IOStats        collector.IOStats
+	FSEvents       []collector.FSEvent // eBPF fs semantics (#57): denials/deletes/renames, newest-first
 	IOReadHist     []float64
 	IOWriteHist    []float64
 	FDs            []collector.FDEntry
@@ -469,6 +471,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.IOStats.LatencyBuckets = s.Buckets
 		}
 		m.usingMockIOFiles = false
+		return m, waitForIOEBPF(m.collectors.IOEBPF)
+
+	case FSEventMsg:
+		// Real kernel filesystem event (#57) — record it for the F5 Anomalies
+		// panel (denials, newest-first, capped) and surface every fs event in
+		// the I/O timeline feed (F5 events / F7). Only the real eBPF io collector
+		// emits these, so a fs event also proves the io-files source is real.
+		fe := collector.FSEvent(v)
+		m.usingMockIOFiles = false
+		m.FSEvents = append([]collector.FSEvent{fe}, m.FSEvents...)
+		if len(m.FSEvents) > 40 {
+			m.FSEvents = m.FSEvents[:40]
+		}
+		m.Timeline = append([]collector.TimelineEvent{{
+			Timestamp: fe.Timestamp,
+			Category:  "io",
+			Message:   fsEventMessage(fe),
+		}}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
 		return m, waitForIOEBPF(m.collectors.IOEBPF)
 
 	case IOThroughputMsg:
@@ -1269,9 +1292,11 @@ func waitForIOEBPF(c *collector.IOEBPFCollector) tea.Cmd {
 		if ch == nil {
 			return TickMsg(time.Now())
 		}
-		v := <-ch
-		if s, ok := v.(collector.IOEBPFSnapshot); ok {
-			return IOEBPFMsg(s)
+		switch v := (<-ch).(type) {
+		case collector.IOEBPFSnapshot:
+			return IOEBPFMsg(v)
+		case collector.FSEvent:
+			return FSEventMsg(v)
 		}
 		return TickMsg(time.Now())
 	}
