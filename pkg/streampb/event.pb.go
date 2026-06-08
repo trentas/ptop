@@ -37,6 +37,7 @@ const (
 	Category_CATEGORY_LOCK        Category = 8
 	Category_CATEGORY_TIMELINE    Category = 9
 	Category_CATEGORY_SIGNAL      Category = 10 // #58 — signals delivered to the target
+	Category_CATEGORY_PROCESS     Category = 11 // #60 — execution context + exec lineage
 )
 
 // Enum value maps for Category.
@@ -53,6 +54,7 @@ var (
 		8:  "CATEGORY_LOCK",
 		9:  "CATEGORY_TIMELINE",
 		10: "CATEGORY_SIGNAL",
+		11: "CATEGORY_PROCESS",
 	}
 	Category_value = map[string]int32{
 		"CATEGORY_UNSPECIFIED": 0,
@@ -66,6 +68,7 @@ var (
 		"CATEGORY_LOCK":        8,
 		"CATEGORY_TIMELINE":    9,
 		"CATEGORY_SIGNAL":      10,
+		"CATEGORY_PROCESS":     11,
 	}
 )
 
@@ -258,6 +261,15 @@ type Event struct {
 	Category Category `protobuf:"varint,4,opt,name=category,proto3,enum=ptop.v1.Category" json:"category,omitempty"`
 	// Optional; unset until #54.
 	Stack *StackRef `protobuf:"bytes,5,opt,name=stack,proto3" json:"stack,omitempty"`
+	// Execution-context identity stamped on EVERY event (#60). uid/gid are the
+	// target's real user/group; cgroup_id is the inode of its cgroup directory
+	// (== bpf_get_current_cgroup_id() on cgroup v2). All three are 0 until the
+	// first ProcContext snapshot has been observed, and on platforms without
+	// /proc (macOS). The rich strings (cgroup path, container id, namespace
+	// inodes) live in the periodic ProcContext payload, not on every envelope.
+	Uid      uint32 `protobuf:"varint,6,opt,name=uid,proto3" json:"uid,omitempty"`
+	Gid      uint32 `protobuf:"varint,7,opt,name=gid,proto3" json:"gid,omitempty"`
+	CgroupId uint64 `protobuf:"varint,8,opt,name=cgroup_id,json=cgroupId,proto3" json:"cgroup_id,omitempty"`
 	// Types that are valid to be assigned to Payload:
 	//
 	//	*Event_Cpu
@@ -278,6 +290,7 @@ type Event struct {
 	//	*Event_FsEvent
 	//	*Event_Signal
 	//	*Event_Tls
+	//	*Event_ProcContext
 	Payload       isEvent_Payload `protobuf_oneof:"payload"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -346,6 +359,27 @@ func (x *Event) GetStack() *StackRef {
 		return x.Stack
 	}
 	return nil
+}
+
+func (x *Event) GetUid() uint32 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *Event) GetGid() uint32 {
+	if x != nil {
+		return x.Gid
+	}
+	return 0
+}
+
+func (x *Event) GetCgroupId() uint64 {
+	if x != nil {
+		return x.CgroupId
+	}
+	return 0
 }
 
 func (x *Event) GetPayload() isEvent_Payload {
@@ -517,6 +551,15 @@ func (x *Event) GetTls() *TLSPayloadEvent {
 	return nil
 }
 
+func (x *Event) GetProcContext() *ProcContext {
+	if x != nil {
+		if x, ok := x.Payload.(*Event_ProcContext); ok {
+			return x.ProcContext
+		}
+	}
+	return nil
+}
+
 type isEvent_Payload interface {
 	isEvent_Payload()
 }
@@ -594,6 +637,10 @@ type Event_Tls struct {
 	Tls *TLSPayloadEvent `protobuf:"bytes,27,opt,name=tls,proto3,oneof"` // #55 — pre-encryption / post-decryption plaintext
 }
 
+type Event_ProcContext struct {
+	ProcContext *ProcContext `protobuf:"bytes,28,opt,name=proc_context,json=procContext,proto3,oneof"` // #60 — periodic namespace/cgroup/identity snapshot
+}
+
 func (*Event_Cpu) isEvent_Payload() {}
 
 func (*Event_Syscalls) isEvent_Payload() {}
@@ -629,6 +676,8 @@ func (*Event_FsEvent) isEvent_Payload() {}
 func (*Event_Signal) isEvent_Payload() {}
 
 func (*Event_Tls) isEvent_Payload() {}
+
+func (*Event_ProcContext) isEvent_Payload() {}
 
 // ─── CPU ──────────────────────────────────────────────────────────────────
 type CpuSample struct {
@@ -2135,6 +2184,150 @@ func (x *SignalEvent) GetResult() int32 {
 	return 0
 }
 
+// ─── Execution context (#60) ────────────────────────────────────────────────
+// ProcContext is the target's container/execution context, read from /proc and
+// emitted periodically (and once at start). uid/gid are the real user/group;
+// the *_ns fields are the inode numbers of the target's namespaces (from
+// /proc/<pid>/ns/*) — equal across processes in the same namespace, so they
+// identify container/sandbox membership. cgroup_id is the inode of the cgroup
+// directory (matches bpf_get_current_cgroup_id() on cgroup v2); cgroup is its
+// path. container is a best-effort id derived from the cgroup path
+// ("docker:<12hex>", "containerd:…", "kubepods:…", "libpod:…", "lxc:…"), or ""
+// when the target isn't in a recognized container. Category on the envelope is
+// PROCESS; the snapshot time lives on the envelope. This payload is Linux-only
+// (namespaces/cgroups don't exist on macOS).
+type ProcContext struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           uint32                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Gid           uint32                 `protobuf:"varint,2,opt,name=gid,proto3" json:"gid,omitempty"`
+	PidNs         uint64                 `protobuf:"varint,3,opt,name=pid_ns,json=pidNs,proto3" json:"pid_ns,omitempty"`
+	NetNs         uint64                 `protobuf:"varint,4,opt,name=net_ns,json=netNs,proto3" json:"net_ns,omitempty"`
+	MntNs         uint64                 `protobuf:"varint,5,opt,name=mnt_ns,json=mntNs,proto3" json:"mnt_ns,omitempty"`
+	UserNs        uint64                 `protobuf:"varint,6,opt,name=user_ns,json=userNs,proto3" json:"user_ns,omitempty"`
+	CgroupNs      uint64                 `protobuf:"varint,7,opt,name=cgroup_ns,json=cgroupNs,proto3" json:"cgroup_ns,omitempty"`
+	IpcNs         uint64                 `protobuf:"varint,8,opt,name=ipc_ns,json=ipcNs,proto3" json:"ipc_ns,omitempty"`
+	UtsNs         uint64                 `protobuf:"varint,9,opt,name=uts_ns,json=utsNs,proto3" json:"uts_ns,omitempty"`
+	CgroupId      uint64                 `protobuf:"varint,10,opt,name=cgroup_id,json=cgroupId,proto3" json:"cgroup_id,omitempty"`
+	Cgroup        string                 `protobuf:"bytes,11,opt,name=cgroup,proto3" json:"cgroup,omitempty"`       // cgroup path (v2 "0::/p" → "/p")
+	Container     string                 `protobuf:"bytes,12,opt,name=container,proto3" json:"container,omitempty"` // derived container id; "" if none
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProcContext) Reset() {
+	*x = ProcContext{}
+	mi := &file_event_proto_msgTypes[23]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProcContext) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProcContext) ProtoMessage() {}
+
+func (x *ProcContext) ProtoReflect() protoreflect.Message {
+	mi := &file_event_proto_msgTypes[23]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProcContext.ProtoReflect.Descriptor instead.
+func (*ProcContext) Descriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{23}
+}
+
+func (x *ProcContext) GetUid() uint32 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *ProcContext) GetGid() uint32 {
+	if x != nil {
+		return x.Gid
+	}
+	return 0
+}
+
+func (x *ProcContext) GetPidNs() uint64 {
+	if x != nil {
+		return x.PidNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetNetNs() uint64 {
+	if x != nil {
+		return x.NetNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetMntNs() uint64 {
+	if x != nil {
+		return x.MntNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetUserNs() uint64 {
+	if x != nil {
+		return x.UserNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetCgroupNs() uint64 {
+	if x != nil {
+		return x.CgroupNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetIpcNs() uint64 {
+	if x != nil {
+		return x.IpcNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetUtsNs() uint64 {
+	if x != nil {
+		return x.UtsNs
+	}
+	return 0
+}
+
+func (x *ProcContext) GetCgroupId() uint64 {
+	if x != nil {
+		return x.CgroupId
+	}
+	return 0
+}
+
+func (x *ProcContext) GetCgroup() string {
+	if x != nil {
+		return x.Cgroup
+	}
+	return ""
+}
+
+func (x *ProcContext) GetContainer() string {
+	if x != nil {
+		return x.Container
+	}
+	return ""
+}
+
 // ─── File descriptors ───────────────────────────────────────────────────────
 type FdEntry struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -2151,7 +2344,7 @@ type FdEntry struct {
 
 func (x *FdEntry) Reset() {
 	*x = FdEntry{}
-	mi := &file_event_proto_msgTypes[23]
+	mi := &file_event_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2163,7 +2356,7 @@ func (x *FdEntry) String() string {
 func (*FdEntry) ProtoMessage() {}
 
 func (x *FdEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[23]
+	mi := &file_event_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2176,7 +2369,7 @@ func (x *FdEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdEntry.ProtoReflect.Descriptor instead.
 func (*FdEntry) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{23}
+	return file_event_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *FdEntry) GetFd() int32 {
@@ -2237,7 +2430,7 @@ type FdSnapshot struct {
 
 func (x *FdSnapshot) Reset() {
 	*x = FdSnapshot{}
-	mi := &file_event_proto_msgTypes[24]
+	mi := &file_event_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2249,7 +2442,7 @@ func (x *FdSnapshot) String() string {
 func (*FdSnapshot) ProtoMessage() {}
 
 func (x *FdSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[24]
+	mi := &file_event_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2262,7 +2455,7 @@ func (x *FdSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdSnapshot.ProtoReflect.Descriptor instead.
 func (*FdSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{24}
+	return file_event_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *FdSnapshot) GetFds() []*FdEntry {
@@ -2283,7 +2476,7 @@ type FdEvent struct {
 
 func (x *FdEvent) Reset() {
 	*x = FdEvent{}
-	mi := &file_event_proto_msgTypes[25]
+	mi := &file_event_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2295,7 +2488,7 @@ func (x *FdEvent) String() string {
 func (*FdEvent) ProtoMessage() {}
 
 func (x *FdEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[25]
+	mi := &file_event_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2308,7 +2501,7 @@ func (x *FdEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdEvent.ProtoReflect.Descriptor instead.
 func (*FdEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{25}
+	return file_event_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *FdEvent) GetMessage() string {
@@ -2334,7 +2527,7 @@ type LockEntry struct {
 
 func (x *LockEntry) Reset() {
 	*x = LockEntry{}
-	mi := &file_event_proto_msgTypes[26]
+	mi := &file_event_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2346,7 +2539,7 @@ func (x *LockEntry) String() string {
 func (*LockEntry) ProtoMessage() {}
 
 func (x *LockEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[26]
+	mi := &file_event_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2359,7 +2552,7 @@ func (x *LockEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockEntry.ProtoReflect.Descriptor instead.
 func (*LockEntry) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{26}
+	return file_event_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *LockEntry) GetUaddr() uint64 {
@@ -2420,7 +2613,7 @@ type LockSnapshot struct {
 
 func (x *LockSnapshot) Reset() {
 	*x = LockSnapshot{}
-	mi := &file_event_proto_msgTypes[27]
+	mi := &file_event_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2432,7 +2625,7 @@ func (x *LockSnapshot) String() string {
 func (*LockSnapshot) ProtoMessage() {}
 
 func (x *LockSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[27]
+	mi := &file_event_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2445,7 +2638,7 @@ func (x *LockSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockSnapshot.ProtoReflect.Descriptor instead.
 func (*LockSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{27}
+	return file_event_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *LockSnapshot) GetLocks() []*LockEntry {
@@ -2466,7 +2659,7 @@ type TimelineEvent struct {
 
 func (x *TimelineEvent) Reset() {
 	*x = TimelineEvent{}
-	mi := &file_event_proto_msgTypes[28]
+	mi := &file_event_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2478,7 +2671,7 @@ func (x *TimelineEvent) String() string {
 func (*TimelineEvent) ProtoMessage() {}
 
 func (x *TimelineEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[28]
+	mi := &file_event_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2491,7 +2684,7 @@ func (x *TimelineEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineEvent.ProtoReflect.Descriptor instead.
 func (*TimelineEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{28}
+	return file_event_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *TimelineEvent) GetMessage() string {
@@ -2516,14 +2709,17 @@ const file_event_proto_rawDesc = "" +
 	"\x04line\x18\x03 \x01(\x05R\x04line\x12\x16\n" +
 	"\x06module\x18\x04 \x01(\tR\x06module\x12\x16\n" +
 	"\x06offset\x18\x05 \x01(\x04R\x06offset\x12\x19\n" +
-	"\bbuild_id\x18\x06 \x01(\tR\abuildId\"\xa8\b\n" +
+	"\bbuild_id\x18\x06 \x01(\tR\abuildId\"\xa4\t\n" +
 	"\x05Event\x12 \n" +
 	"\fts_unix_nano\x18\x01 \x01(\x03R\n" +
 	"tsUnixNano\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\x05R\x03pid\x12\x10\n" +
 	"\x03tid\x18\x03 \x01(\x05R\x03tid\x12-\n" +
 	"\bcategory\x18\x04 \x01(\x0e2\x11.ptop.v1.CategoryR\bcategory\x12'\n" +
-	"\x05stack\x18\x05 \x01(\v2\x11.ptop.v1.StackRefR\x05stack\x12&\n" +
+	"\x05stack\x18\x05 \x01(\v2\x11.ptop.v1.StackRefR\x05stack\x12\x10\n" +
+	"\x03uid\x18\x06 \x01(\rR\x03uid\x12\x10\n" +
+	"\x03gid\x18\a \x01(\rR\x03gid\x12\x1b\n" +
+	"\tcgroup_id\x18\b \x01(\x04R\bcgroupId\x12&\n" +
 	"\x03cpu\x18\n" +
 	" \x01(\v2\x12.ptop.v1.CpuSampleH\x00R\x03cpu\x126\n" +
 	"\bsyscalls\x18\v \x01(\v2\x18.ptop.v1.SyscallSnapshotH\x00R\bsyscalls\x124\n" +
@@ -2543,7 +2739,8 @@ const file_event_proto_rawDesc = "" +
 	"\tnet_error\x18\x18 \x01(\v2\x16.ptop.v1.NetErrorEventH\x00R\bnetError\x12-\n" +
 	"\bfs_event\x18\x19 \x01(\v2\x10.ptop.v1.FSEventH\x00R\afsEvent\x12.\n" +
 	"\x06signal\x18\x1a \x01(\v2\x14.ptop.v1.SignalEventH\x00R\x06signal\x12,\n" +
-	"\x03tls\x18\x1b \x01(\v2\x18.ptop.v1.TLSPayloadEventH\x00R\x03tlsB\t\n" +
+	"\x03tls\x18\x1b \x01(\v2\x18.ptop.v1.TLSPayloadEventH\x00R\x03tls\x129\n" +
+	"\fproc_context\x18\x1c \x01(\v2\x14.ptop.v1.ProcContextH\x00R\vprocContextB\t\n" +
 	"\apayload\"(\n" +
 	"\tCpuSample\x12\x1b\n" +
 	"\tusage_pct\x18\x01 \x01(\x01R\busagePct\"V\n" +
@@ -2671,7 +2868,21 @@ const file_event_proto_rawDesc = "" +
 	"\n" +
 	"target_tid\x18\x05 \x01(\x05R\ttargetTid\x12\x12\n" +
 	"\x04code\x18\x06 \x01(\x05R\x04code\x12\x16\n" +
-	"\x06result\x18\a \x01(\x05R\x06result\"\x9c\x01\n" +
+	"\x06result\x18\a \x01(\x05R\x06result\"\xad\x02\n" +
+	"\vProcContext\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\rR\x03uid\x12\x10\n" +
+	"\x03gid\x18\x02 \x01(\rR\x03gid\x12\x15\n" +
+	"\x06pid_ns\x18\x03 \x01(\x04R\x05pidNs\x12\x15\n" +
+	"\x06net_ns\x18\x04 \x01(\x04R\x05netNs\x12\x15\n" +
+	"\x06mnt_ns\x18\x05 \x01(\x04R\x05mntNs\x12\x17\n" +
+	"\auser_ns\x18\x06 \x01(\x04R\x06userNs\x12\x1b\n" +
+	"\tcgroup_ns\x18\a \x01(\x04R\bcgroupNs\x12\x15\n" +
+	"\x06ipc_ns\x18\b \x01(\x04R\x05ipcNs\x12\x15\n" +
+	"\x06uts_ns\x18\t \x01(\x04R\x05utsNs\x12\x1b\n" +
+	"\tcgroup_id\x18\n" +
+	" \x01(\x04R\bcgroupId\x12\x16\n" +
+	"\x06cgroup\x18\v \x01(\tR\x06cgroup\x12\x1c\n" +
+	"\tcontainer\x18\f \x01(\tR\tcontainer\"\x9c\x01\n" +
 	"\aFdEntry\x12\x0e\n" +
 	"\x02fd\x18\x01 \x01(\x05R\x02fd\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x12\n" +
@@ -2698,7 +2909,7 @@ const file_event_proto_rawDesc = "" +
 	"\fLockSnapshot\x12(\n" +
 	"\x05locks\x18\x01 \x03(\v2\x12.ptop.v1.LockEntryR\x05locks\")\n" +
 	"\rTimelineEvent\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage*\xed\x01\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage*\x83\x02\n" +
 	"\bCategory\x12\x18\n" +
 	"\x14CATEGORY_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fCATEGORY_CPU\x10\x01\x12\x14\n" +
@@ -2711,7 +2922,8 @@ const file_event_proto_rawDesc = "" +
 	"\rCATEGORY_LOCK\x10\b\x12\x15\n" +
 	"\x11CATEGORY_TIMELINE\x10\t\x12\x13\n" +
 	"\x0fCATEGORY_SIGNAL\x10\n" +
-	"B\x85\x01\n" +
+	"\x12\x14\n" +
+	"\x10CATEGORY_PROCESS\x10\vB\x85\x01\n" +
 	"\vcom.ptop.v1B\n" +
 	"EventProtoP\x01Z-github.com/trentas/ptop/pkg/streampb;streampb\xa2\x02\x03PXX\xaa\x02\aPtop.V1\xca\x02\aPtop\\V1\xe2\x02\x13Ptop\\V1\\GPBMetadata\xea\x02\bPtop::V1b\x06proto3"
 
@@ -2728,7 +2940,7 @@ func file_event_proto_rawDescGZIP() []byte {
 }
 
 var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
+var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_event_proto_goTypes = []any{
 	(Category)(0),              // 0: ptop.v1.Category
 	(*StackRef)(nil),           // 1: ptop.v1.StackRef
@@ -2754,12 +2966,13 @@ var file_event_proto_goTypes = []any{
 	(*IoSnapshot)(nil),         // 21: ptop.v1.IoSnapshot
 	(*FSEvent)(nil),            // 22: ptop.v1.FSEvent
 	(*SignalEvent)(nil),        // 23: ptop.v1.SignalEvent
-	(*FdEntry)(nil),            // 24: ptop.v1.FdEntry
-	(*FdSnapshot)(nil),         // 25: ptop.v1.FdSnapshot
-	(*FdEvent)(nil),            // 26: ptop.v1.FdEvent
-	(*LockEntry)(nil),          // 27: ptop.v1.LockEntry
-	(*LockSnapshot)(nil),       // 28: ptop.v1.LockSnapshot
-	(*TimelineEvent)(nil),      // 29: ptop.v1.TimelineEvent
+	(*ProcContext)(nil),        // 24: ptop.v1.ProcContext
+	(*FdEntry)(nil),            // 25: ptop.v1.FdEntry
+	(*FdSnapshot)(nil),         // 26: ptop.v1.FdSnapshot
+	(*FdEvent)(nil),            // 27: ptop.v1.FdEvent
+	(*LockEntry)(nil),          // 28: ptop.v1.LockEntry
+	(*LockSnapshot)(nil),       // 29: ptop.v1.LockSnapshot
+	(*TimelineEvent)(nil),      // 30: ptop.v1.TimelineEvent
 }
 var file_event_proto_depIdxs = []int32{
 	0,  // 0: ptop.v1.Event.category:type_name -> ptop.v1.Category
@@ -2772,29 +2985,30 @@ var file_event_proto_depIdxs = []int32{
 	17, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
 	18, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
 	21, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
-	25, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
-	26, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
-	28, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
-	29, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
+	26, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
+	27, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
+	29, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
+	30, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
 	14, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
 	12, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
 	9,  // 16: ptop.v1.Event.net_error:type_name -> ptop.v1.NetErrorEvent
 	22, // 17: ptop.v1.Event.fs_event:type_name -> ptop.v1.FSEvent
 	23, // 18: ptop.v1.Event.signal:type_name -> ptop.v1.SignalEvent
 	10, // 19: ptop.v1.Event.tls:type_name -> ptop.v1.TLSPayloadEvent
-	5,  // 20: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
-	7,  // 21: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
-	13, // 22: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
-	15, // 23: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
-	19, // 24: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
-	20, // 25: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
-	24, // 26: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
-	27, // 27: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
-	28, // [28:28] is the sub-list for method output_type
-	28, // [28:28] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	24, // 20: ptop.v1.Event.proc_context:type_name -> ptop.v1.ProcContext
+	5,  // 21: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
+	7,  // 22: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
+	13, // 23: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
+	15, // 24: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
+	19, // 25: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
+	20, // 26: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
+	25, // 27: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
+	28, // 28: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
+	29, // [29:29] is the sub-list for method output_type
+	29, // [29:29] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_event_proto_init() }
@@ -2821,6 +3035,7 @@ func file_event_proto_init() {
 		(*Event_FsEvent)(nil),
 		(*Event_Signal)(nil),
 		(*Event_Tls)(nil),
+		(*Event_ProcContext)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -2828,7 +3043,7 @@ func file_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_proto_rawDesc), len(file_event_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   29,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

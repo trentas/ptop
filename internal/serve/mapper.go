@@ -170,6 +170,16 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Code: x.Code, Result: x.Result,
 		}}
 
+	case collector.ProcContext:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_PROCESS
+		ev.Payload = &pb.Event_ProcContext{ProcContext: &pb.ProcContext{
+			Uid: x.UID, Gid: x.GID,
+			PidNs: x.PIDNS, NetNs: x.NetNS, MntNs: x.MntNS, UserNs: x.UserNS,
+			CgroupNs: x.CgroupNS, IpcNs: x.IPCNS, UtsNs: x.UTSNS,
+			CgroupId: x.CgroupID, Cgroup: x.Cgroup, Container: x.Container,
+		}}
+
 	case collector.TimelineEvent:
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = timelineCategory(x.Category)

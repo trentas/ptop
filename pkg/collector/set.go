@@ -34,6 +34,7 @@ type Sources struct {
 	Locks    string
 	Signals  string
 	TLS      string
+	Context  string
 }
 
 // Set owns the live collectors for a single target PID, chosen by the
@@ -57,6 +58,7 @@ type Set struct {
 	FutexEBPF    *FutexEBPFCollector
 	SignalEBPF   *SignalEBPFCollector
 	TLSEBPF      *TLSEBPFCollector
+	ProcContext  *ProcContextCollector
 
 	Sources Sources
 }
@@ -138,6 +140,14 @@ func NewSet(cfg SetConfig) *Set {
 	}
 	if c := NewIOThroughputCollector(); c.Start(cfg.PID) == nil {
 		s.IOThroughput = c
+	}
+
+	// Execution/container context (#60): namespace + cgroup + uid/gid from
+	// /proc. Pure /proc (no eBPF, no caps), so it starts even in --no-ebpf mode;
+	// the !linux stub fails Start (ns/cgroup are Linux-only), leaving it nil.
+	if c := NewProcContextCollector(); c.Start(cfg.PID) == nil {
+		s.ProcContext = c
+		s.Sources.Context = SourceProc
 	}
 
 	// eBPF-only subsystems: only with -tags=ebpf, kernel >= 5.8 and
@@ -270,6 +280,9 @@ func (s *Set) Stop() {
 	if s.TLSEBPF != nil {
 		s.TLSEBPF.Stop()
 	}
+	if s.ProcContext != nil {
+		s.ProcContext.Stop()
+	}
 }
 
 // Collectors returns every started collector as a Collector. Used by consumers
@@ -302,6 +315,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.FutexEBPF, s.FutexEBPF != nil)
 	add(s.SignalEBPF, s.SignalEBPF != nil)
 	add(s.TLSEBPF, s.TLSEBPF != nil)
+	add(s.ProcContext, s.ProcContext != nil)
 	return cs
 }
 
@@ -318,6 +332,7 @@ func (s *Set) MockIOThroughput() bool { return s.IOThroughput == nil }
 func (s *Set) MockSyscalls() bool     { return s.SyscallsEBPF == nil }
 func (s *Set) MockIOFiles() bool      { return s.IOEBPF == nil }
 func (s *Set) MockNet() bool          { return s.NetworkEBPF == nil }
+func (s *Set) MockContext() bool      { return s.ProcContext == nil }
 
 // warnEBPFFailure reports an eBPF collector start failure to stderr, but only
 // when this binary actually embeds eBPF (-tags=ebpf). Without it, the failure

@@ -18,6 +18,7 @@ enum Category {
   CATEGORY_LOCK = 8;
   CATEGORY_TIMELINE = 9;
   CATEGORY_SIGNAL = 10; // #58 — signals delivered to the target
+  CATEGORY_PROCESS = 11; // #60 — execution context + exec lineage
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
@@ -60,6 +61,16 @@ message Event {
   // Optional; unset until #54.
   StackRef stack = 5;
 
+  // Execution-context identity stamped on EVERY event (#60). uid/gid are the
+  // target's real user/group; cgroup_id is the inode of its cgroup directory
+  // (== bpf_get_current_cgroup_id() on cgroup v2). All three are 0 until the
+  // first ProcContext snapshot has been observed, and on platforms without
+  // /proc (macOS). The rich strings (cgroup path, container id, namespace
+  // inodes) live in the periodic ProcContext payload, not on every envelope.
+  uint32 uid = 6;
+  uint32 gid = 7;
+  uint64 cgroup_id = 8;
+
   oneof payload {
     CpuSample cpu = 10;
     SyscallSnapshot syscalls = 11;
@@ -80,8 +91,9 @@ message Event {
     FSEvent fs_event = 25; // #57 — filesystem semantics (denial/delete/rename)
     SignalEvent signal = 26; // #58 — signal delivered to the target, with origin
     TLSPayloadEvent tls = 27; // #55 — pre-encryption / post-decryption plaintext
-    // 28+ reserved for the remaining #52 capabilities (security/LSM,
-    // exec-context enrichment).
+    ProcContext proc_context = 28; // #60 — periodic namespace/cgroup/identity snapshot
+    // 29+ reserved for the remaining #52 capabilities (security/LSM,
+    // exec lineage — #60 ProcLifecycleEvent).
   }
 }
 
@@ -284,6 +296,33 @@ message SignalEvent {
   int32 target_tid = 5;
   int32 code = 6; // si_code
   int32 result = 7; // TRACE_SIGNAL_* disposition
+}
+
+// ─── Execution context (#60) ────────────────────────────────────────────────
+// ProcContext is the target's container/execution context, read from /proc and
+// emitted periodically (and once at start). uid/gid are the real user/group;
+// the *_ns fields are the inode numbers of the target's namespaces (from
+// /proc/<pid>/ns/*) — equal across processes in the same namespace, so they
+// identify container/sandbox membership. cgroup_id is the inode of the cgroup
+// directory (matches bpf_get_current_cgroup_id() on cgroup v2); cgroup is its
+// path. container is a best-effort id derived from the cgroup path
+// ("docker:<12hex>", "containerd:…", "kubepods:…", "libpod:…", "lxc:…"), or ""
+// when the target isn't in a recognized container. Category on the envelope is
+// PROCESS; the snapshot time lives on the envelope. This payload is Linux-only
+// (namespaces/cgroups don't exist on macOS).
+message ProcContext {
+  uint32 uid = 1;
+  uint32 gid = 2;
+  uint64 pid_ns = 3;
+  uint64 net_ns = 4;
+  uint64 mnt_ns = 5;
+  uint64 user_ns = 6;
+  uint64 cgroup_ns = 7;
+  uint64 ipc_ns = 8;
+  uint64 uts_ns = 9;
+  uint64 cgroup_id = 10;
+  string cgroup = 11; // cgroup path (v2 "0::/p" → "/p")
+  string container = 12; // derived container id; "" if none
 }
 
 // ─── File descriptors ───────────────────────────────────────────────────────

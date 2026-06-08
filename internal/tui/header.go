@@ -60,6 +60,12 @@ func renderHeader(m Model) string {
 	if m.Runtime != "" {
 		leftSegs = append(leftSegs, seg{Badge(m.Runtime, ColorCyan), 2})
 	}
+	// Container/execution context (#60): show the derived container id when the
+	// target runs inside one. Lowest priority (prio 2) — drops first on narrow
+	// terminals, like the runtime badge.
+	if m.ProcCtx.Container != "" {
+		leftSegs = append(leftSegs, seg{Badge(m.ProcCtx.Container, ColorPurple), 2})
+	}
 	leftSegs = append(leftSegs,
 		seg{stateBadge, 1},
 		seg{fdBadge, 1},

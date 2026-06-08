@@ -271,6 +271,34 @@ type SignalEvent struct {
 	Result     int32 // TRACE_SIGNAL_* disposition
 }
 
+// ─── Execution context (#60) ─────────────────────────────────────────────────
+
+// ProcContext is the target's container/execution context, read from /proc and
+// published periodically (and once at start). UID/GID are the real user/group.
+// The *NS fields are namespace inode numbers (from /proc/<pid>/ns/*) — equal
+// across processes sharing a namespace, so they identify container/sandbox
+// membership. CgroupID is the inode of the cgroup directory (matches
+// bpf_get_current_cgroup_id() on cgroup v2); Cgroup is its path. Container is a
+// best-effort id derived from the cgroup path ("docker:<12hex>",
+// "containerd:…", "kubepods:…", "libpod:…", "lxc:…"), or "" when the target is
+// not in a recognized container. Linux-only (namespaces/cgroups don't exist on
+// macOS — the collector simply doesn't start there).
+type ProcContext struct {
+	Timestamp time.Time
+	UID       uint32
+	GID       uint32
+	PIDNS     uint64
+	NetNS     uint64
+	MntNS     uint64
+	UserNS    uint64
+	CgroupNS  uint64
+	IPCNS     uint64
+	UTSNS     uint64
+	CgroupID  uint64
+	Cgroup    string // cgroup path
+	Container string // derived container id; "" if none
+}
+
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
 type TimelineEvent struct {
