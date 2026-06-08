@@ -76,8 +76,9 @@ message Event {
     HeapSnapshot heap = 22; // #53 — periodic heap aggregate
     HeapEvent heap_event = 23; // #53 — per alloc/free
     NetErrorEvent net_error = 24; // #56 — detailed network error
-    // 25+ reserved for the remaining #52 capabilities (pre-encryption payload,
-    // signals, fs semantics, security/LSM, exec-context enrichment).
+    FSEvent fs_event = 25; // #57 — filesystem semantics (denial/delete/rename)
+    // 26+ reserved for the remaining #52 capabilities (pre-encryption payload,
+    // signals, security/LSM, exec-context enrichment).
   }
 }
 
@@ -230,6 +231,21 @@ message IoSnapshot {
   double io_wait_pct = 7;
   repeated IoFileStats top_files = 8;
   repeated LatencyBucket latency_buckets = 9;
+}
+
+// ─── Filesystem semantics (#57) ─────────────────────────────────────────────
+// FSEvent is a kernel-observed filesystem semantic event: a permission denial on
+// open/openat (op="denied", err EACCES/EPERM), a delete (op="deleted"), or a
+// rename (op="renamed"). new_path is the rename destination ("" otherwise);
+// errno/err carry the syscall result (0/"" on success — deletes and renames are
+// emitted on success too, denials only on failure). Category on the envelope is
+// IO; the event timestamp lives on the envelope.
+message FSEvent {
+  string op = 1; // "denied" | "deleted" | "renamed"
+  string path = 2;
+  string new_path = 3; // rename destination; "" otherwise
+  int32 errno = 4; // 0 on success; positive errno (EACCES=13, …)
+  string err = 5; // "EACCES" | "EPERM" | "ENOENT" | "" …
 }
 
 // ─── File descriptors ───────────────────────────────────────────────────────

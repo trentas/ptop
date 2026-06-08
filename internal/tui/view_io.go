@@ -46,7 +46,7 @@ func renderIOView(m Model, w, h int) string {
 		rightW, rightHs[0])
 
 	anomalies := Panel("Anomalies",
-		renderIOAnomalies(m.IOStats),
+		renderIOAnomalies(m, rightW-2, rightHs[1]-3),
 		rightW, rightHs[1])
 
 	events := Panel("I/O Events",
@@ -239,20 +239,78 @@ func renderIOStats(s collector.IOStats, w int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderIOAnomalies(s collector.IOStats) string {
+// renderIOAnomalies surfaces, newest-first: real permission denials (#57, only
+// the eBPF io collector emits them), then the IOStats-derived fsync/I/O-wait
+// threshold anomalies. The "/proc/self/status polling" heuristic is simulated,
+// so it only appears in mock mode. With a real source and nothing wrong, it
+// honestly reports a healthy filesystem rather than inventing a warning.
+func renderIOAnomalies(m Model, w, h int) string {
 	lines := []string{}
-	if s.Fsyncs > 15 {
+	room := func() bool { return h <= 0 || len(lines) < h }
+
+	// Permission denials are the headline anomaly. Deletes/renames are events,
+	// not anomalies — they flow to the I/O Events feed, not here.
+	for _, e := range m.FSEvents {
+		if e.Op != "denied" || !room() {
+			continue
+		}
+		style := lipgloss.NewStyle().Foreground(fsEventColor(e.Op)).Background(ColorPanel)
+		lines = append(lines, style.Render(truncate("⚠ "+fsEventMessage(e), w)))
+	}
+
+	s := m.IOStats
+	if s.Fsyncs > 15 && room() {
 		lines = append(lines, RedStyle.Render("⚠ high fsync freq → /data/db"))
 	}
-	lines = append(lines, AmberStyle.Render("⚠ /proc/self/status: polling (×12/s)"))
-	if s.IOWaitPct > 15 {
+	if s.IOWaitPct > 15 && room() {
 		lines = append(lines, RedStyle.Render(fmt.Sprintf("⚠ I/O wait %.1f%% → disk saturated", s.IOWaitPct)))
 	}
-	if len(lines) == 1 {
-		// only the polling one — so add an OK
-		lines = append([]string{GreenStyle.Render("✓ throughput stable")}, lines...)
+	if m.usingMockIOFiles && room() {
+		lines = append(lines, AmberStyle.Render("⚠ /proc/self/status: polling (×12/s)"))
+	}
+
+	if len(lines) == 0 {
+		if m.usingMockIOFiles {
+			return GreenStyle.Render("✓ throughput stable")
+		}
+		return GreenStyle.Render("✓ no permission denials")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// fsEventMessage renders an FSEvent as a one-line cause + path(s), used both by
+// the F5 Anomalies panel (denials) and the synthesized I/O-timeline entry
+// (every fs event).
+func fsEventMessage(e collector.FSEvent) string {
+	switch e.Op {
+	case "denied":
+		return fmt.Sprintf("denied %s (%s)", e.Path, e.Err)
+	case "deleted":
+		if e.Errno != 0 {
+			return fmt.Sprintf("delete failed %s (%s)", e.Path, e.Err)
+		}
+		return fmt.Sprintf("deleted %s", e.Path)
+	case "renamed":
+		if e.Errno != 0 {
+			return fmt.Sprintf("rename failed %s → %s (%s)", e.Path, e.NewPath, e.Err)
+		}
+		return fmt.Sprintf("renamed %s → %s", e.Path, e.NewPath)
+	default:
+		return fmt.Sprintf("%s %s", e.Op, e.Path)
+	}
+}
+
+// fsEventColor maps an fs op to a severity color: a denial is red (a blocked
+// access), a delete amber (destructive), a rename muted (benign bookkeeping).
+func fsEventColor(op string) lipgloss.Color {
+	switch op {
+	case "denied":
+		return ColorRed
+	case "deleted":
+		return ColorAmber
+	default:
+		return ColorMuted
+	}
 }
 
 func thresholdColor(value, warn float64) lipgloss.Color {
