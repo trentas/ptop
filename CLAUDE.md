@@ -79,7 +79,8 @@ ptop/
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
 │   │   │   ├── futex.bpf.c        futex wait/wake → lock graph
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
-│   │   │   └── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
+│   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
+│   │   │   └── proc.bpf.c         sched fork/exec/exit → exec lineage subtree (#60)
 │   │   ├── available.go           runtime feature flag (build-tag based)
 │   │   ├── target.go              pid-namespace target resolver (shared)
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
@@ -94,6 +95,8 @@ ptop/
 │   │   ├── tls.go                 libssl uprobe loader → TLS plaintext (#55)
 │   │   ├── threads.go             sched_switch loader
 │   │   ├── futex.go               futex wait/wake loader
+│   │   ├── signal.go              signal_generate loader (#58)
+│   │   ├── proc.go                sched fork/exec/exit loader → exec lineage (#60)
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
@@ -148,6 +151,8 @@ ptop/
 │       ├── futex_ebpf.go          lock graph from futex tracking
 │       ├── proccontext_linux.go   /proc ns + cgroup + uid/gid context (#60)
 │       ├── proccontext.go         container-id / cgroup / ns-inode parsers (build-tag-free)
+│       ├── proclifecycle_ebpf.go  sched fork/exec/exit → exec lineage subtree (#60)
+│       ├── proclifecycle_decode.go  kind/comm/filename decode (build-tag-free)
 │       ├── fds.go                 /proc/<pid>/fd + fdinfo + events
 │       ├── sockets.go             inode → host:port via /proc/net/*
 │       ├── syscall_names.go       syscall id → name table
