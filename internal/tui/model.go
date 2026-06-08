@@ -211,6 +211,24 @@ type Model struct {
 	// IO maxima with slow decay — avoids rescaling sparklines every tick.
 	ioMaxRead  float64
 	ioMaxWrite float64
+
+	// render memoizes the last frame so View() stays cheap on the high-rate
+	// collector messages. See renderState.
+	render *renderState
+}
+
+// renderState memoizes rendered frames for the FPS-bounded render loop.
+// bubbletea calls View() once per message (its eventLoop does
+// `renderer.write(model.View())` after every Update), so without this the full
+// lipgloss layout is rebuilt on every collector publish (~20+/s) even though
+// the terminal only repaints at the framerate. It is a pointer field so the
+// value-copied Model shares one cache across Update/View calls: data messages
+// just mutate state (commit stays false → View returns the cached frame), while
+// the FPS TickMsg, key presses and resizes set commit=true to force a fresh
+// render. Worst-case staleness of a data update is one frame (1/FPS).
+type renderState struct {
+	frame  string // last fully-rendered frame
+	commit bool   // when true, View() rebuilds; otherwise it returns `frame`
 }
 
 // ─── Construction ────────────────────────────────────────────────────────────
@@ -229,6 +247,7 @@ func NewModel(cfg Config) Model {
 		FDFilter:      "all",
 		SyscallCounts: make(map[string]uint64),
 		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
+		render:        &renderState{},
 	}
 
 	m.seedMockData()
@@ -358,21 +377,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = v.Width
 		m.Height = v.Height
+		m.render.commit = true // layout reflow — render now
 		return m, nil
 
 	case tea.KeyMsg:
 		next, cmd := m.handleKey(v)
+		next.render.commit = true // user input — render now for responsiveness
 		return next, cmd
 
 	case TickMsg:
-		// Render at configured FPS (clock/uptime stay smooth), but the simulation
-		// only advances every simInterval — avoids the "everything jumping" effect
-		// from too many changes per second. When the frame is identical, bubbletea
-		// detects an empty diff and doesn't even repaint.
+		// The FPS heartbeat. This is the ONLY periodic render trigger: data
+		// messages (CpuMsg, NetMsg, …) just mutate state and leave the frame
+		// cached, so the full lipgloss layout is rebuilt at most FPS times/s
+		// instead of once per collector publish. The clock/uptime stay smooth
+		// because this fires at FPS; the simulation still only advances every
+		// simInterval to avoid the "everything jumping" effect. When the frame
+		// is identical, bubbletea detects an empty diff and doesn't repaint.
 		if !m.Paused && time.Since(m.lastSimAt) >= simInterval {
 			m.tick()
 			m.lastSimAt = time.Now()
 		}
+		m.render.commit = true
 		return m, tick(m.cfg.FPS)
 
 	case FDMsg:
@@ -635,6 +660,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
+	// Frame memoization: bubbletea calls View() once per message, but only the
+	// FPS TickMsg, key presses and resizes ask for a fresh render (commit). On
+	// the high-rate collector messages commit stays false, so we return the
+	// last frame and skip the entire lipgloss layout (StringWidth, color
+	// conversion, ~MBs of allocation). See renderState.
+	if m.render != nil && !m.render.commit && m.render.frame != "" {
+		return m.render.frame
+	}
+
+	out := m.renderFrame()
+
+	if m.render != nil {
+		m.render.frame = out
+		m.render.commit = false
+	}
+	return out
+}
+
+// renderFrame builds the full frame from the current state. Pure (no caching);
+// View() owns the memoization.
+func (m Model) renderFrame() string {
 	if m.Width == 0 || m.Height == 0 {
 		return "starting..."
 	}
