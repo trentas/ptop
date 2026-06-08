@@ -11,6 +11,12 @@ import (
 type SetConfig struct {
 	PID    int
 	NoEBPF bool // degraded mode: skip eBPF, use /proc (or libproc on macOS) only
+
+	// TLS opts into pre-encryption payload capture via libssl uprobes (#55) —
+	// OFF by default (privacy). TLSMaxBytes caps the plaintext copied per call
+	// (0 = metadata only: direction/fd/byte count, no payload bytes).
+	TLS         bool
+	TLSMaxBytes int
 }
 
 // Sources records where each subsystem's real data came from. The value is
@@ -27,6 +33,7 @@ type Sources struct {
 	Net      string
 	Locks    string
 	Signals  string
+	TLS      string
 }
 
 // Set owns the live collectors for a single target PID, chosen by the
@@ -49,6 +56,7 @@ type Set struct {
 	NetworkEBPF  *NetworkEBPFCollector
 	FutexEBPF    *FutexEBPFCollector
 	SignalEBPF   *SignalEBPFCollector
+	TLSEBPF      *TLSEBPFCollector
 
 	Sources Sources
 }
@@ -188,6 +196,19 @@ func NewSet(cfg SetConfig) *Set {
 		} else {
 			warnEBPFFailure("signals", err)
 		}
+
+		// TLS payload capture (#55) — OFF unless explicitly opted in (--tls),
+		// because it observes plaintext. eBPF-only (libssl uprobes), no /proc
+		// fallback, never simulated.
+		if cfg.TLS {
+			c7 := NewTLSEBPFCollector(cfg.TLSMaxBytes)
+			if err := c7.Start(cfg.PID); err == nil {
+				s.TLSEBPF = c7
+				s.Sources.TLS = "eBPF"
+			} else {
+				warnEBPFFailure("tls", err)
+			}
+		}
 	}
 
 	return s
@@ -246,6 +267,9 @@ func (s *Set) Stop() {
 	if s.SignalEBPF != nil {
 		s.SignalEBPF.Stop()
 	}
+	if s.TLSEBPF != nil {
+		s.TLSEBPF.Stop()
+	}
 }
 
 // Collectors returns every started collector as a Collector. Used by consumers
@@ -277,6 +301,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.NetworkEBPF, s.NetworkEBPF != nil)
 	add(s.FutexEBPF, s.FutexEBPF != nil)
 	add(s.SignalEBPF, s.SignalEBPF != nil)
+	add(s.TLSEBPF, s.TLSEBPF != nil)
 	return cs
 }
 

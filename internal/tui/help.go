@@ -127,6 +127,20 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			}
 			return statusRowNA("signals", "needs eBPF (signal_generate tracepoint)")
 		}(),
+		// TLS payload (#55) is opt-in (--tls) and stream/export-only. "off" when
+		// not requested; "real via eBPF (libssl)" when attached; "unavailable"
+		// when requested but no libssl is mapped (Go/static target).
+		func() string {
+			if m.tlsSource != "" {
+				return statusRow("tls", false, m.tlsSource+" (libssl)")
+			}
+			if m.cfg.TLS {
+				return statusRowNA("tls", "no libssl mapped (Go/static target)")
+			}
+			return keyStyle.Render(padRight("tls", 14)) + descStyle.Render(" ") +
+				lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Render("○ off") +
+				sourceStyle.Render(" — enable with --tls")
+		}(),
 		statusRow("threads", m.usingMockThreads, m.threadsSource),
 		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
 		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),

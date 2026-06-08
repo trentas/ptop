@@ -67,6 +67,9 @@ type Config struct {
 	FPS    int
 	NoEBPF bool
 	Export bool
+	// TLS payload capture (#55) — opt-in, stream/export-only (no live panel).
+	TLS         bool
+	TLSMaxBytes int
 }
 
 // ─── Bubbletea messages ──────────────────────────────────────────────────────
@@ -87,6 +90,7 @@ type FSEventMsg collector.FSEvent
 type NetMsg []collector.NetConn
 type NetErrorMsg collector.NetError
 type SignalMsg collector.SignalEvent
+type TLSPayloadMsg collector.TLSPayload
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
@@ -125,6 +129,7 @@ type Model struct {
 	FDEvents       []collector.FDEvent
 	Timeline       []collector.TimelineEvent
 	Signals        []collector.SignalEvent // eBPF signals delivered to the target (#58), newest-first
+	TLSPayloads    []collector.TLSPayload  // eBPF TLS payloads (#55), newest-first; stream/export-only, no live panel
 	LockGraph      []collector.LockEntry
 
 	// UI state
@@ -185,6 +190,7 @@ type Model struct {
 	heapSource     string
 	locksSource    string
 	signalsSource  string
+	tlsSource      string
 
 	// Stable caches to avoid visual reordering between ticks.
 	// topSyscallNames is recomputed every `topRefreshInterval`; between refreshes
@@ -223,7 +229,9 @@ func NewModel(cfg Config) Model {
 	// duplicated. PID <= 0 yields an empty Set: every Mock* stays true and the
 	// model simulates everything. eBPF start failures are logged to stderr by
 	// the Set (before the alt-screen) and fall back to /proc where possible.
-	m.collectors = collector.NewSet(collector.SetConfig{PID: cfg.PID, NoEBPF: cfg.NoEBPF})
+	m.collectors = collector.NewSet(collector.SetConfig{
+		PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
+	})
 
 	// Mirror the Set's source labels + mock state into the model fields the
 	// help overlay (?) reads. Source "" means no real source started → mock.
@@ -236,6 +244,7 @@ func NewModel(cfg Config) Model {
 	m.netSource = m.collectors.Sources.Net
 	m.locksSource = m.collectors.Sources.Locks
 	m.signalsSource = m.collectors.Sources.Signals
+	m.tlsSource = m.collectors.Sources.TLS
 
 	m.usingMockFDs = m.collectors.MockFDs()
 	m.usingMockCPU = m.collectors.MockCPU()
@@ -309,6 +318,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.collectors.SignalEBPF != nil {
 		cmds = append(cmds, waitForSignalEBPF(m.collectors.SignalEBPF))
+	}
+	if m.collectors.TLSEBPF != nil {
+		cmds = append(cmds, waitForTLSEBPF(m.collectors.TLSEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -470,6 +482,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Timeline = m.Timeline[:120]
 		}
 		return m, waitForSignalEBPF(m.collectors.SignalEBPF)
+
+	case TLSPayloadMsg:
+		// Real TLS payload (#55). Stream/export-only — there is no live panel
+		// (plaintext in an interactive view is a privacy footgun), but we retain
+		// a capped, newest-first buffer so `--tls --export` includes it in the
+		// snapshot. Plaintext bytes are present only when --tls-bytes was set.
+		p := collector.TLSPayload(v)
+		m.TLSPayloads = append([]collector.TLSPayload{p}, m.TLSPayloads...)
+		if len(m.TLSPayloads) > 40 {
+			m.TLSPayloads = m.TLSPayloads[:40]
+		}
+		return m, waitForTLSEBPF(m.collectors.TLSEBPF)
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
@@ -1204,6 +1228,22 @@ func waitForSignalEBPF(c *collector.SignalEBPFCollector) tea.Cmd {
 		}
 		if s, ok := (<-ch).(collector.SignalEvent); ok {
 			return SignalMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForTLSEBPF(c *collector.TLSEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		if p, ok := (<-ch).(collector.TLSPayload); ok {
+			return TLSPayloadMsg(p)
 		}
 		return TickMsg(time.Now())
 	}

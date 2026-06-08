@@ -79,8 +79,9 @@ message Event {
     NetErrorEvent net_error = 24; // #56 — detailed network error
     FSEvent fs_event = 25; // #57 — filesystem semantics (denial/delete/rename)
     SignalEvent signal = 26; // #58 — signal delivered to the target, with origin
-    // 27+ reserved for the remaining #52 capabilities (pre-encryption payload,
-    // security/LSM, exec-context enrichment).
+    TLSPayloadEvent tls = 27; // #55 — pre-encryption / post-decryption plaintext
+    // 28+ reserved for the remaining #52 capabilities (security/LSM,
+    // exec-context enrichment).
   }
 }
 
@@ -126,6 +127,23 @@ message NetErrorEvent {
   string remote = 2; // peer host:port
   uint32 retransmits = 3;
   double detail_ms = 4;
+}
+
+// TLSPayloadEvent is plaintext observed around a TLS call (#55), captured via
+// libssl uprobes before encryption (dir "write") or after decryption (dir
+// "read"). fd is the owning socket (−1 if unknown); len is the call's plaintext
+// byte count. data holds up to the configured cap of those bytes and is EMPTY
+// unless --tls-bytes was set (metadata-only default). Category on the envelope
+// is NETWORK; the event timestamp lives on the envelope.
+//
+// PRIVACY: data may contain credentials/PII. Capture is opt-in (--tls) and the
+// payload bytes require the additional --tls-bytes flag. Consumers of the stream
+// must treat data as sensitive.
+message TLSPayloadEvent {
+  string dir = 1; // "write" | "read"
+  int32 fd = 2;
+  int32 len = 3;
+  bytes data = 4; // captured plaintext (≤ cap; empty in metadata-only mode)
 }
 
 // ─── Memory ─────────────────────────────────────────────────────────────────
