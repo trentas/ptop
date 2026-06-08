@@ -91,6 +91,7 @@ type NetMsg []collector.NetConn
 type NetErrorMsg collector.NetError
 type SignalMsg collector.SignalEvent
 type TLSPayloadMsg collector.TLSPayload
+type ProcContextMsg collector.ProcContext
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
@@ -130,6 +131,7 @@ type Model struct {
 	Timeline       []collector.TimelineEvent
 	Signals        []collector.SignalEvent // eBPF signals delivered to the target (#58), newest-first
 	TLSPayloads    []collector.TLSPayload  // eBPF TLS payloads (#55), newest-first; stream/export-only, no live panel
+	ProcCtx        collector.ProcContext   // /proc namespace/cgroup/identity context (#60); zero value until first sample (or on macOS)
 	LockGraph      []collector.LockEntry
 
 	// UI state
@@ -191,6 +193,7 @@ type Model struct {
 	locksSource    string
 	signalsSource  string
 	tlsSource      string
+	contextSource  string
 
 	// Stable caches to avoid visual reordering between ticks.
 	// topSyscallNames is recomputed every `topRefreshInterval`; between refreshes
@@ -245,6 +248,7 @@ func NewModel(cfg Config) Model {
 	m.locksSource = m.collectors.Sources.Locks
 	m.signalsSource = m.collectors.Sources.Signals
 	m.tlsSource = m.collectors.Sources.TLS
+	m.contextSource = m.collectors.Sources.Context
 
 	m.usingMockFDs = m.collectors.MockFDs()
 	m.usingMockCPU = m.collectors.MockCPU()
@@ -321,6 +325,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.collectors.TLSEBPF != nil {
 		cmds = append(cmds, waitForTLSEBPF(m.collectors.TLSEBPF))
+	}
+	if m.collectors.ProcContext != nil {
+		cmds = append(cmds, waitForProcContext(m.collectors.ProcContext))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -494,6 +501,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.TLSPayloads = m.TLSPayloads[:40]
 		}
 		return m, waitForTLSEBPF(m.collectors.TLSEBPF)
+
+	case ProcContextMsg:
+		// Execution/container context refresh (#60). We keep only the latest
+		// snapshot — the header shows the container badge; the full context is
+		// in the export and the stream. Never simulated.
+		m.ProcCtx = collector.ProcContext(v)
+		return m, waitForProcContext(m.collectors.ProcContext)
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
@@ -1228,6 +1242,22 @@ func waitForSignalEBPF(c *collector.SignalEBPFCollector) tea.Cmd {
 		}
 		if s, ok := (<-ch).(collector.SignalEvent); ok {
 			return SignalMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForProcContext(c *collector.ProcContextCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		if s, ok := (<-ch).(collector.ProcContext); ok {
+			return ProcContextMsg(s)
 		}
 		return TickMsg(time.Now())
 	}

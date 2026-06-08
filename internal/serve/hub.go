@@ -17,6 +17,13 @@ type Hub struct {
 	buildID string // target exec build-id, stamped onto every StackRef (#54)
 	mu      sync.Mutex
 	sinks   map[Sink]struct{}
+
+	// Execution-context identity (#60) stamped onto every outgoing envelope.
+	// Updated whenever a ProcContext snapshot flows through; zero until the
+	// first one is observed (and on platforms without /proc).
+	identMu  sync.Mutex
+	uid, gid uint32
+	cgroupID uint64
 }
 
 func NewHub(pid int, buildID string) *Hub {
@@ -45,11 +52,34 @@ func (h *Hub) drain(ctx context.Context, ch <-chan interface{}) {
 			if !ok {
 				return
 			}
+			// A ProcContext refreshes the cached identity before it (and every
+			// subsequent event) is stamped — so the snapshot event itself
+			// carries its own up-to-date uid/gid/cgroup_id.
+			if pc, ok := v.(collector.ProcContext); ok {
+				h.setIdent(pc)
+			}
 			if ev := toEvent(h.pid, h.buildID, v); ev != nil {
+				h.stampIdent(ev)
 				h.broadcast(ev)
 			}
 		}
 	}
+}
+
+// setIdent updates the cached execution-context identity from a ProcContext
+// snapshot (#60).
+func (h *Hub) setIdent(pc collector.ProcContext) {
+	h.identMu.Lock()
+	h.uid, h.gid, h.cgroupID = pc.UID, pc.GID, pc.CgroupID
+	h.identMu.Unlock()
+}
+
+// stampIdent writes the cached identity onto an event envelope. Values are 0
+// until the first ProcContext arrives (and where /proc is unavailable).
+func (h *Hub) stampIdent(ev *pb.Event) {
+	h.identMu.Lock()
+	ev.Uid, ev.Gid, ev.CgroupId = h.uid, h.gid, h.cgroupID
+	h.identMu.Unlock()
 }
 
 // broadcast hands the event to every sink. Emit must not block (sinks own their

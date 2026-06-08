@@ -163,6 +163,11 @@ overlay shows which one is active per tab.
 - `iowait_proc.go` — `/proc/<pid>/stat` field 42 (delayacct_blkio_ticks)
 - `io_proc.go` — `/proc/<pid>/io`
 - `fds.go` + `sockets.go` — `/proc/<pid>/fd`, `/proc/net/{tcp,tcp6,udp,udp6,unix}`
+- `proccontext_linux.go` — `/proc/<pid>/{status,cgroup,ns/*}` → namespace +
+  cgroup + uid/gid (the execution/container context, #60). When the target runs
+  in a container the derived id (`docker:…`, `containerd:…`, `kubepods:…`, …)
+  shows in the header; the full context rides the `--serve`/`--export` stream
+  (a periodic `ProcContext`, plus uid/gid/cgroup_id stamped on every event).
 
 eBPF programs in `internal/bpf/programs/`:
 

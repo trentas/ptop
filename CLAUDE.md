@@ -146,6 +146,8 @@ ptop/
 │       ├── network_ebpf.go        connections + RTT + bytes
 │       ├── syscalls_ebpf.go       per-syscall counts + latency
 │       ├── futex_ebpf.go          lock graph from futex tracking
+│       ├── proccontext_linux.go   /proc ns + cgroup + uid/gid context (#60)
+│       ├── proccontext.go         container-id / cgroup / ns-inode parsers (build-tag-free)
 │       ├── fds.go                 /proc/<pid>/fd + fdinfo + events
 │       ├── sockets.go             inode → host:port via /proc/net/*
 │       ├── syscall_names.go       syscall id → name table

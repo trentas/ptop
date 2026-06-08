@@ -145,6 +145,15 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
 		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),
 		statusRow("fds", m.usingMockFDs, sourceProcOrEmpty(!m.usingMockFDs)),
+		// Execution context (#60) is /proc-based and never simulated: "real via
+		// /proc" when the namespace/cgroup collector started, else structurally
+		// unavailable (macOS has no namespaces/cgroups).
+		func() string {
+			if m.contextSource != "" {
+				return statusRow("context", false, m.contextSource)
+			}
+			return statusRowNA("context", "namespace/cgroup is Linux-only")
+		}(),
 	}
 
 	// Scroll: card has border (2 lines) + padding (2 lines) = 4 overhead;
