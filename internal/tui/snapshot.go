@@ -42,6 +42,7 @@ type SnapshotData struct {
 	FDCountHistory []float64                 `json:"fd_count_history"`
 	FDEvents       []collector.FDEvent       `json:"fd_events"`
 	Timeline       []collector.TimelineEvent `json:"timeline"`
+	Signals        []collector.SignalEvent   `json:"signals"`
 }
 
 // buildSnapshot extracts a Snapshot from the current model state.
@@ -68,6 +69,7 @@ func buildSnapshot(m Model) Snapshot {
 			FDCountHistory: append([]float64(nil), m.FDCountHistory...),
 			FDEvents:       append([]collector.FDEvent(nil), m.FDEvents...),
 			Timeline:       append([]collector.TimelineEvent(nil), m.Timeline...),
+			Signals:        append([]collector.SignalEvent(nil), m.Signals...),
 		},
 	}
 }

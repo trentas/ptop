@@ -153,6 +153,16 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		}
 		ev.Payload = &pb.Event_Locks{Locks: &pb.LockSnapshot{Locks: locks}}
 
+	case collector.SignalEvent:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_SIGNAL
+		ev.Tid = x.TargetTID
+		ev.Payload = &pb.Event_Signal{Signal: &pb.SignalEvent{
+			Signal: x.Signal, Signo: x.Signo, SenderPid: x.SenderPID,
+			SenderComm: x.SenderComm, TargetTid: x.TargetTID,
+			Code: x.Code, Result: x.Result,
+		}}
+
 	case collector.TimelineEvent:
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = timelineCategory(x.Category)
@@ -248,6 +258,8 @@ func timelineCategory(s string) pb.Category {
 		return pb.Category_CATEGORY_IO
 	case "fd":
 		return pb.Category_CATEGORY_FD
+	case "sig":
+		return pb.Category_CATEGORY_SIGNAL
 	default:
 		return pb.Category_CATEGORY_TIMELINE
 	}

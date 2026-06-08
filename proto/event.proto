@@ -17,6 +17,7 @@ enum Category {
   CATEGORY_FD = 7;
   CATEGORY_LOCK = 8;
   CATEGORY_TIMELINE = 9;
+  CATEGORY_SIGNAL = 10; // #58 — signals delivered to the target
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
@@ -77,8 +78,9 @@ message Event {
     HeapEvent heap_event = 23; // #53 — per alloc/free
     NetErrorEvent net_error = 24; // #56 — detailed network error
     FSEvent fs_event = 25; // #57 — filesystem semantics (denial/delete/rename)
-    // 26+ reserved for the remaining #52 capabilities (pre-encryption payload,
-    // signals, security/LSM, exec-context enrichment).
+    SignalEvent signal = 26; // #58 — signal delivered to the target, with origin
+    // 27+ reserved for the remaining #52 capabilities (pre-encryption payload,
+    // security/LSM, exec-context enrichment).
   }
 }
 
@@ -246,6 +248,24 @@ message FSEvent {
   string new_path = 3; // rename destination; "" otherwise
   int32 errno = 4; // 0 on success; positive errno (EACCES=13, …)
   string err = 5; // "EACCES" | "EPERM" | "ENOENT" | "" …
+}
+
+// ─── Signals (#58) ──────────────────────────────────────────────────────────
+// SignalEvent is a signal delivered to the target, captured at kernel generation
+// time — including who sent it. signal is the symbolic name ("SIGPIPE");
+// sender_pid/sender_comm identify the sending process (for kernel-generated
+// signals like SIGSEGV the sender is the target itself); target_tid is the
+// receiving thread. code is si_code (SI_USER/SI_KERNEL/…) — a root-cause hint;
+// result is the kernel TRACE_SIGNAL_* disposition. Category on the envelope is
+// SIGNAL; the event timestamp lives on the envelope.
+message SignalEvent {
+  string signal = 1; // "SIGPIPE", "SIGTERM", … (or "SIG<n>")
+  int32 signo = 2;
+  int32 sender_pid = 3;
+  string sender_comm = 4;
+  int32 target_tid = 5;
+  int32 code = 6; // si_code
+  int32 result = 7; // TRACE_SIGNAL_* disposition
 }
 
 // ─── File descriptors ───────────────────────────────────────────────────────

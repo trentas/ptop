@@ -26,6 +26,7 @@ type Sources struct {
 	IOFiles  string
 	Net      string
 	Locks    string
+	Signals  string
 }
 
 // Set owns the live collectors for a single target PID, chosen by the
@@ -47,6 +48,7 @@ type Set struct {
 	IOEBPF       *IOEBPFCollector
 	NetworkEBPF  *NetworkEBPFCollector
 	FutexEBPF    *FutexEBPFCollector
+	SignalEBPF   *SignalEBPFCollector
 
 	Sources Sources
 }
@@ -175,6 +177,17 @@ func NewSet(cfg SetConfig) *Set {
 		} else {
 			warnEBPFFailure("heap", err)
 		}
+
+		// Signals delivered to the target with their origin (#58). eBPF-only:
+		// no /proc fallback and no simulation — absent unless the signal_generate
+		// tracepoint attaches.
+		c6 := NewSignalEBPFCollector()
+		if err := c6.Start(cfg.PID); err == nil {
+			s.SignalEBPF = c6
+			s.Sources.Signals = "eBPF"
+		} else {
+			warnEBPFFailure("signals", err)
+		}
 	}
 
 	return s
@@ -230,6 +243,9 @@ func (s *Set) Stop() {
 	if s.FutexEBPF != nil {
 		s.FutexEBPF.Stop()
 	}
+	if s.SignalEBPF != nil {
+		s.SignalEBPF.Stop()
+	}
 }
 
 // Collectors returns every started collector as a Collector. Used by consumers
@@ -260,6 +276,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.IOEBPF, s.IOEBPF != nil)
 	add(s.NetworkEBPF, s.NetworkEBPF != nil)
 	add(s.FutexEBPF, s.FutexEBPF != nil)
+	add(s.SignalEBPF, s.SignalEBPF != nil)
 	return cs
 }
 

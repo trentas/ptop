@@ -234,6 +234,27 @@ type FDEntry struct {
 	Active bool // had activity in the last cycle
 }
 
+// ─── Signals (#58) ─────────────────────────────────────────────────────────
+
+// SignalEvent is a signal DELIVERED TO the target, captured at kernel
+// generation time (signal:signal_generate) — including who sent it. Signal is
+// the symbolic name ("SIGPIPE"); SenderPID/SenderComm identify the sending
+// process (for kernel-generated signals like SIGSEGV the sender is the target
+// itself). TargetTID is the receiving thread. Code is si_code (SI_USER,
+// SI_KERNEL, …) — a root-cause hint; Result is the kernel's TRACE_SIGNAL_*
+// disposition (delivered/ignored/blocked). Emitted only by the eBPF signal
+// collector (never simulated).
+type SignalEvent struct {
+	Timestamp  time.Time
+	Signal     string // "SIGPIPE", "SIGTERM", … (or "SIG<n>" for the unnamed)
+	Signo      int32
+	SenderPID  int32
+	SenderComm string
+	TargetTID  int32
+	Code       int32 // si_code
+	Result     int32 // TRACE_SIGNAL_* disposition
+}
+
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
 type TimelineEvent struct {

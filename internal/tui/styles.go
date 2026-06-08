@@ -108,6 +108,8 @@ func CategoryColor(cat string) lipgloss.Color {
 		return ColorOrange
 	case "fd":
 		return ColorTeal
+	case "sig":
+		return ColorPink
 	default:
 		return ColorMuted
 	}
@@ -130,6 +132,8 @@ func CategoryLabel(cat string) string {
 		return "I/O"
 	case "fd":
 		return "FD "
+	case "sig":
+		return "SIG"
 	default:
 		return "???"
 	}
