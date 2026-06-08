@@ -58,7 +58,8 @@ BPF_SRCS := \
 	internal/bpf/programs/futex.bpf.c \
 	internal/bpf/programs/signal.bpf.c \
 	internal/bpf/programs/tls.bpf.c \
-	internal/bpf/programs/proc.bpf.c
+	internal/bpf/programs/proc.bpf.c \
+	internal/bpf/programs/security.bpf.c
 
 BPF_OBJS := $(BPF_SRCS:.c=.o)
 

@@ -93,6 +93,7 @@ type SignalMsg collector.SignalEvent
 type TLSPayloadMsg collector.TLSPayload
 type ProcContextMsg collector.ProcContext
 type ProcLifecycleMsg collector.ProcLifecycleEvent
+type SecurityMsg collector.SecurityEvent
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
@@ -134,6 +135,7 @@ type Model struct {
 	TLSPayloads    []collector.TLSPayload         // eBPF TLS payloads (#55), newest-first; stream/export-only, no live panel
 	ProcCtx        collector.ProcContext          // /proc namespace/cgroup/identity context (#60); zero value until first sample (or on macOS)
 	ProcEvents     []collector.ProcLifecycleEvent // eBPF exec lineage (#60): fork/exec/exit, newest-first
+	SecurityEvents []collector.SecurityEvent      // eBPF security (#59): exec-maps + LSM denials, newest-first
 	LockGraph      []collector.LockEntry
 
 	// UI state
@@ -197,6 +199,7 @@ type Model struct {
 	tlsSource       string
 	contextSource   string
 	lifecycleSource string
+	securitySource  string
 
 	// Stable caches to avoid visual reordering between ticks.
 	// topSyscallNames is recomputed every `topRefreshInterval`; between refreshes
@@ -253,6 +256,7 @@ func NewModel(cfg Config) Model {
 	m.tlsSource = m.collectors.Sources.TLS
 	m.contextSource = m.collectors.Sources.Context
 	m.lifecycleSource = m.collectors.Sources.Lifecycle
+	m.securitySource = m.collectors.Sources.Security
 
 	m.usingMockFDs = m.collectors.MockFDs()
 	m.usingMockCPU = m.collectors.MockCPU()
@@ -335,6 +339,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.collectors.ProcLifecycleEBPF != nil {
 		cmds = append(cmds, waitForProcLifecycleEBPF(m.collectors.ProcLifecycleEBPF))
+	}
+	if m.collectors.SecurityEBPF != nil {
+		cmds = append(cmds, waitForSecurityEBPF(m.collectors.SecurityEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -535,6 +542,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Timeline = m.Timeline[:120]
 		}
 		return m, waitForProcLifecycleEBPF(m.collectors.ProcLifecycleEBPF)
+
+	case SecurityMsg:
+		// Real security event (#59) — a runtime PROT_EXEC mapping or an LSM
+		// denial. Record it (newest-first, capped, for export) and surface it in
+		// the unified timeline under the "sec" category (F7). Only the real eBPF
+		// collector emits these.
+		sev := collector.SecurityEvent(v)
+		m.SecurityEvents = append([]collector.SecurityEvent{sev}, m.SecurityEvents...)
+		if len(m.SecurityEvents) > 40 {
+			m.SecurityEvents = m.SecurityEvents[:40]
+		}
+		m.Timeline = append([]collector.TimelineEvent{{
+			Timestamp: sev.Timestamp,
+			Category:  "sec",
+			Message:   securityMessage(sev),
+		}}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
+		return m, waitForSecurityEBPF(m.collectors.SecurityEBPF)
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
@@ -1301,6 +1328,22 @@ func waitForProcLifecycleEBPF(c *collector.ProcLifecycleEBPFCollector) tea.Cmd {
 		}
 		if s, ok := (<-ch).(collector.ProcLifecycleEvent); ok {
 			return ProcLifecycleMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForSecurityEBPF(c *collector.SecurityEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		if s, ok := (<-ch).(collector.SecurityEvent); ok {
+			return SecurityMsg(s)
 		}
 		return TickMsg(time.Now())
 	}
