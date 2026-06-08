@@ -154,6 +154,15 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			}
 			return statusRowNA("context", "namespace/cgroup is Linux-only")
 		}(),
+		// Exec lineage (#60) is eBPF-only and never simulated: "real via eBPF"
+		// when the sched fork/exec/exit tracepoints attached, else genuinely
+		// unavailable (macOS, --no-ebpf, or attach failure) — never "mock".
+		func() string {
+			if m.lifecycleSource != "" {
+				return statusRow("lifecycle", false, m.lifecycleSource)
+			}
+			return statusRowNA("lifecycle", "needs eBPF (sched fork/exec/exit)")
+		}(),
 	}
 
 	// Scroll: card has border (2 lines) + padding (2 lines) = 4 overhead;

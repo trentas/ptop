@@ -299,6 +299,26 @@ type ProcContext struct {
 	Container string // derived container id; "" if none
 }
 
+// ─── Exec lineage (#60) ──────────────────────────────────────────────────────
+
+// ProcLifecycleEvent is an exec-lineage event reconstructing the process tree
+// the target spawns: a fork/clone ("fork"), an execve ("exec"), or a task exit
+// ("exit"). PID is the subject (the child for fork, the task itself for
+// exec/exit); PPID is the parent (set for fork, 0 otherwise). Comm is the
+// subject's command name; Filename is the executed path (exec only, "" else).
+// The eBPF collector seeds a tracked set with the target and grows it on each
+// fork, so the whole descendant subtree is captured — including clone/thread
+// creation (which surfaces as "fork"). Emitted only by the eBPF proc collector
+// (never simulated).
+type ProcLifecycleEvent struct {
+	Timestamp time.Time
+	Kind      string // "fork" | "exec" | "exit"
+	PID       int32
+	PPID      int32
+	Comm      string
+	Filename  string // executed path (exec only; "" otherwise)
+}
+
 // ─── Timeline ────────────────────────────────────────────────────────────────
 
 type TimelineEvent struct {

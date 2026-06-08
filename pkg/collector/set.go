@@ -24,17 +24,18 @@ type SetConfig struct {
 // started for that subsystem (the consumer then falls back to mock data).
 // These strings surface in the TUI's "?" help overlay; never lie about them.
 type Sources struct {
-	CPU      string
-	Threads  string
-	Mem      string
-	Heap     string
-	Syscalls string
-	IOFiles  string
-	Net      string
-	Locks    string
-	Signals  string
-	TLS      string
-	Context  string
+	CPU       string
+	Threads   string
+	Mem       string
+	Heap      string
+	Syscalls  string
+	IOFiles   string
+	Net       string
+	Locks     string
+	Signals   string
+	TLS       string
+	Context   string
+	Lifecycle string
 }
 
 // Set owns the live collectors for a single target PID, chosen by the
@@ -42,23 +43,24 @@ type Sources struct {
 // that wires collector construction + lifecycle, so the TUI and the headless
 // gRPC server (#51) consume the same selection logic instead of duplicating it.
 type Set struct {
-	FD           *FDCollector
-	CPUProc      *CPUCollector
-	CPUEBPF      *CPUEBPFCollector
-	ThreadsProc  *ThreadsCollector
-	ThreadsEBPF  *ThreadsEBPFCollector
-	MemProc      *MemCollector
-	MemEBPF      *MemEBPFCollector
-	HeapEBPF     *HeapEBPFCollector
-	IOWait       *IOWaitCollector
-	IOThroughput *IOThroughputCollector
-	SyscallsEBPF *SyscallsEBPFCollector
-	IOEBPF       *IOEBPFCollector
-	NetworkEBPF  *NetworkEBPFCollector
-	FutexEBPF    *FutexEBPFCollector
-	SignalEBPF   *SignalEBPFCollector
-	TLSEBPF      *TLSEBPFCollector
-	ProcContext  *ProcContextCollector
+	FD                *FDCollector
+	CPUProc           *CPUCollector
+	CPUEBPF           *CPUEBPFCollector
+	ThreadsProc       *ThreadsCollector
+	ThreadsEBPF       *ThreadsEBPFCollector
+	MemProc           *MemCollector
+	MemEBPF           *MemEBPFCollector
+	HeapEBPF          *HeapEBPFCollector
+	IOWait            *IOWaitCollector
+	IOThroughput      *IOThroughputCollector
+	SyscallsEBPF      *SyscallsEBPFCollector
+	IOEBPF            *IOEBPFCollector
+	NetworkEBPF       *NetworkEBPFCollector
+	FutexEBPF         *FutexEBPFCollector
+	SignalEBPF        *SignalEBPFCollector
+	TLSEBPF           *TLSEBPFCollector
+	ProcContext       *ProcContextCollector
+	ProcLifecycleEBPF *ProcLifecycleEBPFCollector
 
 	Sources Sources
 }
@@ -207,6 +209,16 @@ func NewSet(cfg SetConfig) *Set {
 			warnEBPFFailure("signals", err)
 		}
 
+		// Exec lineage: fork/exec/exit across the target's descendant subtree
+		// (#60). eBPF-only — no /proc fallback, never simulated.
+		c8 := NewProcLifecycleEBPFCollector()
+		if err := c8.Start(cfg.PID); err == nil {
+			s.ProcLifecycleEBPF = c8
+			s.Sources.Lifecycle = "eBPF"
+		} else {
+			warnEBPFFailure("lifecycle", err)
+		}
+
 		// TLS payload capture (#55) — OFF unless explicitly opted in (--tls),
 		// because it observes plaintext. eBPF-only (libssl uprobes), no /proc
 		// fallback, never simulated.
@@ -283,6 +295,9 @@ func (s *Set) Stop() {
 	if s.ProcContext != nil {
 		s.ProcContext.Stop()
 	}
+	if s.ProcLifecycleEBPF != nil {
+		s.ProcLifecycleEBPF.Stop()
+	}
 }
 
 // Collectors returns every started collector as a Collector. Used by consumers
@@ -316,6 +331,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.SignalEBPF, s.SignalEBPF != nil)
 	add(s.TLSEBPF, s.TLSEBPF != nil)
 	add(s.ProcContext, s.ProcContext != nil)
+	add(s.ProcLifecycleEBPF, s.ProcLifecycleEBPF != nil)
 	return cs
 }
 

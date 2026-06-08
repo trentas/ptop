@@ -180,6 +180,14 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			CgroupId: x.CgroupID, Cgroup: x.Cgroup, Container: x.Container,
 		}}
 
+	case collector.ProcLifecycleEvent:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_PROCESS
+		ev.Payload = &pb.Event_ProcLifecycle{ProcLifecycle: &pb.ProcLifecycleEvent{
+			Kind: x.Kind, Pid: x.PID, Ppid: x.PPID,
+			Comm: x.Comm, Filename: x.Filename,
+		}}
+
 	case collector.TimelineEvent:
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = timelineCategory(x.Category)
@@ -277,6 +285,8 @@ func timelineCategory(s string) pb.Category {
 		return pb.Category_CATEGORY_FD
 	case "sig":
 		return pb.Category_CATEGORY_SIGNAL
+	case "proc":
+		return pb.Category_CATEGORY_PROCESS
 	default:
 		return pb.Category_CATEGORY_TIMELINE
 	}

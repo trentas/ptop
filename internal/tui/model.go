@@ -92,6 +92,7 @@ type NetErrorMsg collector.NetError
 type SignalMsg collector.SignalEvent
 type TLSPayloadMsg collector.TLSPayload
 type ProcContextMsg collector.ProcContext
+type ProcLifecycleMsg collector.ProcLifecycleEvent
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
@@ -129,9 +130,10 @@ type Model struct {
 	FDCountHistory []float64
 	FDEvents       []collector.FDEvent
 	Timeline       []collector.TimelineEvent
-	Signals        []collector.SignalEvent // eBPF signals delivered to the target (#58), newest-first
-	TLSPayloads    []collector.TLSPayload  // eBPF TLS payloads (#55), newest-first; stream/export-only, no live panel
-	ProcCtx        collector.ProcContext   // /proc namespace/cgroup/identity context (#60); zero value until first sample (or on macOS)
+	Signals        []collector.SignalEvent        // eBPF signals delivered to the target (#58), newest-first
+	TLSPayloads    []collector.TLSPayload         // eBPF TLS payloads (#55), newest-first; stream/export-only, no live panel
+	ProcCtx        collector.ProcContext          // /proc namespace/cgroup/identity context (#60); zero value until first sample (or on macOS)
+	ProcEvents     []collector.ProcLifecycleEvent // eBPF exec lineage (#60): fork/exec/exit, newest-first
 	LockGraph      []collector.LockEntry
 
 	// UI state
@@ -183,17 +185,18 @@ type Model struct {
 
 	// Sources: indicate where the real data came from ("eBPF" | "/proc" | "" for mock).
 	// Shown in the help overlay (?) for debugging and visibility.
-	cpuSource      string
-	syscallsSource string
-	ioFilesSource  string
-	netSource      string
-	threadsSource  string
-	memSource      string
-	heapSource     string
-	locksSource    string
-	signalsSource  string
-	tlsSource      string
-	contextSource  string
+	cpuSource       string
+	syscallsSource  string
+	ioFilesSource   string
+	netSource       string
+	threadsSource   string
+	memSource       string
+	heapSource      string
+	locksSource     string
+	signalsSource   string
+	tlsSource       string
+	contextSource   string
+	lifecycleSource string
 
 	// Stable caches to avoid visual reordering between ticks.
 	// topSyscallNames is recomputed every `topRefreshInterval`; between refreshes
@@ -249,6 +252,7 @@ func NewModel(cfg Config) Model {
 	m.signalsSource = m.collectors.Sources.Signals
 	m.tlsSource = m.collectors.Sources.TLS
 	m.contextSource = m.collectors.Sources.Context
+	m.lifecycleSource = m.collectors.Sources.Lifecycle
 
 	m.usingMockFDs = m.collectors.MockFDs()
 	m.usingMockCPU = m.collectors.MockCPU()
@@ -328,6 +332,9 @@ func (m Model) Init() tea.Cmd {
 	}
 	if m.collectors.ProcContext != nil {
 		cmds = append(cmds, waitForProcContext(m.collectors.ProcContext))
+	}
+	if m.collectors.ProcLifecycleEBPF != nil {
+		cmds = append(cmds, waitForProcLifecycleEBPF(m.collectors.ProcLifecycleEBPF))
 	}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
@@ -508,6 +515,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// in the export and the stream. Never simulated.
 		m.ProcCtx = collector.ProcContext(v)
 		return m, waitForProcContext(m.collectors.ProcContext)
+
+	case ProcLifecycleMsg:
+		// Real exec-lineage event (#60) — fork/exec/exit in the target's
+		// subtree. Record it (newest-first, capped, for export) and surface it
+		// in the unified timeline under the "proc" category (F7). Only the real
+		// eBPF collector emits these.
+		pe := collector.ProcLifecycleEvent(v)
+		m.ProcEvents = append([]collector.ProcLifecycleEvent{pe}, m.ProcEvents...)
+		if len(m.ProcEvents) > 40 {
+			m.ProcEvents = m.ProcEvents[:40]
+		}
+		m.Timeline = append([]collector.TimelineEvent{{
+			Timestamp: pe.Timestamp,
+			Category:  "proc",
+			Message:   procLifecycleMessage(pe),
+		}}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
+		return m, waitForProcLifecycleEBPF(m.collectors.ProcLifecycleEBPF)
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
@@ -1258,6 +1285,22 @@ func waitForProcContext(c *collector.ProcContextCollector) tea.Cmd {
 		}
 		if s, ok := (<-ch).(collector.ProcContext); ok {
 			return ProcContextMsg(s)
+		}
+		return TickMsg(time.Now())
+	}
+}
+
+func waitForProcLifecycleEBPF(c *collector.ProcLifecycleEBPFCollector) tea.Cmd {
+	if c == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		ch := c.Subscribe()
+		if ch == nil {
+			return TickMsg(time.Now())
+		}
+		if s, ok := (<-ch).(collector.ProcLifecycleEvent); ok {
+			return ProcLifecycleMsg(s)
 		}
 		return TickMsg(time.Now())
 	}

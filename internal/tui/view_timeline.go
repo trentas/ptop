@@ -26,6 +26,24 @@ func signalMessage(e collector.SignalEvent) string {
 	return fmt.Sprintf("%s ← pid %d", e.Signal, e.SenderPID)
 }
 
+// procLifecycleMessage renders a ProcLifecycleEvent as a one-line entry for the
+// F7 timeline: "fork → pid (comm)", "exec /path (pid)", or "exit pid (comm)".
+func procLifecycleMessage(e collector.ProcLifecycleEvent) string {
+	switch e.Kind {
+	case "fork":
+		return fmt.Sprintf("fork → pid %d (%s) ← pid %d", e.PID, e.Comm, e.PPID)
+	case "exec":
+		if e.Filename != "" {
+			return fmt.Sprintf("exec %s (pid %d)", e.Filename, e.PID)
+		}
+		return fmt.Sprintf("exec (pid %d, %s)", e.PID, e.Comm)
+	case "exit":
+		return fmt.Sprintf("exit pid %d (%s)", e.PID, e.Comm)
+	default:
+		return fmt.Sprintf("%s pid %d (%s)", e.Kind, e.PID, e.Comm)
+	}
+}
+
 // renderTimelineView (F7) — assets/mockup.jsx → TimelineView
 // Stream completo de eventos com badge por categoria.
 func renderTimelineView(m Model, w, h int) string {

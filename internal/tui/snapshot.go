@@ -27,24 +27,25 @@ type Snapshot struct {
 // SnapshotData is all the captured telemetry — only fields with a real or
 // simulated source that reflect data to be analyzed offline.
 type SnapshotData struct {
-	CPUHistory     []float64                 `json:"cpu_history"`
-	SyscallCounts  map[string]uint64         `json:"syscall_counts"`
-	NetConns       []collector.NetConn       `json:"network_connections"`
-	NetErrors      []collector.NetError      `json:"network_errors"`
-	MemStats       collector.MemStats        `json:"memory"`
-	HeapStats      collector.HeapStats       `json:"heap"`
-	Threads        []collector.ThreadInfo    `json:"threads"`
-	IOStats        collector.IOStats         `json:"io"`
-	FSEvents       []collector.FSEvent       `json:"fs_events"`
-	IOReadHist     []float64                 `json:"io_read_history"`
-	IOWriteHist    []float64                 `json:"io_write_history"`
-	FDs            []collector.FDEntry       `json:"fds"`
-	FDCountHistory []float64                 `json:"fd_count_history"`
-	FDEvents       []collector.FDEvent       `json:"fd_events"`
-	Timeline       []collector.TimelineEvent `json:"timeline"`
-	Signals        []collector.SignalEvent   `json:"signals"`
-	TLSPayloads    []collector.TLSPayload    `json:"tls_payloads,omitempty"`
-	ProcContext    collector.ProcContext     `json:"proc_context"`
+	CPUHistory     []float64                      `json:"cpu_history"`
+	SyscallCounts  map[string]uint64              `json:"syscall_counts"`
+	NetConns       []collector.NetConn            `json:"network_connections"`
+	NetErrors      []collector.NetError           `json:"network_errors"`
+	MemStats       collector.MemStats             `json:"memory"`
+	HeapStats      collector.HeapStats            `json:"heap"`
+	Threads        []collector.ThreadInfo         `json:"threads"`
+	IOStats        collector.IOStats              `json:"io"`
+	FSEvents       []collector.FSEvent            `json:"fs_events"`
+	IOReadHist     []float64                      `json:"io_read_history"`
+	IOWriteHist    []float64                      `json:"io_write_history"`
+	FDs            []collector.FDEntry            `json:"fds"`
+	FDCountHistory []float64                      `json:"fd_count_history"`
+	FDEvents       []collector.FDEvent            `json:"fd_events"`
+	Timeline       []collector.TimelineEvent      `json:"timeline"`
+	Signals        []collector.SignalEvent        `json:"signals"`
+	TLSPayloads    []collector.TLSPayload         `json:"tls_payloads,omitempty"`
+	ProcContext    collector.ProcContext          `json:"proc_context"`
+	ProcEvents     []collector.ProcLifecycleEvent `json:"proc_lifecycle"`
 }
 
 // buildSnapshot extracts a Snapshot from the current model state.
@@ -74,6 +75,7 @@ func buildSnapshot(m Model) Snapshot {
 			Signals:        append([]collector.SignalEvent(nil), m.Signals...),
 			TLSPayloads:    append([]collector.TLSPayload(nil), m.TLSPayloads...),
 			ProcContext:    m.ProcCtx,
+			ProcEvents:     append([]collector.ProcLifecycleEvent(nil), m.ProcEvents...),
 		},
 	}
 }

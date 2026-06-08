@@ -92,8 +92,8 @@ message Event {
     SignalEvent signal = 26; // #58 — signal delivered to the target, with origin
     TLSPayloadEvent tls = 27; // #55 — pre-encryption / post-decryption plaintext
     ProcContext proc_context = 28; // #60 — periodic namespace/cgroup/identity snapshot
-    // 29+ reserved for the remaining #52 capabilities (security/LSM,
-    // exec lineage — #60 ProcLifecycleEvent).
+    ProcLifecycleEvent proc_lifecycle = 29; // #60 — exec lineage (fork/exec/exit)
+    // 30+ reserved for the remaining #52 capabilities (security/LSM — #59).
   }
 }
 
@@ -323,6 +323,23 @@ message ProcContext {
   uint64 cgroup_id = 10;
   string cgroup = 11; // cgroup path (v2 "0::/p" → "/p")
   string container = 12; // derived container id; "" if none
+}
+
+// ProcLifecycleEvent is an exec-lineage event (#60) reconstructing the process
+// tree the target spawns: a fork/clone (kind="fork"), an execve (kind="exec"),
+// or a process exit (kind="exit"). pid is the subject (the child for fork, the
+// task itself for exec/exit), ppid is the parent (set for fork; 0 otherwise).
+// comm is the subject's command name; filename is the executed path (exec only,
+// "" otherwise). The eBPF collector seeds a tracked set with the target and
+// grows it on each fork, so the whole descendant subtree is captured. Category
+// on the envelope is PROCESS; the event time lives on the envelope. eBPF-only —
+// never simulated.
+message ProcLifecycleEvent {
+  string kind = 1; // "fork" | "exec" | "exit"
+  int32 pid = 2; // subject pid (child for fork, self for exec/exit)
+  int32 ppid = 3; // parent pid (fork only; 0 otherwise)
+  string comm = 4; // subject command name
+  string filename = 5; // executed path (exec only; "" otherwise)
 }
 
 // ─── File descriptors ───────────────────────────────────────────────────────
