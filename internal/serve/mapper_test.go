@@ -51,10 +51,11 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				return he.GetOp() == "free" && he.GetSize() == 256 && he.GetLifetimeMs() == 7.5 &&
 					e.GetStack().GetStackId() == 9 && e.GetStack().GetBuildId() == buildID
 			}},
-		{"threads", []collector.ThreadInfo{{TID: 11, Name: "main", CtxSwitches: 4}},
+		{"threads", []collector.ThreadInfo{{TID: 11, Name: "main", CtxSwitches: 4, OffCpuPct: 62.5}},
 			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
 				th := e.GetThreads().GetThreads()
-				return len(th) == 1 && th[0].GetTid() == 11 && th[0].GetCtxSwitches() == 4
+				return len(th) == 1 && th[0].GetTid() == 11 && th[0].GetCtxSwitches() == 4 &&
+					th[0].GetOffCpuPct() == 62.5
 			}},
 		{"io_wait", collector.IOWaitSample{Pct: 12.5, Timestamp: time.Unix(2, 0)},
 			pb.Category_CATEGORY_IO, func(e *pb.Event) bool { return e.GetIoWait().GetPct() == 12.5 }},

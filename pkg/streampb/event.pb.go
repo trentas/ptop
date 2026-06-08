@@ -1536,13 +1536,17 @@ func (x *HeapSnapshot) GetTopCallSites() []*HeapCallSite {
 
 // ─── Threads ────────────────────────────────────────────────────────────────
 type ThreadInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Tid           int32                  `protobuf:"varint,1,opt,name=tid,proto3" json:"tid,omitempty"`
-	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	State         string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"` // "running" | "blocked" | "sleeping"
-	CpuPct        float64                `protobuf:"fixed64,4,opt,name=cpu_pct,json=cpuPct,proto3" json:"cpu_pct,omitempty"`
-	Waiting       string                 `protobuf:"bytes,5,opt,name=waiting,proto3" json:"waiting,omitempty"`                             // blocking lock/syscall name, empty if none
-	CtxSwitches   uint64                 `protobuf:"varint,6,opt,name=ctx_switches,json=ctxSwitches,proto3" json:"ctx_switches,omitempty"` // eBPF-only; 0 via /proc
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Tid         int32                  `protobuf:"varint,1,opt,name=tid,proto3" json:"tid,omitempty"`
+	Name        string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	State       string                 `protobuf:"bytes,3,opt,name=state,proto3" json:"state,omitempty"` // "running" | "blocked" | "sleeping"
+	CpuPct      float64                `protobuf:"fixed64,4,opt,name=cpu_pct,json=cpuPct,proto3" json:"cpu_pct,omitempty"`
+	Waiting     string                 `protobuf:"bytes,5,opt,name=waiting,proto3" json:"waiting,omitempty"`                             // blocking lock/syscall name, empty if none
+	CtxSwitches uint64                 `protobuf:"varint,6,opt,name=ctx_switches,json=ctxSwitches,proto3" json:"ctx_switches,omitempty"` // eBPF-only; 0 via /proc
+	// off_cpu_pct: % of the window the thread spent off-CPU (blocked/waiting,
+	// not merely idle). eBPF-only; 0 via /proc. Does NOT sum to 100% with
+	// cpu_pct — the remainder is time runnable-but-unscheduled or non-existent.
+	OffCpuPct     float64 `protobuf:"fixed64,7,opt,name=off_cpu_pct,json=offCpuPct,proto3" json:"off_cpu_pct,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1615,6 +1619,13 @@ func (x *ThreadInfo) GetWaiting() string {
 func (x *ThreadInfo) GetCtxSwitches() uint64 {
 	if x != nil {
 		return x.CtxSwitches
+	}
+	return 0
+}
+
+func (x *ThreadInfo) GetOffCpuPct() float64 {
+	if x != nil {
+		return x.OffCpuPct
 	}
 	return 0
 }
@@ -3056,7 +3067,7 @@ const file_event_proto_rawDesc = "" +
 	"\n" +
 	"alloc_rate\x18\x02 \x01(\x01R\tallocRate\x120\n" +
 	"\x14suspected_leak_bytes\x18\x03 \x01(\x04R\x12suspectedLeakBytes\x12;\n" +
-	"\x0etop_call_sites\x18\x04 \x03(\v2\x15.ptop.v1.HeapCallSiteR\ftopCallSites\"\x9e\x01\n" +
+	"\x0etop_call_sites\x18\x04 \x03(\v2\x15.ptop.v1.HeapCallSiteR\ftopCallSites\"\xbe\x01\n" +
 	"\n" +
 	"ThreadInfo\x12\x10\n" +
 	"\x03tid\x18\x01 \x01(\x05R\x03tid\x12\x12\n" +
@@ -3064,7 +3075,8 @@ const file_event_proto_rawDesc = "" +
 	"\x05state\x18\x03 \x01(\tR\x05state\x12\x17\n" +
 	"\acpu_pct\x18\x04 \x01(\x01R\x06cpuPct\x12\x18\n" +
 	"\awaiting\x18\x05 \x01(\tR\awaiting\x12!\n" +
-	"\fctx_switches\x18\x06 \x01(\x04R\vctxSwitches\"?\n" +
+	"\fctx_switches\x18\x06 \x01(\x04R\vctxSwitches\x12\x1e\n" +
+	"\voff_cpu_pct\x18\a \x01(\x01R\toffCpuPct\"?\n" +
 	"\x0eThreadSnapshot\x12-\n" +
 	"\athreads\x18\x01 \x03(\v2\x13.ptop.v1.ThreadInfoR\athreads\" \n" +
 	"\fIoWaitSample\x12\x10\n" +
