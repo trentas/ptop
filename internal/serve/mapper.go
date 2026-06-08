@@ -97,6 +97,7 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			threads[i] = &pb.ThreadInfo{
 				Tid: int32(t.TID), Name: t.Name, State: t.State,
 				CpuPct: t.CPUPct, Waiting: t.Waiting, CtxSwitches: t.CtxSwitches,
+				OffCpuPct: t.OffCpuPct,
 			}
 		}
 		ev.Payload = &pb.Event_Threads{Threads: &pb.ThreadSnapshot{Threads: threads}}

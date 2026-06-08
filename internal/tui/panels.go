@@ -263,17 +263,22 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 	const nameW = 14
 	const stateW = 10
 	const cpuW = 5
+	const offW = 5
 	const waitW = 18
-	barW := w - 2 - nameW - stateW - cpuW - waitW - 5
+	barW := w - 2 - nameW - stateW - cpuW - offW - waitW - 6
 	if barW < 5 {
 		barW = 5
 	}
 
+	rightCol := func(s string) string {
+		return lipgloss.NewStyle().Width(cpuW).Background(ColorPanel).Align(lipgloss.Right).Render(s)
+	}
 	header := MutedStyle.Render(
 		padRight("  NAME", 2+nameW) + " " +
 			padRight("STATE", stateW) + " " +
 			padRight("CPU", barW) + " " +
-			lipgloss.NewStyle().Width(cpuW).Background(ColorPanel).Align(lipgloss.Right).Render("%") + " " +
+			rightCol("ON%") + " " +
+			rightCol("OFF%") + " " +
 			padRight("WAITING ON", waitW),
 	)
 
@@ -299,6 +304,19 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 		}
 		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
 
+		// off-CPU%: time blocked/waiting (not idle). High off-CPU on a blocked
+		// thread is the stall signal — flag it amber; otherwise stay muted so
+		// idle sleepers don't read as alarms.
+		offLabel := "--"
+		offColor := ColorMuted
+		if t.OffCpuPct > 0 {
+			offLabel = fmt.Sprintf("%.0f%%", t.OffCpuPct)
+			if t.State == "blocked" && t.OffCpuPct >= 50 {
+				offColor = ColorAmber
+			}
+		}
+		offStr := lipgloss.NewStyle().Foreground(offColor).Background(ColorPanel).Width(offW).Align(lipgloss.Right).Render(offLabel)
+
 		wait := "–"
 		waitColor := ColorDim
 		if t.Waiting != "" {
@@ -307,7 +325,7 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 		}
 		waitStr := lipgloss.NewStyle().Foreground(waitColor).Background(ColorPanel).Width(waitW).Render(truncate(wait, waitW))
 
-		lines = append(lines, panelRow(gly+name, state, bar, cpuStr, waitStr))
+		lines = append(lines, panelRow(gly+name, state, bar, cpuStr, offStr, waitStr))
 
 	}
 	return strings.Join(lines, "\n")

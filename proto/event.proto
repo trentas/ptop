@@ -225,6 +225,10 @@ message ThreadInfo {
   double cpu_pct = 4;
   string waiting = 5; // blocking lock/syscall name, empty if none
   uint64 ctx_switches = 6; // eBPF-only; 0 via /proc
+  // off_cpu_pct: % of the window the thread spent off-CPU (blocked/waiting,
+  // not merely idle). eBPF-only; 0 via /proc. Does NOT sum to 100% with
+  // cpu_pct — the remainder is time runnable-but-unscheduled or non-existent.
+  double off_cpu_pct = 7;
 }
 message ThreadSnapshot {
   repeated ThreadInfo threads = 1;

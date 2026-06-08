@@ -136,6 +136,15 @@ type ThreadInfo struct {
 	// window (interval between collector publishes). Only populated when the
 	// eBPF threads collector is active; via /proc this stays zero.
 	CtxSwitches uint64
+	// OffCpuPct: % of the window the thread spent off-CPU — blocked/waiting on
+	// a lock, I/O or syscall, NOT merely idle. This is what distinguishes a
+	// stalled thread from one that simply had no work. eBPF-only (derived from
+	// off_cpu_ns_total, same window delta as CPUPct); 0 via /proc.
+	//
+	// OffCpuPct + CPUPct do NOT sum to 100%: the remainder is time the thread
+	// was runnable-but-unscheduled or didn't exist in the window. Render them
+	// as independent "on"/"off" figures, never as a split.
+	OffCpuPct float64
 }
 
 // ─── Locks (futex) ───────────────────────────────────────────────────────────

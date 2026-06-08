@@ -36,9 +36,10 @@ type ThreadsEBPFCollector struct {
 	ch     chan interface{}
 	stop   chan struct{}
 
-	mu          sync.Mutex
-	prevOnNs    map[uint32]uint64 // tid → on_cpu_ns_total at last sample
-	prevSwitch  map[uint32]uint64 // tid → ctx_switches at last sample
+	mu           sync.Mutex
+	prevOnNs     map[uint32]uint64 // tid → on_cpu_ns_total at last sample
+	prevOffNs    map[uint32]uint64 // tid → off_cpu_ns_total at last sample
+	prevSwitch   map[uint32]uint64 // tid → ctx_switches at last sample
 	lastSampleAt time.Time
 }
 
@@ -47,6 +48,7 @@ func NewThreadsEBPFCollector() *ThreadsEBPFCollector {
 		ch:         make(chan interface{}, 4),
 		stop:       make(chan struct{}),
 		prevOnNs:   make(map[uint32]uint64),
+		prevOffNs:  make(map[uint32]uint64),
 		prevSwitch: make(map[uint32]uint64),
 	}
 }
@@ -113,9 +115,9 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 
 	// 1st pass: read /proc/task/* and build TID list + metadata.
 	type procData struct {
-		comm    string
-		state   byte
-		wchan   string
+		comm  string
+		state byte
+		wchan string
 	}
 	procByTID := make(map[uint32]procData, len(entries))
 	tidList := make([]int, 0, len(entries))
@@ -158,7 +160,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 	out := make([]ThreadInfo, 0, len(procByTID))
 	for tid, pd := range procByTID {
 		s := stats[tid]
-		var cpuPct float64
+		var cpuPct, offCpuPct float64
 		var switches uint64
 
 		if elapsed > 0 {
@@ -167,9 +169,15 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 			if cpuPct > 100 {
 				cpuPct = 100 // ceiling — single thread on multi-core can't exceed 100%
 			}
+			deltaOff := s.OffCpuNsTotal - c.prevOffNs[tid]
+			offCpuPct = (float64(deltaOff) / 1e9) / elapsed * 100
+			if offCpuPct > 100 {
+				offCpuPct = 100 // same single-thread ceiling
+			}
 			switches = s.CtxSwitches - c.prevSwitch[tid]
 		}
 		c.prevOnNs[tid] = s.OnCpuNsTotal
+		c.prevOffNs[tid] = s.OffCpuNsTotal
 		c.prevSwitch[tid] = s.CtxSwitches
 
 		out = append(out, ThreadInfo{
@@ -179,6 +187,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 			CPUPct:      cpuPct,
 			Waiting:     pd.wchan,
 			CtxSwitches: switches,
+			OffCpuPct:   offCpuPct,
 		})
 	}
 
@@ -186,6 +195,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 	for tid := range c.prevOnNs {
 		if _, alive := procByTID[tid]; !alive {
 			delete(c.prevOnNs, tid)
+			delete(c.prevOffNs, tid)
 			delete(c.prevSwitch, tid)
 		}
 	}
