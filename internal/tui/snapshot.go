@@ -30,6 +30,7 @@ type SnapshotData struct {
 	CPUHistory     []float64                 `json:"cpu_history"`
 	SyscallCounts  map[string]uint64         `json:"syscall_counts"`
 	NetConns       []collector.NetConn       `json:"network_connections"`
+	NetErrors      []collector.NetError      `json:"network_errors"`
 	MemStats       collector.MemStats        `json:"memory"`
 	HeapStats      collector.HeapStats       `json:"heap"`
 	Threads        []collector.ThreadInfo    `json:"threads"`
@@ -54,6 +55,7 @@ func buildSnapshot(m Model) Snapshot {
 			CPUHistory:     append([]float64(nil), m.CPUHistory...),
 			SyscallCounts:  copyUintMap(m.SyscallCounts),
 			NetConns:       append([]collector.NetConn(nil), m.NetConns...),
+			NetErrors:      append([]collector.NetError(nil), m.NetErrors...),
 			MemStats:       m.MemStats,
 			HeapStats:      m.HeapStats,
 			Threads:        append([]collector.ThreadInfo(nil), m.Threads...),

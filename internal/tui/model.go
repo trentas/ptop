@@ -84,6 +84,7 @@ type FDEventMsg collector.FDEvent
 type SyscallsMsg map[string]uint64
 type IOEBPFMsg collector.IOEBPFSnapshot
 type NetMsg []collector.NetConn
+type NetErrorMsg collector.NetError
 type LockGraphMsg []collector.LockEntry
 type LockTimelineMsg collector.TimelineEvent
 
@@ -108,6 +109,7 @@ type Model struct {
 	CPUHistory     []float64
 	SyscallCounts  map[string]uint64
 	NetConns       []collector.NetConn
+	NetErrors      []collector.NetError // eBPF RST/retransmit anomalies (#56), newest-first
 	MemStats       collector.MemStats
 	HeapStats      collector.HeapStats // eBPF malloc/free pairing (#53); empty without eBPF
 	HeapLiveHist   []float64           // live-heap bytes history for the F1 sparkline
@@ -419,6 +421,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case NetMsg:
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
+		return m, waitForNetEBPF(m.collectors.NetworkEBPF)
+
+	case NetErrorMsg:
+		// Real kernel network error (#56) — record it for the F3 Anomalies
+		// panel (newest-first, capped) and surface it in the net timeline feed
+		// (F3 events / F7). Only the real eBPF collector emits these.
+		ne := collector.NetError(v)
+		m.usingMockNet = false
+		m.NetErrors = append([]collector.NetError{ne}, m.NetErrors...)
+		if len(m.NetErrors) > 40 {
+			m.NetErrors = m.NetErrors[:40]
+		}
+		m.Timeline = append([]collector.TimelineEvent{{
+			Timestamp: ne.Timestamp,
+			Category:  "net",
+			Message:   netErrorMessage(ne),
+		}}, m.Timeline...)
+		if len(m.Timeline) > 120 {
+			m.Timeline = m.Timeline[:120]
+		}
 		return m, waitForNetEBPF(m.collectors.NetworkEBPF)
 
 	case LockGraphMsg:
@@ -1228,9 +1250,11 @@ func waitForNetEBPF(c *collector.NetworkEBPFCollector) tea.Cmd {
 		if ch == nil {
 			return TickMsg(time.Now())
 		}
-		v := <-ch
-		if conns, ok := v.([]collector.NetConn); ok {
-			return NetMsg(conns)
+		switch v := (<-ch).(type) {
+		case []collector.NetConn:
+			return NetMsg(v)
+		case collector.NetError:
+			return NetErrorMsg(v)
 		}
 		return TickMsg(time.Now())
 	}
