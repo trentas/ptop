@@ -55,6 +55,13 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Retransmits: x.Retransmits, DetailMs: x.DetailMs,
 		}}
 
+	case collector.TLSPayload:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_NETWORK
+		ev.Payload = &pb.Event_Tls{Tls: &pb.TLSPayloadEvent{
+			Dir: x.Dir, Fd: int32(x.FD), Len: int32(x.Len), Data: x.Data,
+		}}
+
 	case collector.MemStats:
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_MEMORY

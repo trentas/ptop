@@ -43,6 +43,7 @@ type SnapshotData struct {
 	FDEvents       []collector.FDEvent       `json:"fd_events"`
 	Timeline       []collector.TimelineEvent `json:"timeline"`
 	Signals        []collector.SignalEvent   `json:"signals"`
+	TLSPayloads    []collector.TLSPayload    `json:"tls_payloads,omitempty"`
 }
 
 // buildSnapshot extracts a Snapshot from the current model state.
@@ -70,6 +71,7 @@ func buildSnapshot(m Model) Snapshot {
 			FDEvents:       append([]collector.FDEvent(nil), m.FDEvents...),
 			Timeline:       append([]collector.TimelineEvent(nil), m.Timeline...),
 			Signals:        append([]collector.SignalEvent(nil), m.Signals...),
+			TLSPayloads:    append([]collector.TLSPayload(nil), m.TLSPayloads...),
 		},
 	}
 }

@@ -77,7 +77,9 @@ ptop/
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
-│   │   │   └── futex.bpf.c        futex wait/wake → lock graph
+│   │   │   ├── futex.bpf.c        futex wait/wake → lock graph
+│   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
+│   │   │   └── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
 │   │   ├── available.go           runtime feature flag (build-tag based)
 │   │   ├── target.go              pid-namespace target resolver (shared)
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
@@ -89,6 +91,7 @@ ptop/
 │   │   ├── io.go                  VFS syscall tracker loader
 │   │   ├── memory.go              memory counter loader
 │   │   ├── heap.go                libc allocator uprobe loader (#53)
+│   │   ├── tls.go                 libssl uprobe loader → TLS plaintext (#55)
 │   │   ├── threads.go             sched_switch loader
 │   │   ├── futex.go               futex wait/wake loader
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
@@ -136,6 +139,7 @@ ptop/
 │       ├── mem_proc.go            /proc/<pid>/statm + faults
 │       ├── mem_ebpf.go            kprobe + syscall tracepoints
 │       ├── heap_ebpf.go           libc malloc/free pairing → live-heap + leak (#53)
+│       ├── tls_ebpf.go            libssl uprobe → TLS payload (#55, opt-in --tls)
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
 │       ├── io_ebpf.go             top files + per-op latency
@@ -331,8 +335,19 @@ ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
 ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
 ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gRPC, no TUI
 ptop --pid <PID> --serve tcp://127.0.0.1:50051   headless over TCP (loopback)
+ptop --pid <PID> --tls       TLS payload metadata (libssl uprobes) — OFF by default (#55)
+ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (implies --tls)
 ptop --version              print version + commit + build date
 ```
+
+`--tls` opts into pre-encryption/post-decryption payload capture via uprobes on
+the target's libssl (`SSL_write`/`SSL_read`, resolved by symbol — Go targets have
+no libssl). It is **stream/export-only** (no live TUI panel): events flow to
+`--serve`/`--export`. `--tls` alone captures only metadata (direction, fd, byte
+count); the actual **plaintext** is captured only with `--tls-bytes N` (default
+0, capped at 4096/call) — it can include credentials/PII, so it's a deliberate
+second opt-in with a stderr warning. The `--serve` privilege boundary (unix
+0600 / TCP loopback-only) guards the resulting plaintext.
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
 streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of
@@ -377,5 +392,12 @@ Version metadata is injected via `-ldflags` at release time
   `0600` (owner-only) and removed on exit. For TCP, binding all interfaces
   (`0.0.0.0`/`::`) is refused — the stream exposes process internals, so bind
   loopback or a specific interface IP.
+- TLS payload capture (`--tls`/`--tls-bytes`, #55) observes plaintext and is
+  **off by default**. It attaches no uprobes unless `--tls` is passed, and emits
+  payload bytes only with the additional `--tls-bytes N` (capped 4096/call) —
+  never on by default, with a stderr warning when active. The captured plaintext
+  rides the same `--serve`/`--export` surface, so the socket/file restrictions
+  above are what keep it private. Resolve by symbol (version-drift safe); a Go or
+  static target has no libssl, so capture is simply unavailable there.
 
 See [`SECURITY.md`](SECURITY.md) for vulnerability reporting.

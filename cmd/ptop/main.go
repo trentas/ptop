@@ -31,6 +31,8 @@ func main() {
 	noEBPF := flag.Bool("no-ebpf", false, "Degraded mode: use only /proc, no eBPF (useful for development)")
 	export := flag.Bool("export", false, "Save JSON snapshot on exit (equivalent to the 'e' key)")
 	serveAddr := flag.String("serve", "", "Headless mode: stream events over gRPC instead of the TUI (unix:///path or tcp://host:port)")
+	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
+	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -77,17 +79,36 @@ func main() {
 		}
 	}
 
+	// TLS payload capture (#55) is opt-in. --tls-bytes implies --tls. Clamp the
+	// per-call byte cap to [0, 4096] and warn loudly when plaintext is captured,
+	// since it can include credentials/PII.
+	tlsEnabled := *tls || *tlsBytes > 0
+	tlsCap := *tlsBytes
+	if tlsCap < 0 {
+		tlsCap = 0
+	}
+	if tlsCap > 4096 {
+		fmt.Fprintf(os.Stderr, "[ptop] --tls-bytes %d clamped to 4096 (per-call cap)\n", *tlsBytes)
+		tlsCap = 4096
+	}
+	if tlsEnabled && tlsCap > 0 {
+		fmt.Fprintf(os.Stderr, "[ptop] ⚠ TLS plaintext capture ON (--tls-bytes %d): events carry decrypted\n", tlsCap)
+		fmt.Fprintln(os.Stderr, "       payload bytes (credentials/PII). Keep the stream/export private.")
+	}
+
 	// Headless mode: serve the collector stream over gRPC instead of the TUI.
 	if *serveAddr != "" {
-		runServe(*serveAddr, *pid, *noEBPF, *export)
+		runServe(*serveAddr, *pid, *noEBPF, *export, tlsEnabled, tlsCap)
 		return
 	}
 
 	cfg := tui.Config{
-		PID:    *pid,
-		FPS:    *fps,
-		NoEBPF: *noEBPF,
-		Export: *export,
+		PID:         *pid,
+		FPS:         *fps,
+		NoEBPF:      *noEBPF,
+		Export:      *export,
+		TLS:         tlsEnabled,
+		TLSMaxBytes: tlsCap,
 	}
 
 	m := tui.NewModel(cfg)
@@ -116,7 +137,7 @@ func main() {
 // SIGTERM. The Set's lifecycle is owned here: serve.Run only stops the server,
 // so we stop the collectors after it returns. With export, it also writes an
 // event-level JSONL (distinct from the TUI's state-snapshot ptop-export-*.jsonl).
-func runServe(addr string, pid int, noEBPF, export bool) {
+func runServe(addr string, pid int, noEBPF, export, tlsEnabled bool, tlsBytes int) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -125,7 +146,9 @@ func runServe(addr string, pid int, noEBPF, export bool) {
 		opts.JSONLPath = fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405"))
 	}
 
-	set := collector.NewSet(collector.SetConfig{PID: pid, NoEBPF: noEBPF})
+	set := collector.NewSet(collector.SetConfig{
+		PID: pid, NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
+	})
 	defer set.Stop()
 
 	// The heap collector owns the stack tracer + symbolizer, so it backs stack

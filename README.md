@@ -92,7 +92,21 @@ sudo ./bin/ptop --pid <PID>            # full mode (eBPF)
 ./bin/ptop --pid <PID> --no-ebpf       # /proc-only, no root
 sudo ./bin/ptop --pid <PID> --fps 10   # higher render rate
 sudo ./bin/ptop --pid <PID> --export   # save JSON snapshot on exit
+
+# Stream events headless (no TUI) over gRPC + JSONL
+sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock --export
+
+# Capture TLS plaintext around libssl (OFF by default; sensitive — see below)
+sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --export
 ```
+
+> **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
+> libssl (`SSL_write`/`SSL_read`) to record plaintext before encryption / after
+> decryption — handy for debugging your own service's encrypted traffic without
+> a MITM proxy. It is **off by default**, **stream/export-only** (no live panel),
+> and the payload bytes (which may contain credentials/PII) are captured only
+> with `--tls-bytes N` (capped at 4096/call). Go and statically-linked targets
+> have no libssl, so capture is unavailable there.
 
 ### Keys
 

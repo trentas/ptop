@@ -45,6 +45,22 @@ type NetError struct {
 	DetailMs    float64
 }
 
+// TLSPayload is plaintext observed around a TLS call (#55), captured via libssl
+// uprobes before encryption (Dir "write") or after decryption (Dir "read") — so
+// you can inspect a process's own encrypted traffic without a MITM proxy. FD is
+// the owning socket (−1 if unknown). Len is the call's plaintext byte count;
+// Data holds up to the configured cap of those bytes and is EMPTY unless
+// --tls-bytes was set (the metadata-only default). Emitted only by the eBPF TLS
+// collector when --tls is passed; never simulated. Privacy-sensitive: Data may
+// contain credentials/PII.
+type TLSPayload struct {
+	Timestamp time.Time
+	Dir       string // "write" (pre-encryption) | "read" (post-decryption)
+	FD        int
+	Len       int    // plaintext byte count for the call
+	Data      []byte // captured plaintext (≤ cap; empty in metadata-only mode)
+}
+
 // ─── Memory ───────────────────────────────────────────────────────────────────
 
 type MemStats struct {
