@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"net/http"
@@ -45,11 +46,20 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *pid == 0 {
-		fmt.Fprintln(os.Stderr, "error: --pid is required")
+	if *pid <= 0 {
+		if *pid == 0 {
+			fmt.Fprintln(os.Stderr, "error: --pid is required")
+		} else {
+			fmt.Fprintf(os.Stderr, "error: --pid %d is not a valid PID\n", *pid)
+		}
 		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
+		os.Exit(1)
+	}
+
+	if err := checkPIDExists(*pid); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -153,6 +163,29 @@ func main() {
 				fmt.Fprintf(os.Stderr, "warning: final snapshot failed: %v\n", err)
 			}
 		}
+	}
+}
+
+// checkPIDExists verifies the target process exists before anything starts.
+// Without this, a nonexistent PID silently fails every collector and the TUI
+// falls back to simulated data — plausible-looking numbers for a process that
+// isn't there (#90). kill(pid, 0) delivers no signal, it only performs the
+// existence/permission check; same semantics on Linux and macOS.
+func checkPIDExists(pid int) error {
+	err := syscall.Kill(pid, 0)
+	switch {
+	case err == nil:
+		return nil
+	case errors.Is(err, syscall.ESRCH):
+		return fmt.Errorf("process %d does not exist", pid)
+	case errors.Is(err, syscall.EPERM):
+		// EPERM means the process exists but belongs to another user.
+		// Collectors will degrade (macOS libproc needs same-euid), so warn
+		// rather than fail: partial data for a real process is still useful.
+		fmt.Fprintf(os.Stderr, "[ptop] warning: process %d is owned by another user — data may be limited or unavailable\n", pid)
+		return nil
+	default:
+		return fmt.Errorf("cannot check process %d: %w", pid, err)
 	}
 }
 
