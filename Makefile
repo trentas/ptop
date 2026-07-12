@@ -5,6 +5,12 @@
 BINARY := ptop
 PKG    := ./cmd/ptop
 
+# Go toolchain. Override when `go` isn't on the invoking user's PATH — notably
+# under `sudo`, which resets PATH to a secure_path that omits /usr/local/go/bin:
+#   sudo make install GO=$(which go)
+# (or just `sudo env "PATH=$PATH" make install` to carry your PATH through).
+GO     ?= go
+
 # Install location — override via `make install PREFIX=~/.local` for a
 # no-sudo user install, or `make install PREFIX=/opt/local` etc. DESTDIR
 # is the standard packager-staging variable (kept empty in regular use).
@@ -93,7 +99,7 @@ gen: $(BPF_OBJS)
 # committed, so this target is NOT part of `all` — only run it after editing
 # proto/event.proto.
 BUF_VERSION ?= v1.70.0
-BUF         := go run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+BUF         := $(GO) run github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 
 proto:
 	$(BUF) format -w
@@ -105,14 +111,41 @@ proto-lint:
 
 # ─── builds ──────────────────────────────────────────────────────────────────
 
-# Build without eBPF — TUI + /proc collectors. Useful on Linux without root,
-# or for quick iteration when you don't need kernel-level tracing.
-build:
-	go build -o bin/$(BINARY) $(PKG)
+# Go sources (excluding tests + build output) — prerequisites of the binary so
+# it's relinked only when something that affects it actually changed.
+GO_SRCS := $(shell find . -type f -name '*.go' -not -name '*_test.go' -not -path './bin/*')
 
-# Full build with embedded eBPF. Prerequisite: `make gen` (auto via dep).
-build-ebpf: gen
-	go build -tags=ebpf -o bin/$(BINARY) $(PKG)
+# Build without eBPF — TUI + /proc collectors. Useful on Linux without root,
+# or for quick iteration when you don't need kernel-level tracing. Removes the
+# ebpf lane stamp (see below): both lanes write the same output file, so a
+# bare build must invalidate the eBPF file target.
+build:
+	@rm -f bin/.lane-ebpf
+	$(GO) build -o bin/$(BINARY) $(PKG)
+
+# Lane check, done at PARSE time via $(shell): if the last bin/$(BINARY) was
+# not built by the ebpf lane (stamp absent), inject FORCE so the relink always
+# runs. mtime comparison can't express this — macOS ships GNU Make 3.81 with
+# 1-second resolution and a cached stat of the target, so a stamp file as a
+# plain prerequisite misses same-second lane switches.
+EBPF_LANE_FORCE := $(shell test -f bin/.lane-ebpf || echo FORCE)
+
+FORCE:
+.PHONY: FORCE
+
+# eBPF-embedded binary as a REAL file target: rebuilt only when a .go source, a
+# compiled .bpf.o, or go.mod/go.sum changes (or the lane switched — see above).
+# This is what makes the `make` (as your user) → `sudo make install` flow
+# cheap — install reuses the binary you already built instead of recompiling
+# under root's cold caches, which otherwise re-downloads the Go toolchain and
+# every dependency. The stamp is written only after a successful link, so an
+# interrupted build still forces the next one.
+bin/$(BINARY): $(GO_SRCS) $(BPF_OBJS) go.mod go.sum $(EBPF_LANE_FORCE)
+	$(GO) build -tags=ebpf -o $@ $(PKG)
+	@touch bin/.lane-ebpf
+
+# Phony alias for the eBPF binary (keeps `make build-ebpf` / `make run` working).
+build-ebpf: bin/$(BINARY)
 
 # eBPF mode requires root or CAP_BPF + CAP_PERFMON
 run: build-ebpf
@@ -126,22 +159,22 @@ dev: build
 # `sudo ./bin/ebpf-selftest` — it reports whether the eBPF collectors can
 # observe the target process (useful inside containers / WSL).
 ebpf-selftest: gen
-	go build -tags=ebpf -o bin/ebpf-selftest ./cmd/ebpfselftest
+	$(GO) build -tags=ebpf -o bin/ebpf-selftest ./cmd/ebpfselftest
 	@echo "built bin/ebpf-selftest — run as root: sudo ./bin/ebpf-selftest"
 
 # ─── test / lint ─────────────────────────────────────────────────────────────
 
 test:
-	go test -race ./...
+	$(GO) test -race ./...
 
 # Runs tests in both lanes. The eBPF lane requires .bpf.o (run `make gen`).
 test-all: test
-	$(MAKE) gen && go test -race -tags=ebpf ./...
+	$(MAKE) gen && $(GO) test -race -tags=ebpf ./...
 
 vet:
-	go vet ./...
+	$(GO) vet ./...
 	@if ls $(BPF_OBJS) >/dev/null 2>&1; then \
-		go vet -tags=ebpf ./...; \
+		$(GO) vet -tags=ebpf ./...; \
 	else \
 		echo "(go vet -tags=ebpf skipped: run 'make gen' first)"; \
 	fi
@@ -161,6 +194,10 @@ lint:
 # for a user-local install. install(1) exists on both macOS and Linux and
 # handles both creation of the target dir (-d) and permissions (-m) in one
 # shot.
+#
+# Recommended flow: `make` (as your user, warm caches) then `sudo make install`
+# — the latter only copies the already-built binary. Building under sudo works
+# (`sudo make install GO=$(which go)`) but recompiles in root's cold cache.
 install: $(INSTALL_DEFAULT)
 
 install-bare: build
@@ -172,7 +209,7 @@ install-bare: build
 # (libbpf-dev + clang). On macOS this target will fail at the gen step
 # since the kernel headers aren't there — use `install` (the default
 # alias dispatches by OS).
-install-ebpf: build-ebpf
+install-ebpf: bin/$(BINARY)
 	install -d $(DESTDIR)$(BINDIR)
 	install -m 0755 bin/$(BINARY) $(DESTDIR)$(BINDIR)/$(BINARY)
 	@echo "installed $(DESTDIR)$(BINDIR)/$(BINARY) (with embedded eBPF)"
