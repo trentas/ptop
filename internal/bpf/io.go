@@ -23,13 +23,13 @@ var ioBPFObj []byte
 // IOEvent is the 1:1 layout of struct io_event in programs/io.bpf.c.
 // Fixed size 32 bytes; binary.LittleEndian.Read parses it directly from the ring buffer.
 type IOEvent struct {
-	TsNs   uint64
-	LatNs  uint64
-	Bytes  uint64
-	FD     uint32
-	Op     uint32 // 0=read, 1=write
-	TGID   uint32
-	_      uint32 // pad
+	TsNs  uint64
+	LatNs uint64
+	Bytes uint64
+	FD    uint32
+	Op    uint32 // 0=read, 1=write
+	TGID  uint32
+	_     uint32 // pad
 }
 
 const (
@@ -125,41 +125,65 @@ func OpenIOTracer(pid int) (*IOTracer, error) {
 		t.links = append(t.links, l)
 	}
 
-	// fs-semantics tracepoints (#57). Attached NON-fatally: the legacy
-	// open/unlink/rename/renameat tracepoints don't exist on arm64 (only the
-	// *at variants do), and a kernel could lack one — losing it just narrows fs
-	// capture, it must not kill the throughput tracer. The *at variants exist on
-	// every supported arch and cover all libc-routed filesystem calls.
-	fsAttachments := []struct {
-		group, name, prog string
-	}{
-		{"syscalls", "sys_enter_openat", "handle_enter_openat"},
-		{"syscalls", "sys_exit_openat", "handle_exit_openat"},
-		{"syscalls", "sys_enter_open", "handle_enter_open"},
-		{"syscalls", "sys_exit_open", "handle_exit_open"},
-		{"syscalls", "sys_enter_unlinkat", "handle_enter_unlinkat"},
-		{"syscalls", "sys_exit_unlinkat", "handle_exit_unlinkat"},
-		{"syscalls", "sys_enter_unlink", "handle_enter_unlink"},
-		{"syscalls", "sys_exit_unlink", "handle_exit_unlink"},
-		{"syscalls", "sys_enter_renameat2", "handle_enter_renameat2"},
-		{"syscalls", "sys_exit_renameat2", "handle_exit_renameat2"},
-		{"syscalls", "sys_enter_renameat", "handle_enter_renameat"},
-		{"syscalls", "sys_exit_renameat", "handle_exit_renameat"},
-		{"syscalls", "sys_enter_rename", "handle_enter_rename"},
-		{"syscalls", "sys_exit_rename", "handle_exit_rename"},
-	}
-	for _, a := range fsAttachments {
-		prog := coll.Programs[a.prog]
-		if prog == nil {
-			fmt.Fprintf(os.Stderr, "io: program %s missing; fs semantics degraded\n", a.prog)
-			continue
+	// fs-semantics tracepoints (#57), grouped by operation family. Within a
+	// family the *at variant exists on every supported arch and covers all
+	// libc-routed filesystem calls; the legacy non-*at syscall
+	// (open/unlink/rename) is simply absent on arm64 and other asm-generic
+	// arches, where attaching it is *expected* to fail and means nothing. So we
+	// try every variant NON-fatally (a miss must not kill the throughput tracer)
+	// but only warn when a whole family ends up uncovered — i.e. even its *at
+	// variant failed to attach, the one case that is a genuine capture loss.
+	type fsVariant struct{ enterName, enterProg, exitName, exitProg string }
+	attachPair := func(v fsVariant) error {
+		ep, xp := coll.Programs[v.enterProg], coll.Programs[v.exitProg]
+		if ep == nil || xp == nil {
+			return fmt.Errorf("program %s/%s missing", v.enterProg, v.exitProg)
 		}
-		l, err := link.Tracepoint(a.group, a.name, prog, nil)
+		el, err := link.Tracepoint("syscalls", v.enterName, ep, nil)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "io: attach %s/%s failed (%v); fs semantics degraded\n", a.group, a.name, err)
-			continue
+			return fmt.Errorf("%s: %w", v.enterName, err)
 		}
-		t.links = append(t.links, l)
+		xl, err := link.Tracepoint("syscalls", v.exitName, xp, nil)
+		if err != nil {
+			el.Close() // don't leave a half-attached enter probe behind
+			return fmt.Errorf("%s: %w", v.exitName, err)
+		}
+		t.links = append(t.links, el, xl)
+		return nil
+	}
+	fsFamilies := []struct {
+		op       string
+		variants []fsVariant // ordered modern (*at) → legacy
+	}{
+		{"open", []fsVariant{
+			{"sys_enter_openat", "handle_enter_openat", "sys_exit_openat", "handle_exit_openat"},
+			{"sys_enter_open", "handle_enter_open", "sys_exit_open", "handle_exit_open"},
+		}},
+		{"unlink", []fsVariant{
+			{"sys_enter_unlinkat", "handle_enter_unlinkat", "sys_exit_unlinkat", "handle_exit_unlinkat"},
+			{"sys_enter_unlink", "handle_enter_unlink", "sys_exit_unlink", "handle_exit_unlink"},
+		}},
+		{"rename", []fsVariant{
+			{"sys_enter_renameat2", "handle_enter_renameat2", "sys_exit_renameat2", "handle_exit_renameat2"},
+			{"sys_enter_renameat", "handle_enter_renameat", "sys_exit_renameat", "handle_exit_renameat"},
+			{"sys_enter_rename", "handle_enter_rename", "sys_exit_rename", "handle_exit_rename"},
+		}},
+	}
+	for _, fam := range fsFamilies {
+		covered := false
+		var firstErr error
+		for _, v := range fam.variants {
+			if err := attachPair(v); err != nil {
+				if firstErr == nil {
+					firstErr = err // the *at variant's failure — the meaningful one
+				}
+				continue
+			}
+			covered = true
+		}
+		if !covered {
+			fmt.Fprintf(os.Stderr, "io: %s fs-semantics unavailable (%v); fs semantics degraded\n", fam.op, firstErr)
+		}
 	}
 
 	// Open ring buffer reader. Reads block until an event arrives or Close.
