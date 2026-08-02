@@ -94,6 +94,17 @@ homebrew_casks:
     # to file a bug. Declaring the requirement turns that into a clean
     # "This cask requires Linux." — Homebrew keys it off depends_on at the top
     # level of the cask, which is exactly where goreleaser puts custom_block.
+    # The release binaries are unsigned, so Gatekeeper quarantines them on
+    # download and the first launch stalls in an XProtect assessment. Strip it
+    # from the whole staged path: Homebrew sets the attribute on the directory
+    # too, and leaving it there is enough to poison the assessment. The xattr probe keeps this a no-op on Linux,
+    # where the same cask installs but /usr/bin/xattr does not exist.
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}"]
+          end
     caveats: |
       Run as root: sudo ptop -pid <PID>
 
