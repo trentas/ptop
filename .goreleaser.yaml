@@ -43,6 +43,35 @@ checksum:
   name_template: "SHA256SUMS"
   algorithm: sha256
 
+# Homebrew on Linux does install casks, as long as no artifact is in
+# MACOS_ONLY_ARTIFACTS — a lone `binary` stanza qualifies. That makes a cask
+# the supported route here, since goreleaser deprecated `brews`. No macOS
+# quarantine hook: this cask never lands on macOS.
+homebrew_casks:
+  - name: ptop
+    binaries: [ptop]
+    ids: [ptop]
+    repository:
+      owner: trentas
+      name: homebrew-tap
+      branch: main
+      # SSH deploy key scoped write-only to the tap. GITHUB_TOKEN cannot write
+      # to another repository, and a PAT with `repo` scope would reach them all.
+      git:
+        url: ssh://git@github.com/trentas/homebrew-tap.git
+        private_key: "{{ .Env.HOMEBREW_TAP_DEPLOY_KEY }}"
+        ssh_command: ssh -i {{ .KeyPath }} -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes -F /dev/null
+    homepage: https://github.com/trentas/ptop
+    description: "Interactive TUI for deep inspection of Linux processes via eBPF"
+    license: mit
+    commit_author:
+      name: Fabio Wakim Trentini
+      email: trentas@users.noreply.github.com
+    caveats: |
+      ptop requires Linux with eBPF support and must run as root:
+
+        sudo ptop
+
 snapshot:
   version_template: "{{ .Tag }}-next"
 

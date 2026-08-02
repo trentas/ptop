@@ -70,10 +70,19 @@ replace this section soon.
 
 ## Install
 
-Pre-built Linux binaries (amd64/arm64) are published on each tag:
+Homebrew (on Linux):
 
 ```bash
-curl -L https://github.com/trentas/ptop/releases/latest/download/ptop-linux-amd64.tar.gz | tar xz
+brew install trentas/tap/ptop
+```
+
+Or grab the pre-built Linux binaries (amd64/arm64) published on each tag. The
+asset name carries the version, so resolve it first:
+
+```bash
+VER=$(curl -fsSL https://api.github.com/repos/trentas/ptop/releases/latest \
+      | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p')
+curl -fsSL "https://github.com/trentas/ptop/releases/download/v$VER/ptop-$VER-linux-$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz
 sudo install ptop /usr/local/bin/
 ```
 
