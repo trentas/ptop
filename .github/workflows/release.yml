@@ -9,20 +9,21 @@ permissions:
   contents: write
 
 jobs:
-  goreleaser:
+  # ─── eBPF objects ─────────────────────────────────────────────────────────
+  # The .bpf.c programs compile against Linux kernel headers, so this is the
+  # only place they can be built. They are embedded into the Linux binary via
+  # go:embed and handed to the release job as an artifact.
+  bpf:
+    name: compile eBPF objects
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # goreleaser uses git history for the changelog
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
-      # eBPF toolchain — required to compile the .bpf.c programs that
-      # goreleaser embeds in the binary via `-tags=ebpf`.
       - name: install eBPF toolchain
         run: |
           sudo apt-get update
@@ -34,6 +35,45 @@ jobs:
 
       - name: make gen (compile .bpf.c → .bpf.o)
         run: make gen
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bpf-objects
+          path: internal/bpf/programs/*.o
+          if-no-files-found: error
+          retention-days: 1
+
+  # ─── Release ──────────────────────────────────────────────────────────────
+  # Runs on macOS because the darwin binaries need cgo against libproc, and no
+  # cross-compiler for that exists on a Linux runner. The Linux binaries stay
+  # CGO_ENABLED=0, so a macOS host cross-compiles them with no extra toolchain.
+  goreleaser:
+    name: goreleaser (macOS host — builds linux + darwin)
+    needs: bpf
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # goreleaser uses git history for the changelog
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpf-objects
+          path: internal/bpf/programs
+
+      # go:embed fails at compile time on a missing file, but an empty or
+      # truncated object would only surface at runtime on a user's machine.
+      - name: verify the eBPF objects arrived
+        run: |
+          ls -l internal/bpf/programs/*.o
+          for o in internal/bpf/programs/*.bpf.o; do
+            test -s "$o" || { echo "empty eBPF object: $o"; exit 1; }
+          done
 
       - uses: goreleaser/goreleaser-action@v6
         with:

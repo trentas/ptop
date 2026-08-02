@@ -6,7 +6,8 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/trentas/ptop)](https://goreportcard.com/report/github.com/trentas/ptop)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-`ptop` is an interactive TUI for deep inspection of Linux processes via eBPF.
+`ptop` is an interactive TUI for deep inspection of processes. Linux is the
+rich target (eBPF); macOS runs a reduced "Tier 1" set via libproc + Mach.
 Live diagnosis of CPU, syscalls, network, I/O, memory, threads, and file
 descriptors — without restarting, instrumenting, or changing a line of code
 in the target.
@@ -68,9 +69,32 @@ replace this section soon.
 - For full mode: root, or the binary with `cap_bpf,cap_perfmon+ep`
 - For building from source: Go **1.25+**, `clang`, `libbpf-dev`, `bpftool`
 
+## Platform support
+
+macOS has no eBPF and never will — XNU is a different kernel. ptop falls back
+to libproc + Mach ("Tier 1") and tells you which tier it started in. Most
+panels still carry real data; the ones backed by kernel probes stay empty by
+design, and the `?` overlay marks them.
+
+| Subsystem | Linux (eBPF) | macOS (libproc + Mach) |
+|---|---|---|
+| CPU, threads, memory, heap | full | yes |
+| File descriptors + events | full | yes |
+| I/O throughput + history | full | yes |
+| Network connections | full | yes |
+| Syscall counts (aggregate) | full | yes |
+| Timeline | full | yes |
+| Per-syscall trace (F2) | full | **no public API** |
+| Per-file I/O latency (F5) | full | **no public API** |
+| Lock graph (F7) | full | **no public API** |
+| Signals, exec lineage, LSM events | full | **no public API** |
+
+The three unavailable panels would need DTrace, which SIP restricts, or
+kdebug, which is undocumented and root-only. See issue #22 for the research.
+
 ## Install
 
-Homebrew (on Linux):
+Homebrew (Linux and macOS):
 
 ```bash
 brew install trentas/tap/ptop
