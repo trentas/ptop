@@ -67,6 +67,13 @@ homebrew_casks:
     commit_author:
       name: Fabio Wakim Trentini
       email: trentas@users.noreply.github.com
+    # Without this, `brew install` on macOS finds no url/sha256 (the cask only
+    # carries an on_linux block) and dies with a Ruby backtrace telling the user
+    # to file a bug. Declaring the requirement turns that into a clean
+    # "This cask requires Linux." — Homebrew keys it off depends_on at the top
+    # level of the cask, which is exactly where goreleaser puts custom_block.
+    custom_block: |
+      depends_on linux: :any
     caveats: |
       ptop requires Linux with eBPF support and must run as root:
 
