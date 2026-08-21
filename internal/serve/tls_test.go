@@ -118,9 +118,15 @@ func serverFiles(t *testing.T, ca *testCA, dir string) (certPath, keyPath, caPat
 		writePEM(t, dir, "ca.crt", ca.certPEM)
 }
 
-// clientCreds builds client-side credentials trusting ca, optionally presenting
-// a certificate issued by certCA (nil = no client certificate).
+// clientCreds wraps clientTLSConfig as gRPC transport credentials.
 func clientCreds(t *testing.T, ca *testCA, certCA *testCA) credentials.TransportCredentials {
+	t.Helper()
+	return credentials.NewTLS(clientTLSConfig(t, ca, certCA))
+}
+
+// clientTLSConfig builds a client-side tls.Config trusting ca, optionally
+// presenting a certificate issued by certCA (nil = no client certificate).
+func clientTLSConfig(t *testing.T, ca *testCA, certCA *testCA) *tls.Config {
 	t.Helper()
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(ca.certPEM) {
@@ -142,7 +148,30 @@ func clientCreds(t *testing.T, ca *testCA, certCA *testCA) credentials.Transport
 			return &pair, nil
 		}
 	}
-	return credentials.NewTLS(cfg)
+	return cfg
+}
+
+// tlsHandshakeErr dials target and reads one byte, returning the error the
+// server ends the connection with.
+//
+// Reading is the point: under TLS 1.3 the client finishes its side of the
+// handshake before the server has judged the client certificate, so tls.Dial
+// itself usually succeeds and the server's alert only lands on the next read.
+// Through gRPC the same rejection surfaces as whatever operation happens to
+// lose the race — a plain "broken pipe" on the request write, on Linux — so the
+// *reason* for a refusal is asserted here instead.
+func tlsHandshakeErr(t *testing.T, target string, cfg *tls.Config) error {
+	t.Helper()
+	conn, err := tls.Dial("tcp", target, cfg)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set deadline: %v", err)
+	}
+	_, err = conn.Read(make([]byte, 1))
+	return err
 }
 
 // --- the server under test ------------------------------------------------
@@ -253,9 +282,12 @@ func TestServeMTLSRejectsClientWithoutCert(t *testing.T) {
 	cert, key, caPath := serverFiles(t, ca, t.TempDir())
 	target := startTCPServer(ctx, t, TLSOptions{CertFile: cert, KeyFile: key, ClientCAFile: caPath})
 
-	_, err := firstEvent(ctx, target, clientCreds(t, ca, nil))
+	if ev, err := firstEvent(ctx, target, clientCreds(t, ca, nil)); err == nil {
+		t.Fatalf("subscriber without a client certificate was served: got event %v", ev)
+	}
+	err := tlsHandshakeErr(t, target, clientTLSConfig(t, ca, nil))
 	if err == nil {
-		t.Fatal("subscriber without a client certificate was served; want handshake failure")
+		t.Fatal("TLS connection without a client certificate stayed open")
 	}
 	if !strings.Contains(err.Error(), "certificate required") {
 		t.Errorf("error = %q, want the server to demand a client certificate", err)
@@ -272,12 +304,15 @@ func TestServeMTLSRejectsUntrustedClientCert(t *testing.T) {
 	cert, key, caPath := serverFiles(t, ca, t.TempDir())
 	target := startTCPServer(ctx, t, TLSOptions{CertFile: cert, KeyFile: key, ClientCAFile: caPath})
 
-	_, err := firstEvent(ctx, target, clientCreds(t, ca, rogue))
-	if err == nil {
-		t.Fatal("client certificate from an untrusted CA was accepted")
+	if ev, err := firstEvent(ctx, target, clientCreds(t, ca, rogue)); err == nil {
+		t.Fatalf("client certificate from an untrusted CA was accepted: got event %v", ev)
 	}
-	// The certificate is sent (see clientCreds) and rejected by the server's
+	// The certificate is sent (see clientTLSConfig) and rejected by the server's
 	// RequireAndVerifyClientCert against ClientCAs — not withheld by the client.
+	err := tlsHandshakeErr(t, target, clientTLSConfig(t, ca, rogue))
+	if err == nil {
+		t.Fatal("TLS connection with an untrusted client certificate stayed open")
+	}
 	if !strings.Contains(err.Error(), "unknown certificate authority") {
 		t.Errorf("error = %q, want rejection by the server's client CA", err)
 	}
