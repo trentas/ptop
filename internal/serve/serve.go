@@ -104,7 +104,7 @@ func runServer(ctx context.Context, lis net.Listener, creds credentials.Transpor
 
 	// Optional JSONL sink: a non-gRPC consumer of the same event stream.
 	if opts.JSONLPath != "" {
-		js, err := newJSONLSink(opts.JSONLPath)
+		js, err := newJSONLSink(opts.JSONLPath, hub.targetInfo())
 		if err != nil {
 			return fmt.Errorf("serve: jsonl export: %w", err)
 		}

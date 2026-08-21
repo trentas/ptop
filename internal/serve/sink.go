@@ -63,9 +63,16 @@ func (s *grpcSink) Emit(ev *pb.Event) {
 
 func (s *grpcSink) Close() error { return nil }
 
-// jsonlSink writes every event as one protojson line to a file. A bounded
-// channel + writer goroutine keep disk I/O off the hub's broadcast path; on
-// overflow events are dropped and counted (reported on Close).
+// jsonlSink writes a target header followed by every event as one protojson
+// line to a file. A bounded channel + writer goroutine keep disk I/O off the
+// hub's broadcast path; on overflow events are dropped and counted (reported on
+// Close).
+//
+// The FIRST line is a StreamMeta carrying TargetInfo, mirroring the handshake a
+// gRPC subscriber receives; every line after it is an Event. Without it an
+// export is unattributable after the fact — nothing in a file of cgroup-mode
+// events says which cgroup produced them, since the envelope pid is 0 there and
+// several payloads carry no pid of their own.
 type jsonlSink struct {
 	w       io.WriteCloser
 	ch      chan *pb.Event
@@ -73,20 +80,42 @@ type jsonlSink struct {
 	dropped uint64
 }
 
-func newJSONLSink(path string) (*jsonlSink, error) {
+func newJSONLSink(path string, target *pb.TargetInfo) (*jsonlSink, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	return newJSONLSinkWriter(f), nil
+	s, err := newJSONLSinkWriter(f, target)
+	if err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 // newJSONLSinkWriter is the testable core: it writes to any WriteCloser.
-func newJSONLSinkWriter(w io.WriteCloser) *jsonlSink {
+//
+// The header is written synchronously, before the writer goroutine starts, so
+// it is line 1 whatever the scheduler does — and a file that cannot even take
+// its header fails here, at startup, instead of producing a headerless export.
+func newJSONLSinkWriter(w io.WriteCloser, target *pb.TargetInfo) (*jsonlSink, error) {
+	if target != nil {
+		b, err := jsonlMarshal.Marshal(&pb.StreamMeta{Target: target})
+		if err != nil {
+			return nil, fmt.Errorf("serve: jsonl target header: %w", err)
+		}
+		if _, err := w.Write(append(b, '\n')); err != nil {
+			return nil, fmt.Errorf("serve: jsonl target header: %w", err)
+		}
+	}
 	s := &jsonlSink{w: w, ch: make(chan *pb.Event, subBuffer), done: make(chan struct{})}
 	go s.run()
-	return s
+	return s, nil
 }
+
+// jsonlMarshal keeps the header and the events on identical marshalling terms:
+// compact, one object per line.
+var jsonlMarshal = protojson.MarshalOptions{}
 
 func (s *jsonlSink) Emit(ev *pb.Event) {
 	select {
@@ -98,9 +127,8 @@ func (s *jsonlSink) Emit(ev *pb.Event) {
 
 func (s *jsonlSink) run() {
 	defer close(s.done)
-	opts := protojson.MarshalOptions{} // compact, one object per line
 	for ev := range s.ch {
-		b, err := opts.Marshal(ev)
+		b, err := jsonlMarshal.Marshal(ev)
 		if err != nil {
 			continue
 		}

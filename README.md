@@ -232,7 +232,8 @@ eBPF programs in `internal/bpf/programs/`:
 The TUI is one consumer of a richer event model. `ptop --pid <PID> --serve
 <addr>` runs headless and streams every observation as a typed protobuf `Event`
 over gRPC (package `ptop.v1`) to any number of unprivileged subscribers — and,
-with `--export`, also as one protojson line per event to a JSONL file. ptop
+with `--export`, also to a JSONL file: a `StreamMeta` header line naming the
+target, then one protojson line per event. ptop
 holds `CAP_BPF`/`CAP_PERFMON`; subscribers connect with none.
 
 ### Transport security
