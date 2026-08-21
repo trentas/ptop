@@ -373,6 +373,7 @@ ptop --pid <PID> --fps 10   render rate (default: 5)
 ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
 ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
 ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gRPC, no TUI
+ptop --cgroup <path|container-id> --serve <addr>  target a cgroup subtree instead of a PID (#94)
 ptop --pid <PID> --serve tcp://127.0.0.1:50051 --serve-insecure   headless over TCP, cleartext (opt-in)
 ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>   over TLS
 ptop --pid <PID> ... --serve-tls-client-ca <ca>   also require a client certificate (mTLS)
@@ -397,6 +398,19 @@ count); the actual **plaintext** is captured only with `--tls-bytes N` (default
 0, capped at 4096/call) — it can include credentials/PII, so it's a deliberate
 second opt-in with a stderr warning. The `--serve` privilege boundary (unix
 0600 / TCP loopback-only) guards the resulting plaintext.
+
+`--cgroup <path|container-id>` targets a cgroup subtree instead of one process
+(#94) — see the target-filter section above for the kernel side. It is
+`--serve`-only (the TUI is pid-shaped: header, thread table, fd list) and
+requires eBPF; `checkTargetFlags` in `cmd/ptop/main.go` rejects the rest.
+`bpf.ResolveCgroupSpec` resolves the spec once at startup, so a bad path or an
+ambiguous container id fails before any tracer loads and the log says which
+cgroup an id matched. `Set.startCgroup` starts only the collectors that can
+observe a subtree (syscalls, io, network, futex, cpu, security) — the
+`CgroupTargeter` interface in `types.go` is what marks them, and the ones left
+out are listed there with the reason. Every subscriber gets a `TargetInfo`
+handshake as the first `StreamMeta`, before any event: **the first item on a
+stream is now a meta, not an event** — consumers must handle that.
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
 streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of

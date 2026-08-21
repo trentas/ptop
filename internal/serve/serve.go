@@ -19,7 +19,39 @@ import (
 	pb "github.com/trentas/ptop/pkg/streampb"
 )
 
-// Options tunes a Run beyond the address/PID. The zero value is the plain
+// Target describes what a server observes. It is reported to every subscriber
+// as the stream handshake (TargetInfo, #94), because the two modes aggregate
+// differently: in PID mode every event belongs to one process, while in cgroup
+// mode events come from anywhere in the subtree.
+type Target struct {
+	// PID mode: the target pid. 0 in cgroup mode.
+	PID int
+
+	// Cgroup mode: the resolved absolute cgroup path and its id (the directory
+	// inode). Empty/0 in pid mode.
+	CgroupPath string
+	CgroupID   uint64
+}
+
+// TargetPID names a single process.
+func TargetPID(pid int) Target { return Target{PID: pid} }
+
+// TargetCgroup names a cgroup subtree, already resolved to a path and id.
+func TargetCgroup(path string, id uint64) Target {
+	return Target{CgroupPath: path, CgroupID: id}
+}
+
+// IsCgroup reports whether t names a cgroup subtree rather than a pid.
+func (t Target) IsCgroup() bool { return t.CgroupPath != "" }
+
+func (t Target) String() string {
+	if t.IsCgroup() {
+		return fmt.Sprintf("cgroup %s (id %d)", t.CgroupPath, t.CgroupID)
+	}
+	return fmt.Sprintf("pid %d", t.PID)
+}
+
+// Options tunes a Run beyond the address/target. The zero value is the plain
 // gRPC-only server.
 type Options struct {
 	// JSONLPath, if set, also writes every event as one protojson line to this
@@ -33,7 +65,7 @@ type Options struct {
 }
 
 // Run starts the gRPC server bound to addr, streaming events for the given
-// target pid from cols. It blocks until ctx is cancelled, then stops the server
+// target — a pid or a cgroup subtree — from cols. It blocks until ctx is cancelled, then stops the server
 // and returns. The caller owns the collectors' lifecycle (typically
 // set.Collectors() here and set.Stop() after Run returns). addr is
 // "unix:///path" or "tcp://host:port"; a tcp:// endpoint must carry TLS
@@ -42,7 +74,7 @@ type Options struct {
 // resolver (optional, nil-safe) symbolizes captured stacks: it stamps the
 // per-process build-id onto every StackRef and backs the ResolveStack RPC. Pass
 // set.HeapEBPF when non-nil; nil leaves heap events without stack references.
-func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, resolver StackResolver, opts Options) error {
+func Run(ctx context.Context, addr string, target Target, cols []collector.Collector, resolver StackResolver, opts Options) error {
 	// Resolve transport security first: a missing certificate or a refused
 	// cleartext endpoint should fail before anything is bound.
 	creds, mode, err := serverCredentials(addr, opts.TLS)
@@ -56,18 +88,18 @@ func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, 
 	}
 	defer cleanup()
 
-	return runServer(ctx, lis, creds, mode, pid, cols, resolver, opts)
+	return runServer(ctx, lis, creds, mode, target, cols, resolver, opts)
 }
 
 // runServer owns everything after the listener exists: the hub, the sinks, the
 // gRPC server and the shutdown. Split out of Run so tests can drive a real
 // server on an ephemeral tcp port (listen() picks it, only lis knows it).
-func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, pid int, cols []collector.Collector, resolver StackResolver, opts Options) error {
+func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, target Target, cols []collector.Collector, resolver StackResolver, opts Options) error {
 	var buildID string
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
 	}
-	hub := NewHub(pid, buildID)
+	hub := NewHub(target, buildID)
 	hub.Start(ctx, cols)
 
 	// Optional JSONL sink: a non-gRPC consumer of the same event stream.
@@ -97,8 +129,8 @@ func runServer(ctx context.Context, lis net.Listener, creds credentials.Transpor
 		fmt.Fprintln(os.Stderr, "[ptop] ⚠ --serve-insecure: this TCP stream is unencrypted and")
 		fmt.Fprintln(os.Stderr, "       unauthenticated. Anyone who reaches the port reads process internals.")
 	}
-	fmt.Fprintf(os.Stderr, "[ptop] serving events for pid %d on %s://%s (%s)\n",
-		pid, lis.Addr().Network(), lis.Addr().String(), mode)
+	fmt.Fprintf(os.Stderr, "[ptop] serving events for %s on %s://%s (%s)\n",
+		target, lis.Addr().Network(), lis.Addr().String(), mode)
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

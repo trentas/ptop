@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -49,6 +50,11 @@ func (c *NetworkEBPFCollector) Start(pid int) error {
 	}
 	go c.loop()
 	return nil
+}
+
+// StartCgroup is unavailable on macOS: cgroups are a Linux mechanism (#94).
+func (c *NetworkEBPFCollector) StartCgroup(string) error {
+	return errors.New("cgroup targeting is Linux-only")
 }
 
 func (c *NetworkEBPFCollector) Stop()                          { close(c.stop) }

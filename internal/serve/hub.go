@@ -9,11 +9,11 @@ import (
 )
 
 // Hub fans collector events in from many channels and out to many Sinks. One
-// Hub per server instance (one target PID). Sinks are interchangeable consumers
-// of the unified event stream: a gRPC subscriber and a JSONL writer are both
-// just Sinks (see sink.go).
+// Hub per server instance (one target). Sinks are interchangeable consumers of
+// the unified event stream: a gRPC subscriber and a JSONL writer are both just
+// Sinks (see sink.go).
 type Hub struct {
-	pid     int
+	target  Target
 	buildID string // target exec build-id, stamped onto every StackRef (#54)
 	mu      sync.Mutex
 	sinks   map[Sink]struct{}
@@ -26,8 +26,24 @@ type Hub struct {
 	cgroupID uint64
 }
 
-func NewHub(pid int, buildID string) *Hub {
-	return &Hub{pid: pid, buildID: buildID, sinks: make(map[Sink]struct{})}
+func NewHub(target Target, buildID string) *Hub {
+	return &Hub{target: target, buildID: buildID, sinks: make(map[Sink]struct{})}
+}
+
+// targetInfo renders the handshake every subscriber receives before its first
+// event, so a consumer knows the scope of what follows (#94).
+func (h *Hub) targetInfo() *pb.TargetInfo {
+	if h.target.IsCgroup() {
+		return &pb.TargetInfo{
+			Mode:       pb.TargetMode_TARGET_MODE_CGROUP,
+			CgroupPath: h.target.CgroupPath,
+			CgroupId:   h.target.CgroupID,
+		}
+	}
+	return &pb.TargetInfo{
+		Mode: pb.TargetMode_TARGET_MODE_PID,
+		Pid:  int32(h.target.PID),
+	}
 }
 
 // Start launches one fan-in goroutine per collector. Each maps published values
@@ -58,7 +74,7 @@ func (h *Hub) drain(ctx context.Context, ch <-chan interface{}) {
 			if pc, ok := v.(collector.ProcContext); ok {
 				h.setIdent(pc)
 			}
-			if ev := toEvent(h.pid, h.buildID, v); ev != nil {
+			if ev := toEvent(h.target.PID, h.buildID, v); ev != nil {
 				h.stampIdent(ev)
 				h.broadcast(ev)
 			}

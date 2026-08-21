@@ -135,6 +135,10 @@ sudo ./bin/ptop --pid <PID> --serve tcp://10.1.2.3:50051 \
   --serve-tls-key  /etc/ptop/tls/tls.key \
   --serve-tls-client-ca /etc/ptop/tls/ca.crt
 
+# Target a whole container/pod by cgroup instead of a PID (headless only)
+sudo ./bin/ptop --cgroup /kubepods.slice/.../cri-containerd-<id>.scope --serve unix:///run/ptop.sock
+sudo ./bin/ptop --cgroup <container-id> --serve unix:///run/ptop.sock
+
 # Capture TLS plaintext around libssl (OFF by default; sensitive — see below)
 sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --export
 ```
@@ -258,6 +262,38 @@ stderr, because dropping every subscriber is the worse failure.
 > Not to be confused with `--tls`/`--tls-bytes`, which are the opposite
 > direction: those capture the *target's* TLS plaintext. `--serve-tls-*`
 > encrypts *ptop's own* stream.
+
+### Targeting: one PID, or a whole cgroup
+
+`--pid` names one process. `--cgroup` names a **cgroup subtree** — a container
+or a whole pod — and needs no PID at all, so you can attach to a workload
+chosen by Kubernetes identity rather than by looking up what it happens to be
+running as. The spec is a cgroup path (absolute, or the root-relative form
+`/proc/<pid>/cgroup` prints) or a container id, which is resolved by searching
+the tree; an ambiguous id is refused rather than guessed. Forks and execs
+inside the subtree are covered automatically, because the filter matches the
+cgroup, not a process.
+
+Every subscriber is told which mode it is getting, as a `TargetInfo` handshake
+in the first `StreamMeta` of the stream, before any event. That matters because
+the modes aggregate differently: in cgroup mode `Event.pid` is 0 on aggregate
+payloads (there is no single process to name) and any pid inside a payload is a
+**root-namespace** pid, since a subtree can span pid namespaces.
+
+Cgroup mode is `--serve` only (the TUI's header, thread table and fd list are
+all one process's) and needs eBPF, since the filter runs in the kernel. It
+starts a deliberately smaller set of collectors — syscalls, I/O, network,
+locks, CPU and security — and the omissions are structural, not unfinished:
+
+| Not available in cgroup mode | Why |
+|---|---|
+| memory, threads | RSS and thread enumeration come from `/proc/<pid>/statm` and `/proc/<pid>/task` |
+| heap (#53), TLS (#55) | uprobes attach into one process's mapped libc/libssl |
+| signals (#58), exec lineage (#60) | they filter on a global pid of their own |
+
+Two collectors that do run lose a pid-shaped detail: I/O reports no file paths
+(resolving an fd means reading `/proc/<pid>/fd`) and security call sites stay
+in hex (symbolization reads one process's memory map).
 
 Beyond the seven TUI tabs, the stream carries the full process-behavior surface
 (each event tagged by `category`, with `uid`/`gid`/`cgroup_id` stamped on every

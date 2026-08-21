@@ -42,7 +42,7 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}()
 
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, 99, []collector.Collector{f}, nil, Options{}) }()
+	go func() { runErr <- Run(ctx, addr, TargetPID(99), []collector.Collector{f}, nil, Options{}) }()
 
 	// Wait for the listener socket to appear before dialing.
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
@@ -68,13 +68,26 @@ func TestServeUnixEndToEnd(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
+	// The first response is the target handshake (#94), before any event.
+	first, err := stream.Recv()
+	if err != nil {
+		t.Fatalf("recv handshake: %v", err)
+	}
+	ti := first.GetMeta().GetTarget()
+	if ti == nil {
+		t.Fatalf("first response is not a target handshake: %v", first)
+	}
+	if ti.GetMode() != pb.TargetMode_TARGET_MODE_PID || ti.GetPid() != 99 {
+		t.Errorf("handshake = %v, want pid mode for pid 99", ti)
+	}
+
 	resp, err := stream.Recv()
 	if err != nil {
 		t.Fatalf("recv: %v", err)
 	}
 	ev := resp.GetEvent()
 	if ev == nil || ev.GetCategory() != pb.Category_CATEGORY_CPU {
-		t.Fatalf("unexpected first response: %v", resp)
+		t.Fatalf("unexpected first event: %v", resp)
 	}
 	if ev.GetPid() != 99 {
 		t.Errorf("pid = %d, want 99", ev.GetPid())
@@ -108,7 +121,7 @@ func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 
 	f := newFake(8192) // holds the burst without blocking the producer
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, 1, []collector.Collector{f}, nil, Options{}) }()
+	go func() { runErr <- Run(ctx, addr, TargetPID(1), []collector.Collector{f}, nil, Options{}) }()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -176,7 +189,7 @@ func TestServeJSONLExport(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, "unix://"+sock, 5, []collector.Collector{f}, nil, Options{JSONLPath: jsonl})
+		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), []collector.Collector{f}, nil, Options{JSONLPath: jsonl})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 

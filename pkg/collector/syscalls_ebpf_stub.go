@@ -18,6 +18,11 @@ func (*SyscallsEBPFCollector) Start(pid int) error {
 	return errors.New("eBPF syscalls not available in this build")
 }
 
+// StartCgroup mirrors Start: cgroup targeting is an eBPF feature (#94).
+func (*SyscallsEBPFCollector) StartCgroup(string) error {
+	return errors.New("eBPF syscalls not available in this build")
+}
+
 func (*SyscallsEBPFCollector) Stop() {}
 
 func (*SyscallsEBPFCollector) Subscribe() <-chan interface{} {

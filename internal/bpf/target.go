@@ -56,38 +56,57 @@ func resolvePIDTarget(pid int) (targetFilter, error) {
 // ids are 64-bit inodes, and that is exactly the value
 // bpf_get_current_cgroup_id() reports.
 func resolveCgroupTarget(spec string) (targetFilter, error) {
+	_, id, level, err := resolveCgroup(spec)
+	if err != nil {
+		return targetFilter{}, err
+	}
+	return targetFilter{Mode: targetModeCgroup, CgroupID: id, CgroupLevel: level}, nil
+}
+
+// ResolveCgroupSpec resolves a cgroup spec to the absolute cgroup path it names
+// and that cgroup's id. Exported so the CLI can resolve once up front — failing
+// before any tracer is loaded, reporting what a container id actually matched,
+// and then handing the unambiguous path to every collector.
+func ResolveCgroupSpec(spec string) (path string, id uint64, err error) {
+	path, id, _, err = resolveCgroup(spec)
+	return path, id, err
+}
+
+// resolveCgroup does the shared work: find the cgroup2 root, map the spec to a
+// path under it, and read the path's id (inode) and depth.
+func resolveCgroup(spec string) (string, uint64, uint32, error) {
 	mi, err := os.ReadFile("/proc/self/mountinfo")
 	if err != nil {
-		return targetFilter{}, fmt.Errorf("read mountinfo: %w", err)
+		return "", 0, 0, fmt.Errorf("read mountinfo: %w", err)
 	}
 	root, err := cgroup2Root(string(mi))
 	if err != nil {
-		return targetFilter{}, err
+		return "", 0, 0, err
 	}
 
 	p, err := cgroupPath(os.DirFS(root), root, spec)
 	if err != nil {
-		return targetFilter{}, err
+		return "", 0, 0, err
 	}
 
 	level, err := cgroupLevel(root, p)
 	if err != nil {
-		return targetFilter{}, err
+		return "", 0, 0, err
 	}
 	if level == 0 {
-		return targetFilter{}, fmt.Errorf(
+		return "", 0, 0, fmt.Errorf(
 			"cgroup %q is the cgroup root — targeting it would trace every process on the host", p)
 	}
 
 	var st unix.Stat_t
 	if err := unix.Stat(p, &st); err != nil {
-		return targetFilter{}, fmt.Errorf("stat cgroup %q: %w", p, err)
+		return "", 0, 0, fmt.Errorf("stat cgroup %q: %w", p, err)
 	}
 	if st.Mode&unix.S_IFMT != unix.S_IFDIR {
-		return targetFilter{}, fmt.Errorf("cgroup %q is not a directory", p)
+		return "", 0, 0, fmt.Errorf("cgroup %q is not a directory", p)
 	}
 
-	return targetFilter{Mode: targetModeCgroup, CgroupID: st.Ino, CgroupLevel: level}, nil
+	return p, st.Ino, level, nil
 }
 
 // writeTargetFilter stores the resolved filter at key 0 of an ARRAY[1] map.

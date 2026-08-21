@@ -213,7 +213,7 @@ func startTCPServer(ctx context.Context, t *testing.T, opts TLSOptions) string {
 	target := lis.Addr().String()
 	done := make(chan error, 1)
 	go func() {
-		done <- runServer(ctx, lis, creds, "test", 4242, []collector.Collector{f}, nil, Options{})
+		done <- runServer(ctx, lis, creds, "test", TargetPID(4242), []collector.Collector{f}, nil, Options{})
 	}()
 	t.Cleanup(func() {
 		select {
@@ -225,9 +225,13 @@ func startTCPServer(ctx context.Context, t *testing.T, opts TLSOptions) string {
 	return target
 }
 
-// firstEvent subscribes and returns the first event, or the error that stopped
+// firstEvent subscribes and returns the first EVENT, or the error that stopped
 // it. Used both for the success path and for the handshake-refusal paths, where
 // the failure surfaces on Subscribe or on the first Recv depending on timing.
+//
+// It skips StreamMeta responses on the way, which is what any correct consumer
+// does: the stream opens with a TargetInfo handshake meta (#94), and drop
+// notices are interleaved later.
 func firstEvent(ctx context.Context, target string, creds credentials.TransportCredentials) (*pb.Event, error) {
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(creds))
 	if err != nil {
@@ -241,11 +245,15 @@ func firstEvent(ctx context.Context, target string, creds credentials.TransportC
 	if err != nil {
 		return nil, err
 	}
-	resp, err := stream.Recv()
-	if err != nil {
-		return nil, err
+	for {
+		resp, err := stream.Recv()
+		if err != nil {
+			return nil, err
+		}
+		if ev := resp.GetEvent(); ev != nil {
+			return ev, nil
+		}
 	}
-	return resp.GetEvent(), nil
 }
 
 // A subscriber presenting a certificate from the trusted CA streams events
