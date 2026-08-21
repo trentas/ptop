@@ -31,7 +31,7 @@ type SyscallStat struct {
 // counters map.
 //
 // Lifecycle:
-//   t, err := OpenSyscallTracer(pid)
+//   t, err := OpenSyscallTracer(bpf.TargetPID(pid))
 //   defer t.Close()                  // detaches programs + frees maps
 //   stats, _ := t.Stats()            // snapshot of the syscall_count map
 type SyscallTracer struct {
@@ -41,12 +41,13 @@ type SyscallTracer struct {
 	syscallMap  *ebpf.Map
 }
 
-// OpenSyscallTracer opens the tracer for the target PID. Fails if the kernel
-// doesn't support eBPF tracepoints, if capabilities are missing, or if the
-// BPF object didn't pass kernel verification.
-func OpenSyscallTracer(pid int) (*SyscallTracer, error) {
-	if pid <= 0 {
-		return nil, errors.New("invalid pid")
+// OpenSyscallTracer opens the tracer for target — a pid or a cgroup subtree,
+// see Target. Fails if the kernel doesn't support eBPF tracepoints, if
+// capabilities are missing, or if the BPF object didn't pass kernel
+// verification.
+func OpenSyscallTracer(target Target) (*SyscallTracer, error) {
+	if err := target.validate(); err != nil {
+		return nil, err
 	}
 	// Raises RLIMIT_MEMLOCK so the kernel accepts map allocations.
 	// On 5.11+ kernels with BPF memcg this is a no-op but still safe.
@@ -72,7 +73,7 @@ func OpenSyscallTracer(pid int) (*SyscallTracer, error) {
 		t.Close()
 		return nil, errors.New("target_pid map not found in BPF object")
 	}
-	tf, err := resolveTarget(pid)
+	tf, err := resolveTarget(target)
 	if err != nil {
 		t.Close()
 		return nil, err

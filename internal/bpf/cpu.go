@@ -32,9 +32,9 @@ type CPUTracer struct {
 // `perf record` uses by default — granular enough to detect CPU spikes >10ms.
 const SampleFreq = 100
 
-func OpenCPUTracer(pid int) (*CPUTracer, error) {
-	if pid <= 0 {
-		return nil, errors.New("invalid pid")
+func OpenCPUTracer(target Target) (*CPUTracer, error) {
+	if err := target.validate(); err != nil {
+		return nil, err
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit.RemoveMemlock: %w", err)
@@ -56,7 +56,7 @@ func OpenCPUTracer(pid int) (*CPUTracer, error) {
 		t.Close()
 		return nil, errors.New("cpu_target_pid map not found")
 	}
-	tf, err := resolveTarget(pid)
+	tf, err := resolveTarget(target)
 	if err != nil {
 		t.Close()
 		return nil, err

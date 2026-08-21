@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/trentas/ptop/internal/bpf"
@@ -37,17 +38,30 @@ func run() error {
 	pid := os.Getpid()
 	fmt.Printf("ptop eBPF self-test — target = self (pid %d)\n\n", pid)
 
-	cpuT, err := bpf.OpenCPUTracer(pid)
+	cpuT, err := bpf.OpenCPUTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("cpu: OpenCPUTracer: %w", err)
 	}
 	defer cpuT.Close()
 
-	scT, err := bpf.OpenSyscallTracer(pid)
+	scT, err := bpf.OpenSyscallTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("syscalls: OpenSyscallTracer: %w", err)
 	}
 	defer scT.Close()
+
+	// Second targeting mode (#94): the same workload, matched by cgroup subtree
+	// instead of by pid. cgT stays nil when there is no subtree to target.
+	var cgT *bpf.CPUTracer
+	cgroupSpec, cgroupWhy := selfCgroup()
+	if cgroupSpec != "" {
+		cgT, err = bpf.OpenCPUTracer(bpf.TargetCgroup(cgroupSpec))
+		if err != nil {
+			return fmt.Errorf("cgroup: OpenCPUTracer(%s): %w", cgroupSpec, err)
+		}
+		defer cgT.Close()
+		fmt.Printf("      cgroup mode targeting %s\n\n", cgroupSpec)
+	}
 
 	devnull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
 	if err != nil {
@@ -89,9 +103,47 @@ func run() error {
 		failed = true
 	}
 
+	switch {
+	case cgT == nil:
+		fmt.Printf("SKIP  cgroup:   %s\n", cgroupWhy)
+	default:
+		if samples, _ := cgT.SampleCount(); samples > 0 {
+			fmt.Printf("PASS  cgroup:   %d on-CPU samples observed via cgroup subtree filter\n", samples)
+		} else {
+			fmt.Fprintln(os.Stderr, "FAIL  cgroup:   0 samples — the cgroup subtree filter did not match this process")
+			failed = true
+		}
+	}
+
 	if failed {
 		return errors.New("eBPF self-test FAILED")
 	}
 	fmt.Println("\neBPF self-test PASSED")
 	return nil
+}
+
+// selfCgroup returns this process's cgroup v2 path, suitable as a --cgroup
+// spec, or "" plus the reason there is nothing to target.
+//
+// Inside a cgroup namespace /proc/self/cgroup reads "0::/" — the process sees
+// its own cgroup as the root — and targeting the root would mean tracing every
+// process on the host, which the resolver refuses. That is a legitimate skip,
+// not a failure.
+func selfCgroup() (spec, why string) {
+	b, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return "", fmt.Sprintf("cannot read /proc/self/cgroup (%v)", err)
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		// The unified hierarchy is the line with an empty controller list.
+		rest, ok := strings.CutPrefix(line, "0::")
+		if !ok {
+			continue
+		}
+		if p := strings.TrimSpace(rest); p != "" && p != "/" {
+			return p, ""
+		}
+		return "", "this process sees its own cgroup as the root (cgroup namespace) — no subtree to target"
+	}
+	return "", "no cgroup v2 (unified) entry in /proc/self/cgroup — cgroup v1 only host"
 }

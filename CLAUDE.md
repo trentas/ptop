@@ -83,7 +83,8 @@ ptop/
 │   │   │   ├── proc.bpf.c         sched fork/exec/exit → exec lineage subtree (#60)
 │   │   │   └── security.bpf.c     PROT_EXEC mmap/mprotect + SELinux AVC (#59)
 │   │   ├── available.go           runtime feature flag (build-tag based)
-│   │   ├── target.go              pid-namespace target resolver (shared)
+│   │   ├── target.go              target resolver: pid-namespace + cgroup (shared)
+│   │   ├── target_spec.go         bpf.Target + cgroup path/level/id helpers (#94)
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
 │   │   ├── caps_stub.go           non-Linux stub
 │   │   ├── caps_test.go
@@ -316,16 +317,42 @@ priority-based segment dropping pattern: copy it for any new dynamic strip.
 
 ---
 
-## PID namespaces
+## Target filter (PID namespaces and cgroups)
 
-eBPF programs filter the target process via `bpf_get_ns_current_pid_tgid()`,
-resolving pids inside the target's PID namespace (dev+inode of
-`/proc/<pid>/ns/pid`, written by the Go loader into `struct target_filter`).
-This is required because `bpf_get_current_pid_tgid()` returns root-namespace
-pids — wrong when ptop runs inside a nested namespace (WSL2, Docker, LXC).
-The shared logic lives in `programs/target.bpf.h` and `bpf/target.go`; never
-filter with the bare `bpf_get_current_pid_tgid()` again. Verify with
-`make ebpf-selftest` → `sudo ./bin/ebpf-selftest`.
+Every eBPF program filters through one shared helper, `pid_is_target()` in
+`programs/target.bpf.h`, reading a `struct target_filter` the Go loader wrote
+(`bpf/target.go`). It supports two ways of naming a target — `bpf.Target`,
+built with `TargetPID()` or `TargetCgroup()` (`bpf/target_spec.go`):
+
+**PID mode** resolves pids inside the target's PID namespace via
+`bpf_get_ns_current_pid_tgid()` (dev+inode of `/proc/<pid>/ns/pid`). This is
+required because `bpf_get_current_pid_tgid()` returns root-namespace pids —
+wrong when ptop runs inside a nested namespace (WSL2, Docker, LXC). Never
+filter with the bare `bpf_get_current_pid_tgid()` again.
+
+**Cgroup mode** (#94) targets a whole subtree with
+`bpf_get_current_ancestor_cgroup_id(level)`: every task inside the target
+answers with the target's own cgroup id, forks included, so no pid needs to be
+known in advance. The Go side resolves a path or container id to
+`(cgroup_id, level)` — the id being the cgroup directory's inode, which is what
+the helpers report on kernfs — and refuses level 0, the cgroup root, since that
+would trace the whole host. Cgroup v2 only: the helpers report the default
+hierarchy's id.
+
+Two caveats worth knowing before extending this:
+
+- **The uprobe collectors are pid-bound.** `heap` (#53) and `tls` (#55) attach
+  to a libc/libssl mapped into one process (`resolveLibc`, `resolveLibSSL`,
+  `link.UprobeOptions{PID: pid}`), so they take a pid, not a `Target`, and have
+  no cgroup-wide equivalent.
+- **Cgroup-mode pids are root-namespace pids.** A subtree can span pid
+  namespaces, so there is no single namespace to project into; `pid_target_ns()`
+  fills `out` from `bpf_get_current_pid_tgid()` in that mode.
+
+Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest`: it
+runs one workload and checks the pid filter and the cgroup filter against it
+(the cgroup phase reports SKIP where there is no subtree to target — a cgroup
+v1 host, or a cgroup namespace that shows `/` as its own root).
 
 ## Build tags
 

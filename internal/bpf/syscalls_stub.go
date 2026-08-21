@@ -18,7 +18,7 @@ type SyscallStat struct {
 
 type SyscallTracer struct{}
 
-func OpenSyscallTracer(pid int) (*SyscallTracer, error) {
+func OpenSyscallTracer(Target) (*SyscallTracer, error) {
 	return nil, errSyscallsStub
 }
 

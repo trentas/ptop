@@ -127,7 +127,7 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 		t.Close()
 		return nil, errors.New("heap_target_pid map missing")
 	}
-	tf, err := resolveTarget(pid)
+	tf, err := resolveTarget(TargetPID(pid))
 	if err != nil {
 		t.Close()
 		return nil, err

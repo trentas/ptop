@@ -50,7 +50,7 @@ func NewNetworkEBPFCollector() *NetworkEBPFCollector {
 }
 
 func (c *NetworkEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenNetTracer(pid)
+	tracer, err := bpf.OpenNetTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("network eBPF: %w", err)
 	}

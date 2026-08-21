@@ -57,7 +57,7 @@ func (c *ThreadsEBPFCollector) Start(pid int) error {
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/task", pid)); err != nil {
 		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
-	tracer, err := bpf.OpenThreadsTracer(pid)
+	tracer, err := bpf.OpenThreadsTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("threads eBPF: %w", err)
 	}

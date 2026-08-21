@@ -35,7 +35,7 @@ func NewSyscallsEBPFCollector() *SyscallsEBPFCollector {
 }
 
 func (c *SyscallsEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenSyscallTracer(pid)
+	tracer, err := bpf.OpenSyscallTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("syscalls eBPF: %w", err)
 	}

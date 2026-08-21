@@ -16,7 +16,7 @@ type ThreadState struct {
 
 type ThreadsTracer struct{}
 
-func OpenThreadsTracer(int) (*ThreadsTracer, error)     { return nil, errThreadsStub }
+func OpenThreadsTracer(Target) (*ThreadsTracer, error)     { return nil, errThreadsStub }
 func (*ThreadsTracer) PruneDeadTIDs([]int) error        { return errThreadsStub }
 func (*ThreadsTracer) Stats() (map[uint32]ThreadState, error) {
 	return nil, errThreadsStub

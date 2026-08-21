@@ -35,9 +35,9 @@ type FutexTracer struct {
 	smap  *ebpf.Map
 }
 
-func OpenFutexTracer(pid int) (*FutexTracer, error) {
-	if pid <= 0 {
-		return nil, errors.New("invalid pid")
+func OpenFutexTracer(target Target) (*FutexTracer, error) {
+	if err := target.validate(); err != nil {
+		return nil, err
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -58,7 +58,7 @@ func OpenFutexTracer(pid int) (*FutexTracer, error) {
 		t.Close()
 		return nil, errors.New("futex_target_pid map missing")
 	}
-	tf, err := resolveTarget(pid)
+	tf, err := resolveTarget(target)
 	if err != nil {
 		t.Close()
 		return nil, err

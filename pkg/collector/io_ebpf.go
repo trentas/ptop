@@ -68,7 +68,7 @@ func NewIOEBPFCollector() *IOEBPFCollector {
 }
 
 func (c *IOEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenIOTracer(pid)
+	tracer, err := bpf.OpenIOTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("io eBPF: %w", err)
 	}

@@ -43,7 +43,7 @@ func (c *MemEBPFCollector) Start(pid int) error {
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/statm", pid)); err != nil {
 		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
-	tracer, err := bpf.OpenMemoryTracer(pid)
+	tracer, err := bpf.OpenMemoryTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("memory eBPF: %w", err)
 	}

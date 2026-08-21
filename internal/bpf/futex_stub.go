@@ -17,7 +17,7 @@ type FutexStat struct {
 
 type FutexTracer struct{}
 
-func OpenFutexTracer(int) (*FutexTracer, error) { return nil, errFutexStub }
+func OpenFutexTracer(Target) (*FutexTracer, error) { return nil, errFutexStub }
 func (*FutexTracer) Stats() (map[uint64]FutexStat, error) {
 	return nil, errFutexStub
 }

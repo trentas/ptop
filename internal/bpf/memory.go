@@ -33,9 +33,9 @@ type MemoryTracer struct {
 	cmap  *ebpf.Map
 }
 
-func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
-	if pid <= 0 {
-		return nil, errors.New("invalid pid")
+func OpenMemoryTracer(target Target) (*MemoryTracer, error) {
+	if err := target.validate(); err != nil {
+		return nil, err
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -56,7 +56,7 @@ func OpenMemoryTracer(pid int) (*MemoryTracer, error) {
 		t.Close()
 		return nil, errors.New("mem_target_pid map missing")
 	}
-	tf, err := resolveTarget(pid)
+	tf, err := resolveTarget(target)
 	if err != nil {
 		t.Close()
 		return nil, err

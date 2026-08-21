@@ -25,6 +25,6 @@ type IOEvent struct {
 
 type IOTracer struct{}
 
-func OpenIOTracer(int) (*IOTracer, error)       { return nil, errIOStub }
+func OpenIOTracer(Target) (*IOTracer, error)       { return nil, errIOStub }
 func (*IOTracer) Next() (IOEvent, error)         { return IOEvent{}, io.EOF }
 func (*IOTracer) Close() error                   { return nil }

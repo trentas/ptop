@@ -27,7 +27,7 @@ type SecurityRecord struct {
 
 type SecurityTracer struct{}
 
-func OpenSecurityTracer(int) (*SecurityTracer, error) { return nil, errSecurityStub }
+func OpenSecurityTracer(Target) (*SecurityTracer, error) { return nil, errSecurityStub }
 
 func (*SecurityTracer) Next() (SecurityRecord, error) { return SecurityRecord{}, io.EOF }
 
