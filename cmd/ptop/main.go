@@ -39,6 +39,7 @@ func main() {
 	serveTLSKey := flag.String("serve-tls-key", "", "--serve over TLS: PEM server private key (needs --serve-tls-cert)")
 	serveTLSClientCA := flag.String("serve-tls-client-ca", "", "--serve over mTLS: PEM CA bundle; subscribers must present a certificate signed by it")
 	serveInsecure := flag.Bool("serve-insecure", false, "Allow a PLAINTEXT tcp:// --serve endpoint (unencrypted, unauthenticated) — deliberate opt-in")
+	cgroupSpec := flag.String("cgroup", "", "Target a cgroup subtree instead of one PID — a cgroup path or a container id (requires --serve and eBPF)")
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
@@ -50,22 +51,23 @@ func main() {
 		os.Exit(0)
 	}
 
-	if *pid <= 0 {
-		if *pid == 0 {
-			fmt.Fprintln(os.Stderr, "error: --pid is required")
-		} else {
-			fmt.Fprintf(os.Stderr, "error: --pid %d is not a valid PID\n", *pid)
-		}
+	// One target, named one of two ways (#94). Everything that cannot hold for a
+	// cgroup subtree is rejected here rather than half-working later.
+	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>")
+		fmt.Fprintln(os.Stderr, "       ptop --cgroup <path|container-id> --serve tcp://127.0.0.1:50051")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
 	}
 
-	if err := checkPIDExists(*pid); err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+	if *cgroupSpec == "" {
+		if err := checkPIDExists(*pid); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	}
 
 	// Profiling endpoint (dev tool, opt-in). Serves /debug/pprof for inspecting
@@ -146,11 +148,25 @@ func main() {
 
 	// Headless mode: serve the collector stream over gRPC instead of the TUI.
 	if *serveAddr != "" {
+		target := serve.TargetPID(*pid)
+		if *cgroupSpec != "" {
+			// Resolve once, up front: a bad spec or an ambiguous container id
+			// fails before any tracer loads, and the operator sees which cgroup
+			// an id actually matched.
+			path, id, err := bpf.ResolveCgroupSpec(*cgroupSpec)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: --cgroup %s: %v\n", *cgroupSpec, err)
+				os.Exit(1)
+			}
+			fmt.Fprintf(os.Stderr, "[ptop] targeting cgroup %s (id %d)\n", path, id)
+			target = serve.TargetCgroup(path, id)
+		}
+
 		opts := serve.Options{TLS: serveTLS}
 		if *export {
 			opts.JSONLPath = fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405"))
 		}
-		runServe(*serveAddr, *pid, *noEBPF, tlsEnabled, tlsCap, opts)
+		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, opts)
 		return
 	}
 
@@ -190,6 +206,33 @@ func main() {
 	}
 }
 
+// checkTargetFlags validates how the target was named. --cgroup (#94) is not a
+// drop-in alternative to --pid: the filter runs in the kernel, so it needs
+// eBPF, and it names a set of processes, which the TUI has nowhere to put — its
+// header, thread table and fd list are all one process's. Rejecting those
+// combinations here beats a TUI that renders an empty shell.
+func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF bool) error {
+	if cgroupSpec == "" {
+		if pid == 0 {
+			return errors.New("--pid is required (or --cgroup with --serve)")
+		}
+		if pid < 0 {
+			return fmt.Errorf("--pid %d is not a valid PID", pid)
+		}
+		return nil
+	}
+
+	switch {
+	case pid != 0:
+		return errors.New("--cgroup and --pid name different targets — pass one")
+	case serveAddr == "":
+		return errors.New("--cgroup requires --serve: a cgroup subtree is a set of processes, and the TUI shows one")
+	case noEBPF:
+		return errors.New("--cgroup needs eBPF (the subtree filter runs in the kernel) — it cannot work with --no-ebpf")
+	}
+	return nil
+}
+
 // checkPIDExists verifies the target process exists before anything starts.
 // Without this, a nonexistent PID silently fails every collector and the TUI
 // falls back to simulated data — plausible-looking numbers for a process that
@@ -218,12 +261,13 @@ func checkPIDExists(pid int) error {
 // so we stop the collectors after it returns. opts carries the transport
 // security and, with --export, the event-level JSONL path (distinct from the
 // TUI's state-snapshot ptop-export-*.jsonl).
-func runServe(addr string, pid int, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options) {
+func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	set := collector.NewSet(collector.SetConfig{
-		PID: pid, NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
+		PID: target.PID, Cgroup: target.CgroupPath,
+		NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
 	})
 	defer set.Stop()
 
@@ -235,7 +279,7 @@ func runServe(addr string, pid int, noEBPF, tlsEnabled bool, tlsBytes int, opts 
 		resolver = set.HeapEBPF
 	}
 
-	if err := serve.Run(ctx, addr, pid, set.Collectors(), resolver, opts); err != nil {
+	if err := serve.Run(ctx, addr, target, set.Collectors(), resolver, opts); err != nil {
 		set.Stop() // os.Exit skips the defer
 		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
 		os.Exit(1)

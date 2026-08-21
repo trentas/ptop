@@ -16,6 +16,11 @@ func (*SecurityEBPFCollector) Start(pid int) error {
 	return errors.New("eBPF security collector not available in this build")
 }
 
+// StartCgroup mirrors Start: cgroup targeting is an eBPF feature (#94).
+func (*SecurityEBPFCollector) StartCgroup(string) error {
+	return errors.New("eBPF security collector not available in this build")
+}
+
 func (*SecurityEBPFCollector) Stop() {}
 
 func (*SecurityEBPFCollector) Subscribe() <-chan interface{} { return nil }

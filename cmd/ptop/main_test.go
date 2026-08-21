@@ -36,3 +36,52 @@ func TestCheckPIDExistsGone(t *testing.T) {
 		t.Fatalf("checkPIDExists(%d) = %q, want a 'does not exist' error", cmd.Process.Pid, err)
 	}
 }
+
+func TestCheckTargetFlags(t *testing.T) {
+	const sock = "unix:///run/ptop.sock"
+	cases := []struct {
+		name       string
+		pid        int
+		cgroup     string
+		serveAddr  string
+		noEBPF     bool
+		wantErrHas string // "" = must be accepted
+	}{
+		{name: "pid alone", pid: 42},
+		{name: "pid with serve", pid: 42, serveAddr: sock},
+		{name: "pid with no-ebpf", pid: 42, noEBPF: true},
+		{name: "no target at all", wantErrHas: "--pid is required"},
+		{name: "negative pid", pid: -5, wantErrHas: "not a valid PID"},
+
+		{name: "cgroup with serve", cgroup: "/kubepods.slice/x.scope", serveAddr: sock},
+		{name: "cgroup by container id", cgroup: "abc123def456", serveAddr: sock},
+
+		// A cgroup subtree is a set of processes: the TUI has one header, one
+		// thread table and one fd list, so there is nowhere to put it.
+		{name: "cgroup without serve", cgroup: "/x.scope", wantErrHas: "requires --serve"},
+		// The subtree filter runs in the kernel.
+		{name: "cgroup with no-ebpf", cgroup: "/x.scope", serveAddr: sock, noEBPF: true,
+			wantErrHas: "needs eBPF"},
+		// Two different targets.
+		{name: "cgroup and pid together", pid: 42, cgroup: "/x.scope", serveAddr: sock,
+			wantErrHas: "pass one"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkTargetFlags(tc.pid, tc.cgroup, tc.serveAddr, tc.noEBPF)
+			if tc.wantErrHas == "" {
+				if err != nil {
+					t.Fatalf("checkTargetFlags = %v, want accepted", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("checkTargetFlags = nil, want error containing %q", tc.wantErrHas)
+			}
+			if !strings.Contains(err.Error(), tc.wantErrHas) {
+				t.Errorf("error = %q, want it to contain %q", err, tc.wantErrHas)
+			}
+		})
+	}
+}

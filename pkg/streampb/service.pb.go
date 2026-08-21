@@ -21,9 +21,63 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// TargetMode is how the server was told what to observe (#94).
+type TargetMode int32
+
+const (
+	TargetMode_TARGET_MODE_UNSPECIFIED TargetMode = 0
+	// One process, matched by pid inside its own pid namespace.
+	TargetMode_TARGET_MODE_PID TargetMode = 1
+	// Every process in a cgroup subtree, matched by cgroup id. No pid is
+	// involved, so the subtree's forks are included automatically.
+	TargetMode_TARGET_MODE_CGROUP TargetMode = 2
+)
+
+// Enum value maps for TargetMode.
+var (
+	TargetMode_name = map[int32]string{
+		0: "TARGET_MODE_UNSPECIFIED",
+		1: "TARGET_MODE_PID",
+		2: "TARGET_MODE_CGROUP",
+	}
+	TargetMode_value = map[string]int32{
+		"TARGET_MODE_UNSPECIFIED": 0,
+		"TARGET_MODE_PID":         1,
+		"TARGET_MODE_CGROUP":      2,
+	}
+)
+
+func (x TargetMode) Enum() *TargetMode {
+	p := new(TargetMode)
+	*p = x
+	return p
+}
+
+func (x TargetMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (TargetMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_service_proto_enumTypes[0].Descriptor()
+}
+
+func (TargetMode) Type() protoreflect.EnumType {
+	return &file_service_proto_enumTypes[0]
+}
+
+func (x TargetMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use TargetMode.Descriptor instead.
+func (TargetMode) EnumDescriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{0}
+}
+
 // SubscribeRequest opens a stream. categories filters which Event categories
-// the server sends; empty means all. The target PID is fixed per server
-// instance (set via `ptop --serve --pid`), so it is not part of the request.
+// the server sends; empty means all. The target is fixed per server instance
+// (set via `ptop --serve --pid` or `--cgroup`), so it is not part of the
+// request — see TargetInfo, which the server reports on the stream.
 type SubscribeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Categories    []Category             `protobuf:"varint,1,rep,packed,name=categories,proto3,enum=ptop.v1.Category" json:"categories,omitempty"`
@@ -68,20 +122,102 @@ func (x *SubscribeRequest) GetCategories() []Category {
 	return nil
 }
 
-// StreamMeta is an out-of-band signal interleaved in the stream. It reports
+// TargetInfo describes the SCOPE of everything on this stream. The server sends
+// it once, in the first StreamMeta of a subscription, before any event.
+//
+// It matters because the two modes aggregate differently. In PID mode every
+// Event.pid is the target. In CGROUP mode events come from any process in the
+// subtree, so Event.pid is 0 on the aggregate payloads (there is no single
+// process to name) and any pid inside a payload is a ROOT-namespace pid — a
+// subtree can span pid namespaces, so there is no namespace to project into.
+type TargetInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Mode  TargetMode             `protobuf:"varint,1,opt,name=mode,proto3,enum=ptop.v1.TargetMode" json:"mode,omitempty"`
+	// PID mode: the target pid. 0 in cgroup mode.
+	Pid int32 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
+	// CGROUP mode: the resolved absolute cgroup path, and the cgroup id it
+	// resolved to (the directory inode). Empty/0 in pid mode.
+	CgroupPath    string `protobuf:"bytes,3,opt,name=cgroup_path,json=cgroupPath,proto3" json:"cgroup_path,omitempty"`
+	CgroupId      uint64 `protobuf:"varint,4,opt,name=cgroup_id,json=cgroupId,proto3" json:"cgroup_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TargetInfo) Reset() {
+	*x = TargetInfo{}
+	mi := &file_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TargetInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TargetInfo) ProtoMessage() {}
+
+func (x *TargetInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TargetInfo.ProtoReflect.Descriptor instead.
+func (*TargetInfo) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *TargetInfo) GetMode() TargetMode {
+	if x != nil {
+		return x.Mode
+	}
+	return TargetMode_TARGET_MODE_UNSPECIFIED
+}
+
+func (x *TargetInfo) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *TargetInfo) GetCgroupPath() string {
+	if x != nil {
+		return x.CgroupPath
+	}
+	return ""
+}
+
+func (x *TargetInfo) GetCgroupId() uint64 {
+	if x != nil {
+		return x.CgroupId
+	}
+	return 0
+}
+
+// StreamMeta is an out-of-band signal interleaved in the stream. It carries the
+// subscription handshake (target, sent once before any event) and reports
 // backpressure: how many events the server dropped for this subscriber because
 // it could not keep up (cumulative). The collector is never blocked by a slow
 // consumer — events are dropped and counted instead.
 type StreamMeta struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Dropped       uint64                 `protobuf:"varint,1,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Dropped uint64                 `protobuf:"varint,1,opt,name=dropped,proto3" json:"dropped,omitempty"`
+	// Set on the handshake meta only; nil on backpressure notices.
+	Target        *TargetInfo `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *StreamMeta) Reset() {
 	*x = StreamMeta{}
-	mi := &file_service_proto_msgTypes[1]
+	mi := &file_service_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -93,7 +229,7 @@ func (x *StreamMeta) String() string {
 func (*StreamMeta) ProtoMessage() {}
 
 func (x *StreamMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[1]
+	mi := &file_service_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -106,7 +242,7 @@ func (x *StreamMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamMeta.ProtoReflect.Descriptor instead.
 func (*StreamMeta) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{1}
+	return file_service_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *StreamMeta) GetDropped() uint64 {
@@ -114,6 +250,13 @@ func (x *StreamMeta) GetDropped() uint64 {
 		return x.Dropped
 	}
 	return 0
+}
+
+func (x *StreamMeta) GetTarget() *TargetInfo {
+	if x != nil {
+		return x.Target
+	}
+	return nil
 }
 
 // SubscribeResponse is one item in the stream: either a captured Event or a
@@ -131,7 +274,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -143,7 +286,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -156,7 +299,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{2}
+	return file_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SubscribeResponse) GetKind() isSubscribeResponse_Kind {
@@ -212,7 +355,7 @@ type ResolveStackRequest struct {
 
 func (x *ResolveStackRequest) Reset() {
 	*x = ResolveStackRequest{}
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -224,7 +367,7 @@ func (x *ResolveStackRequest) String() string {
 func (*ResolveStackRequest) ProtoMessage() {}
 
 func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -237,7 +380,7 @@ func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackRequest.ProtoReflect.Descriptor instead.
 func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{3}
+	return file_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ResolveStackRequest) GetStackId() uint64 {
@@ -260,7 +403,7 @@ type ResolveStackResponse struct {
 
 func (x *ResolveStackResponse) Reset() {
 	*x = ResolveStackResponse{}
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -272,7 +415,7 @@ func (x *ResolveStackResponse) String() string {
 func (*ResolveStackResponse) ProtoMessage() {}
 
 func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -285,7 +428,7 @@ func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackResponse.ProtoReflect.Descriptor instead.
 func (*ResolveStackResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{4}
+	return file_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ResolveStackResponse) GetFrames() []*StackFrame {
@@ -310,10 +453,18 @@ const file_service_proto_rawDesc = "" +
 	"\x10SubscribeRequest\x121\n" +
 	"\n" +
 	"categories\x18\x01 \x03(\x0e2\x11.ptop.v1.CategoryR\n" +
-	"categories\"&\n" +
+	"categories\"\x85\x01\n" +
+	"\n" +
+	"TargetInfo\x12'\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x13.ptop.v1.TargetModeR\x04mode\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\x12\x1f\n" +
+	"\vcgroup_path\x18\x03 \x01(\tR\n" +
+	"cgroupPath\x12\x1b\n" +
+	"\tcgroup_id\x18\x04 \x01(\x04R\bcgroupId\"S\n" +
 	"\n" +
 	"StreamMeta\x12\x18\n" +
-	"\adropped\x18\x01 \x01(\x04R\adropped\"n\n" +
+	"\adropped\x18\x01 \x01(\x04R\adropped\x12+\n" +
+	"\x06target\x18\x02 \x01(\v2\x13.ptop.v1.TargetInfoR\x06target\"n\n" +
 	"\x11SubscribeResponse\x12&\n" +
 	"\x05event\x18\x01 \x01(\v2\x0e.ptop.v1.EventH\x00R\x05event\x12)\n" +
 	"\x04meta\x18\x02 \x01(\v2\x13.ptop.v1.StreamMetaH\x00R\x04metaB\x06\n" +
@@ -322,7 +473,12 @@ const file_service_proto_rawDesc = "" +
 	"\bstack_id\x18\x01 \x01(\x04R\astackId\"Y\n" +
 	"\x14ResolveStackResponse\x12+\n" +
 	"\x06frames\x18\x01 \x03(\v2\x13.ptop.v1.StackFrameR\x06frames\x12\x14\n" +
-	"\x05found\x18\x02 \x01(\bR\x05found2\xa7\x01\n" +
+	"\x05found\x18\x02 \x01(\bR\x05found*V\n" +
+	"\n" +
+	"TargetMode\x12\x1b\n" +
+	"\x17TARGET_MODE_UNSPECIFIED\x10\x00\x12\x13\n" +
+	"\x0fTARGET_MODE_PID\x10\x01\x12\x16\n" +
+	"\x12TARGET_MODE_CGROUP\x10\x022\xa7\x01\n" +
 	"\x12EventStreamService\x12D\n" +
 	"\tSubscribe\x12\x19.ptop.v1.SubscribeRequest\x1a\x1a.ptop.v1.SubscribeResponse0\x01\x12K\n" +
 	"\fResolveStack\x12\x1c.ptop.v1.ResolveStackRequest\x1a\x1d.ptop.v1.ResolveStackResponseB\x87\x01\n" +
@@ -340,31 +496,36 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_service_proto_goTypes = []any{
-	(*SubscribeRequest)(nil),     // 0: ptop.v1.SubscribeRequest
-	(*StreamMeta)(nil),           // 1: ptop.v1.StreamMeta
-	(*SubscribeResponse)(nil),    // 2: ptop.v1.SubscribeResponse
-	(*ResolveStackRequest)(nil),  // 3: ptop.v1.ResolveStackRequest
-	(*ResolveStackResponse)(nil), // 4: ptop.v1.ResolveStackResponse
-	(Category)(0),                // 5: ptop.v1.Category
-	(*Event)(nil),                // 6: ptop.v1.Event
-	(*StackFrame)(nil),           // 7: ptop.v1.StackFrame
+	(TargetMode)(0),              // 0: ptop.v1.TargetMode
+	(*SubscribeRequest)(nil),     // 1: ptop.v1.SubscribeRequest
+	(*TargetInfo)(nil),           // 2: ptop.v1.TargetInfo
+	(*StreamMeta)(nil),           // 3: ptop.v1.StreamMeta
+	(*SubscribeResponse)(nil),    // 4: ptop.v1.SubscribeResponse
+	(*ResolveStackRequest)(nil),  // 5: ptop.v1.ResolveStackRequest
+	(*ResolveStackResponse)(nil), // 6: ptop.v1.ResolveStackResponse
+	(Category)(0),                // 7: ptop.v1.Category
+	(*Event)(nil),                // 8: ptop.v1.Event
+	(*StackFrame)(nil),           // 9: ptop.v1.StackFrame
 }
 var file_service_proto_depIdxs = []int32{
-	5, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
-	6, // 1: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
-	1, // 2: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	7, // 3: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
-	0, // 4: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	3, // 5: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
-	2, // 6: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
-	4, // 7: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
-	6, // [6:8] is the sub-list for method output_type
-	4, // [4:6] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	7, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
+	0, // 1: ptop.v1.TargetInfo.mode:type_name -> ptop.v1.TargetMode
+	2, // 2: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
+	8, // 3: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
+	3, // 4: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
+	9, // 5: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
+	1, // 6: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	5, // 7: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
+	4, // 8: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	6, // 9: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
+	8, // [8:10] is the sub-list for method output_type
+	6, // [6:8] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -373,7 +534,7 @@ func file_service_proto_init() {
 		return
 	}
 	file_event_proto_init()
-	file_service_proto_msgTypes[2].OneofWrappers = []any{
+	file_service_proto_msgTypes[3].OneofWrappers = []any{
 		(*SubscribeResponse_Event)(nil),
 		(*SubscribeResponse_Meta)(nil),
 	}
@@ -382,13 +543,14 @@ func file_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   5,
+			NumEnums:      1,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_service_proto_goTypes,
 		DependencyIndexes: file_service_proto_depIdxs,
+		EnumInfos:         file_service_proto_enumTypes,
 		MessageInfos:      file_service_proto_msgTypes,
 	}.Build()
 	File_service_proto = out.File

@@ -34,8 +34,16 @@ func NewSyscallsEBPFCollector() *SyscallsEBPFCollector {
 	}
 }
 
-func (c *SyscallsEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenSyscallTracer(bpf.TargetPID(pid))
+func (c *SyscallsEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid)) }
+
+// StartCgroup counts syscalls across a whole cgroup subtree instead of one pid
+// (#94). Implements CgroupTargeter.
+func (c *SyscallsEBPFCollector) StartCgroup(spec string) error {
+	return c.start(bpf.TargetCgroup(spec))
+}
+
+func (c *SyscallsEBPFCollector) start(t bpf.Target) error {
+	tracer, err := bpf.OpenSyscallTracer(t)
 	if err != nil {
 		return fmt.Errorf("syscalls eBPF: %w", err)
 	}

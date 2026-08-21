@@ -14,6 +14,11 @@ func (c *FutexEBPFCollector) Start(pid int) error {
 	return errors.New("futex eBPF not available in this build")
 }
 
+// StartCgroup mirrors Start: cgroup targeting is an eBPF feature (#94).
+func (c *FutexEBPFCollector) StartCgroup(string) error {
+	return errors.New("futex eBPF not available in this build")
+}
+
 func (c *FutexEBPFCollector) Stop() {}
 
 func (c *FutexEBPFCollector) Subscribe() <-chan interface{} {

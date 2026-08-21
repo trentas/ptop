@@ -12,6 +12,11 @@ type SetConfig struct {
 	PID    int
 	NoEBPF bool // degraded mode: skip eBPF, use /proc (or libproc on macOS) only
 
+	// Cgroup, when set, targets every process in that cgroup subtree instead of
+	// one PID (#94) — a cgroup path or a container id. It takes precedence over
+	// PID and starts a deliberately smaller set of collectors; see NewSet.
+	Cgroup string
+
 	// TLS opts into pre-encryption payload capture via libssl uprobes (#55) —
 	// OFF by default (privacy). TLSMaxBytes caps the plaintext copied per call
 	// (0 = metadata only: direction/fd/byte count, no payload bytes).
@@ -76,6 +81,10 @@ type Set struct {
 // collector that fails to start is left nil.
 func NewSet(cfg SetConfig) *Set {
 	s := &Set{}
+	if cfg.Cgroup != "" {
+		s.startCgroup(cfg)
+		return s
+	}
 	if cfg.PID <= 0 {
 		return s
 	}
@@ -246,6 +255,64 @@ func NewSet(cfg SetConfig) *Set {
 	}
 
 	return s
+}
+
+// startCgroup starts the collectors that can observe a whole cgroup subtree
+// (#94). It is deliberately a smaller set than PID mode, and the omissions are
+// structural rather than unfinished work:
+//
+//   - memory and threads read /proc/<pid>/statm and /proc/<pid>/task for RSS
+//     and thread enumeration — a subtree has no single pid to read;
+//   - heap and TLS attach uprobes into one process's mapped libc/libssl;
+//   - signals and exec lineage filter on a global pid of their own.
+//
+// Of the ones that do start, io loses top-file paths and security loses
+// symbolized call sites (both need /proc/<pid>), and network skips its /proc
+// bootstrap of pre-existing connections. Each StartCgroup documents its own
+// degradation.
+//
+// There is no /proc fallback and nothing is simulated here: cgroup targeting is
+// an in-kernel filter, so without eBPF there is simply nothing to start.
+func (s *Set) startCgroup(cfg SetConfig) {
+	if cfg.NoEBPF {
+		fmt.Fprintln(os.Stderr, "warning: --cgroup targeting needs eBPF; nothing started in --no-ebpf mode")
+		return
+	}
+
+	if c := NewCPUEBPFCollector(); startCgroupCollector("cpu", c, cfg.Cgroup) {
+		s.CPUEBPF = c
+		s.Sources.CPU = "eBPF"
+	}
+	if c := NewSyscallsEBPFCollector(); startCgroupCollector("syscalls", c, cfg.Cgroup) {
+		s.SyscallsEBPF = c
+		s.Sources.Syscalls = "eBPF"
+	}
+	if c := NewIOEBPFCollector(); startCgroupCollector("io", c, cfg.Cgroup) {
+		s.IOEBPF = c
+		s.Sources.IOFiles = "eBPF"
+	}
+	if c := NewNetworkEBPFCollector(); startCgroupCollector("network", c, cfg.Cgroup) {
+		s.NetworkEBPF = c
+		s.Sources.Net = SourceNetworkRich
+	}
+	if c := NewFutexEBPFCollector(); startCgroupCollector("futex", c, cfg.Cgroup) {
+		s.FutexEBPF = c
+		s.Sources.Locks = "eBPF"
+	}
+	if c := NewSecurityEBPFCollector(); startCgroupCollector("security", c, cfg.Cgroup) {
+		s.SecurityEBPF = c
+		s.Sources.Security = "eBPF"
+	}
+}
+
+// startCgroupCollector starts c against a cgroup subtree, reporting a failure
+// the same way PID mode does.
+func startCgroupCollector(name string, c CgroupTargeter, spec string) bool {
+	if err := c.StartCgroup(spec); err != nil {
+		warnEBPFFailure(name, err)
+		return false
+	}
+	return true
 }
 
 // Stop stops every started collector. It is idempotent and safe to call on a

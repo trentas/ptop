@@ -49,8 +49,20 @@ func NewNetworkEBPFCollector() *NetworkEBPFCollector {
 	}
 }
 
-func (c *NetworkEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenNetTracer(bpf.TargetPID(pid))
+func (c *NetworkEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid), pid) }
+
+// StartCgroup tracks connections across a whole cgroup subtree instead of one
+// pid (#94). Implements CgroupTargeter.
+//
+// The /proc bootstrap is skipped (it needs a pid), so connections that already
+// existed when ptop attached only appear once they show some activity. New
+// connections are tracked normally.
+func (c *NetworkEBPFCollector) StartCgroup(spec string) error {
+	return c.start(bpf.TargetCgroup(spec), 0)
+}
+
+func (c *NetworkEBPFCollector) start(t bpf.Target, pid int) error {
+	tracer, err := bpf.OpenNetTracer(t)
 	if err != nil {
 		return fmt.Errorf("network eBPF: %w", err)
 	}

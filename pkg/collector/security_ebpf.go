@@ -44,15 +44,27 @@ func NewSecurityEBPFCollector() *SecurityEBPFCollector {
 	}
 }
 
-func (c *SecurityEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenSecurityTracer(bpf.TargetPID(pid))
+func (c *SecurityEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid), pid) }
+
+// StartCgroup watches a whole cgroup subtree instead of one pid (#94).
+// Implements CgroupTargeter. Call sites stay in hex: symbolization reads one
+// process's memory map, and a subtree has no single process to read.
+func (c *SecurityEBPFCollector) StartCgroup(spec string) error {
+	return c.start(bpf.TargetCgroup(spec), 0)
+}
+
+func (c *SecurityEBPFCollector) start(t bpf.Target, pid int) error {
+	tracer, err := bpf.OpenSecurityTracer(t)
 	if err != nil {
 		return fmt.Errorf("security eBPF: %w", err)
 	}
 	c.tracer = tracer
 	// Symbolize call sites best-effort: without /proc maps the sites degrade to
-	// hex — never fail Start over it (same as the heap collector).
-	if sym, err := symbol.NewSymbolizer(pid); err == nil {
+	// hex — never fail Start over it (same as the heap collector). With no pid
+	// (cgroup mode) there is nothing to symbolize against, so skip it quietly.
+	if pid <= 0 {
+		c.sym = nil
+	} else if sym, err := symbol.NewSymbolizer(pid); err == nil {
 		c.sym = sym
 	} else {
 		fmt.Fprintf(os.Stderr, "security: call-site symbolization unavailable for pid %d: %v\n", pid, err)

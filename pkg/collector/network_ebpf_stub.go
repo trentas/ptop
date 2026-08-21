@@ -17,6 +17,11 @@ func (c *NetworkEBPFCollector) Start(pid int) error {
 	return errors.New("network eBPF not available in this build")
 }
 
+// StartCgroup mirrors Start: cgroup targeting is an eBPF feature (#94).
+func (c *NetworkEBPFCollector) StartCgroup(string) error {
+	return errors.New("network eBPF not available in this build")
+}
+
 func (c *NetworkEBPFCollector) Stop() {}
 
 func (c *NetworkEBPFCollector) Subscribe() <-chan interface{} {

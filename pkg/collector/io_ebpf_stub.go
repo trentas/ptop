@@ -14,5 +14,11 @@ func NewIOEBPFCollector() *IOEBPFCollector { return &IOEBPFCollector{} }
 func (*IOEBPFCollector) Start(int) error {
 	return errors.New("eBPF io collector not available in this build")
 }
+
+// StartCgroup mirrors Start: cgroup targeting is an eBPF feature (#94).
+func (*IOEBPFCollector) StartCgroup(string) error {
+	return errors.New("eBPF io collector not available in this build")
+}
+
 func (*IOEBPFCollector) Stop()                          {}
 func (*IOEBPFCollector) Subscribe() <-chan interface{}  { return nil }

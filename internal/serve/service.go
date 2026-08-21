@@ -42,13 +42,24 @@ func (svc *eventStreamService) ResolveStack(_ context.Context, req *pb.ResolveSt
 	return &pb.ResolveStackResponse{Found: true, Frames: stackFrames(frames)}, nil
 }
 
-// Subscribe registers the client with the hub and streams its queued responses
-// until the client disconnects. Whenever the subscriber's drop counter has
+// Subscribe registers the client with the hub, sends the target handshake, and
+// streams its queued responses until the client disconnects. Whenever the
+// subscriber's drop counter has
 // advanced (backpressure), a StreamMeta is sent ahead of the next event so the
 // consumer learns it missed some.
 func (svc *eventStreamService) Subscribe(req *pb.SubscribeRequest, stream pb.EventStreamService_SubscribeServer) error {
 	sub := svc.hub.subscribe(req.GetCategories())
 	defer svc.hub.unsubscribe(sub)
+
+	// Handshake (#94): the scope of the stream, before anything is streamed. A
+	// consumer needs it to read what follows correctly — notably, cgroup-mode
+	// events carry no single pid.
+	handshake := &pb.SubscribeResponse{
+		Kind: &pb.SubscribeResponse_Meta{Meta: &pb.StreamMeta{Target: svc.hub.targetInfo()}},
+	}
+	if err := stream.Send(handshake); err != nil {
+		return err
+	}
 
 	ctx := stream.Context()
 	var lastDropped uint64

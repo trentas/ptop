@@ -381,3 +381,17 @@ type Collector interface {
 	Stop()
 	Subscribe() <-chan interface{}
 }
+
+// CgroupTargeter is implemented by collectors that can observe every process in
+// a cgroup subtree instead of a single pid (#94) — spec being a cgroup path or
+// a container id. The in-kernel filter matches the subtree, so processes that
+// fork or exec inside it are covered without being named.
+//
+// Not every collector can: anything that reads /proc/<pid>/... for its data
+// (thread enumeration, RSS) or attaches uprobes into one address space (heap,
+// TLS) is bound to a single process, and deliberately does not implement this.
+// Some that do implement it lose a pid-shaped detail — see each StartCgroup.
+type CgroupTargeter interface {
+	Collector
+	StartCgroup(spec string) error
+}

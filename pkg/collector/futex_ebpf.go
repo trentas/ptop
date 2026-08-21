@@ -41,8 +41,16 @@ func NewFutexEBPFCollector() *FutexEBPFCollector {
 	}
 }
 
-func (c *FutexEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenFutexTracer(bpf.TargetPID(pid))
+func (c *FutexEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid)) }
+
+// StartCgroup tracks futex contention across a whole cgroup subtree instead of
+// one pid (#94). Implements CgroupTargeter.
+func (c *FutexEBPFCollector) StartCgroup(spec string) error {
+	return c.start(bpf.TargetCgroup(spec))
+}
+
+func (c *FutexEBPFCollector) start(t bpf.Target) error {
+	tracer, err := bpf.OpenFutexTracer(t)
 	if err != nil {
 		return fmt.Errorf("futex eBPF: %w", err)
 	}

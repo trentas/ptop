@@ -67,8 +67,20 @@ func NewIOEBPFCollector() *IOEBPFCollector {
 	}
 }
 
-func (c *IOEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenIOTracer(bpf.TargetPID(pid))
+func (c *IOEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid), pid) }
+
+// StartCgroup tracks I/O across a whole cgroup subtree instead of one pid
+// (#94). Implements CgroupTargeter.
+//
+// Byte counters and latency histograms are unaffected, but top-file PATHS come
+// out empty: resolving an fd to a path means reading /proc/<pid>/fd/<n>, and a
+// subtree has no single pid to read it from.
+func (c *IOEBPFCollector) StartCgroup(spec string) error {
+	return c.start(bpf.TargetCgroup(spec), 0)
+}
+
+func (c *IOEBPFCollector) start(t bpf.Target, pid int) error {
+	tracer, err := bpf.OpenIOTracer(t)
 	if err != nil {
 		return fmt.Errorf("io eBPF: %w", err)
 	}
