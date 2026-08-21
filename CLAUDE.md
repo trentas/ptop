@@ -102,7 +102,7 @@ ptop/
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
-│   │   ├── tls.go                 transport security policy: TLS/mTLS or opt-in cleartext (#95)
+│   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
 │   │   ├── service.go             EventStream gRPC service impl
@@ -422,7 +422,13 @@ Version metadata is injected via `-ldflags` at release time
   `RequireAndVerifyClientCert`) or an explicit `--serve-insecure`; a bare
   `tcp://` is refused at startup. Unix sockets take no TLS at all (the flags are
   refused there — file permissions are the boundary), and contradictory
-  combinations fail fast rather than silently picking a winner. Mind the naming:
+  combinations fail fast rather than silently picking a winner. The material is
+  loaded through `tlsReloader`, hooked in as `tls.Config.GetConfigForClient`, so
+  a rotated certificate or client CA bundle is adopted on the next handshake
+  (fingerprint = size + mtime; a failed reload keeps the last good config and
+  warns). Note the trap it documents: a config returned by `GetConfigForClient`
+  replaces the outer one wholesale, so it must carry `NextProtos: ["h2"]` or
+  every gRPC client fails ALPN. Mind the naming:
   `--tls`/`--tls-bytes` capture the **target's** plaintext, `--serve-tls-*`
   encrypt **ptop's own** stream.
 - TLS payload capture (`--tls`/`--tls-bytes`, #55) observes plaintext and is
