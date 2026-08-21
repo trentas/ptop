@@ -247,8 +247,13 @@ endpoint:
 A `tcp://` endpoint with no certificate and no `--serve-insecure` is **refused
 at startup**: cleartext on the wire is a decision, not a default. Binding all
 interfaces (`0.0.0.0`/`::`) is refused either way — bind loopback or a specific
-interface IP. TLS 1.2 is the floor, and the certificate is read once at startup
-(rotate it by restarting the process).
+interface IP. TLS 1.2 is the floor.
+
+The certificate and the client CA bundle are re-read from disk whenever they
+change, so a rotated secret (cert-manager and friends) is picked up on the next
+handshake with no restart. If a rotation lands broken — a key caught
+half-written — the last good material keeps serving and the reason goes to
+stderr, because dropping every subscriber is the worse failure.
 
 > Not to be confused with `--tls`/`--tls-bytes`, which are the opposite
 > direction: those capture the *target's* TLS plaintext. `--serve-tls-*`

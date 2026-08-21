@@ -426,3 +426,120 @@ func TestServerCredentialsPolicy(t *testing.T) {
 		})
 	}
 }
+
+// --- rotation -------------------------------------------------------------
+
+// rewrite replaces a PEM file's contents and pushes its modification time
+// forward. The push is what makes the test deterministic: the reloader
+// fingerprints files by size and mtime, and a test rewriting a same-sized file
+// within one filesystem timestamp tick would otherwise look unchanged.
+func rewrite(t *testing.T, path string, b []byte) {
+	t.Helper()
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatalf("rewrite %s: %v", path, err)
+	}
+	future := time.Now().Add(time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("chtimes %s: %v", path, err)
+	}
+}
+
+// servedLeaf handshakes with the server and returns the certificate it
+// presented.
+func servedLeaf(t *testing.T, target string, cfg *tls.Config) *x509.Certificate {
+	t.Helper()
+	conn, err := tls.Dial("tcp", target, cfg)
+	if err != nil {
+		t.Fatalf("tls dial: %v", err)
+	}
+	defer conn.Close()
+	certs := conn.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		t.Fatal("server presented no certificate")
+	}
+	return certs[0]
+}
+
+// A certificate rotated on disk is picked up on the next handshake — no
+// restart, which is the point for a long-running process whose cert-manager
+// secret rotates under it.
+func TestServeTLSReloadsRotatedCertificate(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ca := newTestCA(t, "ptop-test-ca")
+	cert, key, _ := serverFiles(t, ca, t.TempDir())
+	target := startTCPServer(ctx, t, TLSOptions{CertFile: cert, KeyFile: key})
+
+	before := servedLeaf(t, target, clientTLSConfig(t, ca, nil))
+
+	certPEM, keyPEM := ca.issue(t, "ptop-server-rotated", true)
+	rewrite(t, cert, certPEM)
+	rewrite(t, key, keyPEM)
+
+	after := servedLeaf(t, target, clientTLSConfig(t, ca, nil))
+	if after.SerialNumber.Cmp(before.SerialNumber) == 0 {
+		t.Fatal("server still presents the pre-rotation certificate")
+	}
+	if got := after.Subject.CommonName; got != "ptop-server-rotated" {
+		t.Errorf("served certificate CN = %q, want the rotated one", got)
+	}
+}
+
+// A torn or invalid write must not take the endpoint down: the last good
+// material keeps serving. Losing every subscriber because a key was caught
+// half-written would be a worse failure than the stale certificate.
+func TestServeTLSKeepsLastGoodOnBrokenRotation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ca := newTestCA(t, "ptop-test-ca")
+	cert, key, _ := serverFiles(t, ca, t.TempDir())
+	target := startTCPServer(ctx, t, TLSOptions{CertFile: cert, KeyFile: key})
+
+	before := servedLeaf(t, target, clientTLSConfig(t, ca, nil))
+	rewrite(t, cert, []byte("-----BEGIN CERTIFICATE-----\ntruncated"))
+
+	after := servedLeaf(t, target, clientTLSConfig(t, ca, nil))
+	if after.SerialNumber.Cmp(before.SerialNumber) != 0 {
+		t.Error("served certificate changed after a broken rotation")
+	}
+
+	// And a later good write is still adopted — the reloader is not stuck on the
+	// failure it reported.
+	certPEM, keyPEM := ca.issue(t, "ptop-server-recovered", true)
+	rewrite(t, cert, certPEM)
+	rewrite(t, key, keyPEM)
+
+	recovered := servedLeaf(t, target, clientTLSConfig(t, ca, nil))
+	if got := recovered.Subject.CommonName; got != "ptop-server-recovered" {
+		t.Errorf("served certificate CN = %q, want the recovered one", got)
+	}
+}
+
+// The client CA bundle rotates too: a subscriber whose CA was not trusted is
+// refused, and accepted once the bundle names its CA — same running server.
+func TestServeMTLSReloadsClientCA(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	ca := newTestCA(t, "ptop-test-ca")
+	next := newTestCA(t, "ptop-next-ca")
+	cert, key, caPath := serverFiles(t, ca, t.TempDir())
+	target := startTCPServer(ctx, t, TLSOptions{CertFile: cert, KeyFile: key, ClientCAFile: caPath})
+
+	err := tlsHandshakeErr(t, target, clientTLSConfig(t, ca, next))
+	if err == nil || !strings.Contains(err.Error(), "unknown certificate authority") {
+		t.Fatalf("error = %v, want the not-yet-trusted client CA to be refused", err)
+	}
+
+	rewrite(t, caPath, next.certPEM)
+
+	ev, err := firstEvent(ctx, target, clientCreds(t, ca, next))
+	if err != nil {
+		t.Fatalf("subscriber refused after its CA was added to the bundle: %v", err)
+	}
+	if ev.GetCategory() != pb.Category_CATEGORY_CPU {
+		t.Fatalf("unexpected first event: %v", ev)
+	}
+}
