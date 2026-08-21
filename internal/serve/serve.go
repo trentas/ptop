@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/trentas/ptop/pkg/collector"
 	pb "github.com/trentas/ptop/pkg/streampb"
@@ -24,24 +25,44 @@ type Options struct {
 	// JSONLPath, if set, also writes every event as one protojson line to this
 	// file (an interchangeable sink alongside the gRPC subscribers).
 	JSONLPath string
+
+	// TLS carries the transport security of a tcp:// endpoint (issue #95).
+	// Serving tcp:// in cleartext requires TLS.AllowInsecure; a unix socket
+	// takes no TLS at all. See serverCredentials for the full policy.
+	TLS TLSOptions
 }
 
 // Run starts the gRPC server bound to addr, streaming events for the given
 // target pid from cols. It blocks until ctx is cancelled, then stops the server
 // and returns. The caller owns the collectors' lifecycle (typically
 // set.Collectors() here and set.Stop() after Run returns). addr is
-// "unix:///path" or "tcp://host:port".
+// "unix:///path" or "tcp://host:port"; a tcp:// endpoint must carry TLS
+// material or an explicit opt-in to cleartext (see serverCredentials).
 //
 // resolver (optional, nil-safe) symbolizes captured stacks: it stamps the
 // per-process build-id onto every StackRef and backs the ResolveStack RPC. Pass
 // set.HeapEBPF when non-nil; nil leaves heap events without stack references.
 func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, resolver StackResolver, opts Options) error {
+	// Resolve transport security first: a missing certificate or a refused
+	// cleartext endpoint should fail before anything is bound.
+	creds, mode, err := serverCredentials(addr, opts.TLS)
+	if err != nil {
+		return err
+	}
+
 	lis, cleanup, err := listen(addr)
 	if err != nil {
 		return err
 	}
 	defer cleanup()
 
+	return runServer(ctx, lis, creds, mode, pid, cols, resolver, opts)
+}
+
+// runServer owns everything after the listener exists: the hub, the sinks, the
+// gRPC server and the shutdown. Split out of Run so tests can drive a real
+// server on an ephemeral tcp port (listen() picks it, only lis knows it).
+func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, pid int, cols []collector.Collector, resolver StackResolver, opts Options) error {
 	var buildID string
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
@@ -61,7 +82,7 @@ func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, 
 		fmt.Fprintf(os.Stderr, "[ptop] also exporting events to %s\n", opts.JSONLPath)
 	}
 
-	srv := grpc.NewServer()
+	srv := grpc.NewServer(grpc.Creds(creds))
 	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{hub: hub, resolver: resolver})
 
 	// On cancel, Stop() (not GracefulStop): Subscribe streams are long-lived and
@@ -72,7 +93,12 @@ func Run(ctx context.Context, addr string, pid int, cols []collector.Collector, 
 		srv.Stop()
 	}()
 
-	fmt.Fprintf(os.Stderr, "[ptop] serving events for pid %d on %s\n", pid, addr)
+	if mode == modePlaintext {
+		fmt.Fprintln(os.Stderr, "[ptop] ⚠ --serve-insecure: this TCP stream is unencrypted and")
+		fmt.Fprintln(os.Stderr, "       unauthenticated. Anyone who reaches the port reads process internals.")
+	}
+	fmt.Fprintf(os.Stderr, "[ptop] serving events for pid %d on %s://%s (%s)\n",
+		pid, lis.Addr().Network(), lis.Addr().String(), mode)
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

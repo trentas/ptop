@@ -129,6 +129,12 @@ sudo ./bin/ptop --pid <PID> --export   # save JSON snapshot on exit
 # Stream events headless (no TUI) over gRPC + JSONL
 sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock --export
 
+# Same stream over TCP, encrypted and mutually authenticated (see below)
+sudo ./bin/ptop --pid <PID> --serve tcp://10.1.2.3:50051 \
+  --serve-tls-cert /etc/ptop/tls/tls.crt \
+  --serve-tls-key  /etc/ptop/tls/tls.key \
+  --serve-tls-client-ca /etc/ptop/tls/ca.crt
+
 # Capture TLS plaintext around libssl (OFF by default; sensitive — see below)
 sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --export
 ```
@@ -223,8 +229,30 @@ The TUI is one consumer of a richer event model. `ptop --pid <PID> --serve
 <addr>` runs headless and streams every observation as a typed protobuf `Event`
 over gRPC (package `ptop.v1`) to any number of unprivileged subscribers — and,
 with `--export`, also as one protojson line per event to a JSONL file. ptop
-holds `CAP_BPF`/`CAP_PERFMON`; subscribers connect with none (the unix socket is
-`0600`, TCP refuses non-loopback binds).
+holds `CAP_BPF`/`CAP_PERFMON`; subscribers connect with none.
+
+### Transport security
+
+The stream carries process internals — heap call sites, filesystem paths and,
+with `--tls-bytes`, the target's TLS plaintext. What protects it depends on the
+endpoint:
+
+| Endpoint | Protection | Flags |
+|---|---|---|
+| `unix:///path` | Filesystem: the socket is created `0600` and unlinked on exit | none (TLS flags are refused here) |
+| `tcp://host:port` + TLS | Encrypted; the subscriber verifies ptop | `--serve-tls-cert` + `--serve-tls-key` |
+| `tcp://host:port` + mTLS | Encrypted **and** only subscribers holding a certificate from your CA are served | the two above + `--serve-tls-client-ca` |
+| `tcp://host:port` cleartext | None — anyone who reaches the port reads everything | `--serve-insecure` (explicit opt-in, warns on stderr) |
+
+A `tcp://` endpoint with no certificate and no `--serve-insecure` is **refused
+at startup**: cleartext on the wire is a decision, not a default. Binding all
+interfaces (`0.0.0.0`/`::`) is refused either way — bind loopback or a specific
+interface IP. TLS 1.2 is the floor, and the certificate is read once at startup
+(rotate it by restarting the process).
+
+> Not to be confused with `--tls`/`--tls-bytes`, which are the opposite
+> direction: those capture the *target's* TLS plaintext. `--serve-tls-*`
+> encrypts *ptop's own* stream.
 
 Beyond the seven TUI tabs, the stream carries the full process-behavior surface
 (each event tagged by `category`, with `uid`/`gid`/`cgroup_id` stamped on every
