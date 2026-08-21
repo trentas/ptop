@@ -102,6 +102,7 @@ ptop/
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
+│   │   ├── tls.go                 transport security policy: TLS/mTLS or opt-in cleartext (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
 │   │   ├── service.go             EventStream gRPC service impl
@@ -345,7 +346,9 @@ ptop --pid <PID> --fps 10   render rate (default: 5)
 ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
 ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
 ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gRPC, no TUI
-ptop --pid <PID> --serve tcp://127.0.0.1:50051   headless over TCP (loopback)
+ptop --pid <PID> --serve tcp://127.0.0.1:50051 --serve-insecure   headless over TCP, cleartext (opt-in)
+ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>   over TLS
+ptop --pid <PID> ... --serve-tls-client-ca <ca>   also require a client certificate (mTLS)
 ptop --pid <PID> --tls       TLS payload metadata (libssl uprobes) — OFF by default (#55)
 ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (implies --tls)
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
@@ -411,6 +414,17 @@ Version metadata is injected via `-ldflags` at release time
   `0600` (owner-only) and removed on exit. For TCP, binding all interfaces
   (`0.0.0.0`/`::`) is refused — the stream exposes process internals, so bind
   loopback or a specific interface IP.
+- Transport security of the stream (#95) lives in `internal/serve/tls.go`:
+  `serverCredentials(addr, TLSOptions)` is the single policy gate, resolved
+  **before** the listener is created so a bad certificate path fails before
+  anything binds. A `tcp://` endpoint must carry TLS (`--serve-tls-cert` +
+  `--serve-tls-key`, plus `--serve-tls-client-ca` for
+  `RequireAndVerifyClientCert`) or an explicit `--serve-insecure`; a bare
+  `tcp://` is refused at startup. Unix sockets take no TLS at all (the flags are
+  refused there — file permissions are the boundary), and contradictory
+  combinations fail fast rather than silently picking a winner. Mind the naming:
+  `--tls`/`--tls-bytes` capture the **target's** plaintext, `--serve-tls-*`
+  encrypt **ptop's own** stream.
 - TLS payload capture (`--tls`/`--tls-bytes`, #55) observes plaintext and is
   **off by default**. It attaches no uprobes unless `--tls` is passed, and emits
   payload bytes only with the additional `--tls-bytes N` (capped 4096/call) —
