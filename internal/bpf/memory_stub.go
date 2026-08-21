@@ -15,6 +15,6 @@ type MemCounters struct {
 
 type MemoryTracer struct{}
 
-func OpenMemoryTracer(int) (*MemoryTracer, error)   { return nil, errMemStub }
+func OpenMemoryTracer(Target) (*MemoryTracer, error)   { return nil, errMemStub }
 func (*MemoryTracer) Stats() (MemCounters, error)   { return MemCounters{}, errMemStub }
 func (*MemoryTracer) Close() error                  { return nil }

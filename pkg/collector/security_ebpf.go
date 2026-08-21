@@ -45,7 +45,7 @@ func NewSecurityEBPFCollector() *SecurityEBPFCollector {
 }
 
 func (c *SecurityEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenSecurityTracer(pid)
+	tracer, err := bpf.OpenSecurityTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("security eBPF: %w", err)
 	}

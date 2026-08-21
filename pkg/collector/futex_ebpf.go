@@ -42,7 +42,7 @@ func NewFutexEBPFCollector() *FutexEBPFCollector {
 }
 
 func (c *FutexEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenFutexTracer(pid)
+	tracer, err := bpf.OpenFutexTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("futex eBPF: %w", err)
 	}

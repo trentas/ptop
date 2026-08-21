@@ -33,7 +33,7 @@ type NetConnKey struct {
 
 type NetTracer struct{}
 
-func OpenNetTracer(int) (*NetTracer, error)                       { return nil, errNetStub }
+func OpenNetTracer(Target) (*NetTracer, error)                       { return nil, errNetStub }
 func (*NetTracer) Stats() ([]NetSnapshot, error)                   { return nil, errNetStub }
 func (*NetTracer) SeedConnection(NetConnKey, uint32) error         { return errNetStub }
 func (*NetTracer) Close() error                                    { return nil }

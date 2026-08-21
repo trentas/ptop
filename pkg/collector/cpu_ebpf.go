@@ -38,7 +38,7 @@ func NewCPUEBPFCollector() *CPUEBPFCollector {
 }
 
 func (c *CPUEBPFCollector) Start(pid int) error {
-	tracer, err := bpf.OpenCPUTracer(pid)
+	tracer, err := bpf.OpenCPUTracer(bpf.TargetPID(pid))
 	if err != nil {
 		return fmt.Errorf("cpu eBPF: %w", err)
 	}

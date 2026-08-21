@@ -34,9 +34,9 @@ type ThreadsTracer struct {
 	stateMap *ebpf.Map
 }
 
-func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
-	if pid <= 0 {
-		return nil, errors.New("invalid pid")
+func OpenThreadsTracer(target Target) (*ThreadsTracer, error) {
+	if err := target.validate(); err != nil {
+		return nil, err
 	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
@@ -57,7 +57,7 @@ func OpenThreadsTracer(pid int) (*ThreadsTracer, error) {
 		t.Close()
 		return nil, errors.New("threads_target_pid map missing")
 	}
-	tf, err := resolveTarget(pid)
+	tf, err := resolveTarget(target)
 	if err != nil {
 		t.Close()
 		return nil, err
