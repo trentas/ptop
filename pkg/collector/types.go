@@ -151,10 +151,13 @@ type ThreadInfo struct {
 
 // LockEntry describes a contended futex: cumulative WAITs and WAKEs observed
 // on the uaddr (virtual address of the futex word), plus average call
-// latency and the last waiter/waker.
+// latency, the last waiter/waker and the call site that blocked on it.
 //
-// UAddr is the virtual pointer in the process address space — without
-// unwind/symbols we can't resolve it to "mutex-A". We display it in hex.
+// UAddr is a pointer into the live process address space, so it identifies the
+// lock only for THIS run: ASLR and arena reuse hand the same logical lock a
+// different address next time, and a freed address to an unrelated lock. The
+// call site below (#89) is the identity that survives that — compare locks
+// across runs by Module+Offset or Func/File:Line, never by UAddr.
 type LockEntry struct {
 	UAddr       uint64
 	Waiters     uint64  // cumulative wait_count
@@ -163,6 +166,19 @@ type LockEntry struct {
 	LatencyMs   float64 // average latency per call (waits + wakes)
 	LastWaitTID int
 	LastWakeTID int
+
+	// Acquire/contention call site (#89), symbolized like HeapCallSite: the
+	// application frame that blocked on this futex. When a lock is taken from
+	// several places this is the DOMINANT site of the window (most waits).
+	// eBPF-only, and only in pid mode — a cgroup subtree spans processes with
+	// no single memory map to symbolize against, so these stay zero there.
+	CallSite uint64 // raw instruction pointer (0 when the stack walk failed)
+	Func     string // resolved function name ("" if unresolved)
+	File     string // source file (Go only in this cut; "" otherwise)
+	Line     int    // source line (0 if unknown)
+	Module   string // backing module basename ("" if unresolved)
+	Offset   uint64 // module-relative offset — comparable across runs/ASLR
+	StackID  int32  // kernel stack-map id (<0 unknown); resolves to full frames
 }
 
 // ─── I/O ─────────────────────────────────────────────────────────────────────

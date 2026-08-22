@@ -63,8 +63,10 @@ message SubscribeResponse {
 }
 
 // ResolveStackRequest asks the server to symbolize a stack id referenced by an
-// event (Event.stack.stack_id or HeapCallSite.stack_id). The id is only valid
-// for the build identified by the accompanying StackRef.build_id.
+// event (Event.stack.stack_id, HeapCallSite.stack_id or LockEntry.stack_id).
+// The id is only valid for the build identified by the accompanying
+// StackRef.build_id, and is namespaced per capturing tracer — pass back exactly
+// the value the event carried, never a bare kernel id.
 message ResolveStackRequest {
   uint64 stack_id = 1;
 }

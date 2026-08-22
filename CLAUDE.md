@@ -77,7 +77,7 @@ ptop/
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
-│   │   │   ├── futex.bpf.c        futex wait/wake → lock graph
+│   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
 │   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
 │   │   │   ├── proc.bpf.c         sched fork/exec/exit → exec lineage subtree (#60)
@@ -96,7 +96,7 @@ ptop/
 │   │   ├── heap.go                libc allocator uprobe loader (#53)
 │   │   ├── tls.go                 libssl uprobe loader → TLS plaintext (#55)
 │   │   ├── threads.go             sched_switch loader
-│   │   ├── futex.go               futex wait/wake loader
+│   │   ├── futex.go               futex wait/wake loader + contention stacks
 │   │   ├── signal.go              signal_generate loader (#58)
 │   │   ├── proc.go                sched fork/exec/exit loader → exec lineage (#60)
 │   │   ├── security.go            PROT_EXEC + SELinux AVC loader + stack (#59)
@@ -106,6 +106,7 @@ ptop/
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
+│   │   ├── stackid.go             wire stack-id namespace + combined resolver (#89)
 │   │   ├── service.go             EventStream gRPC service impl
 │   │   └── mapper.go              collector value → streampb.Event
 │   └── tui/                       Bubbletea + Lipgloss
@@ -152,7 +153,7 @@ ptop/
 │       ├── io_ebpf.go             top files + per-op latency
 │       ├── network_ebpf.go        connections + RTT + bytes
 │       ├── syscalls_ebpf.go       per-syscall counts + latency
-│       ├── futex_ebpf.go          lock graph from futex tracking
+│       ├── futex_ebpf.go          lock graph from futex tracking (#89 call site)
 │       ├── proccontext_linux.go   /proc ns + cgroup + uid/gid context (#60)
 │       ├── proccontext.go         container-id / cgroup / ns-inode parsers (build-tag-free)
 │       ├── proclifecycle_ebpf.go  sched fork/exec/exit → exec lineage subtree (#60)
@@ -438,6 +439,25 @@ the optional `StackResolver`; a nil resolver simply omits stack refs and reports
 `found=false`. `build_id` is the target executable's GNU build-id, a stable
 per-process cache key (the same `stack_id` denotes a different stack once the
 binary changes).
+
+`LockEntry` rides it too (#89): `uaddr` names a lock only inside the live
+process — ASLR and arena reuse move it every run — so each entry also carries
+the symbolized `call_site` (`StackFrame`) plus a `stack_id`. That makes
+cross-run/deploy lock comparison possible: key on `module+offset` or
+`func/file:line`, never on `uaddr`. The kernel counts waits per
+`(uaddr, stack_id)` and the collector names the lock by the **dominant** site
+of the window, so a mutex taken from many places reports the one actually
+serializing it.
+
+**Wire stack ids are namespaced by source** (`internal/serve/stackid.go`): each
+tracer captures into its own `STACK_TRACE` map, and their ids are independent
+counters, so the wire id is `source<<32 | kernel_id` — heap is source 0 (ids
+unchanged from before #89), futex is 1, and `0` means "no stack". Pass the id
+back verbatim; `CombineStackResolvers` routes it to the tracer that captured
+it. Two consequences worth knowing: a new stack-capturing collector must claim
+a source constant, and both symbolization paths are **pid-mode only** — in
+cgroup mode there is no single memory map to resolve against, so sites stay
+unresolved.
 
 Version metadata is injected via `-ldflags` at release time
 (`main.version`, `main.commit`, `main.buildDate`). In dev they stay as

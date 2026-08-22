@@ -271,13 +271,19 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	})
 	defer set.Stop()
 
-	// The heap collector owns the stack tracer + symbolizer, so it backs stack
-	// references + the ResolveStack RPC. Pass an untyped nil when it never
-	// started (avoid a non-nil interface wrapping a nil pointer).
-	var resolver serve.StackResolver
+	// The heap (#54) and futex (#89) collectors each own a stack tracer +
+	// symbolizer, so they back the stack references and the ResolveStack RPC.
+	// Wire ids are namespaced by source, so one combined resolver serves both.
+	// Only register a collector that actually started — a nil pointer stored in
+	// the map would still read as a non-nil interface.
+	resolvers := make(map[serve.StackSource]serve.StackResolver, 2)
 	if set.HeapEBPF != nil {
-		resolver = set.HeapEBPF
+		resolvers[serve.StackSourceHeap] = set.HeapEBPF
 	}
+	if set.FutexEBPF != nil {
+		resolvers[serve.StackSourceFutex] = set.FutexEBPF
+	}
+	resolver := serve.CombineStackResolvers(resolvers)
 
 	if err := serve.Run(ctx, addr, target, set.Collectors(), resolver, opts); err != nil {
 		set.Stop() // os.Exit skips the defer

@@ -344,8 +344,10 @@ func (*SubscribeResponse_Event) isSubscribeResponse_Kind() {}
 func (*SubscribeResponse_Meta) isSubscribeResponse_Kind() {}
 
 // ResolveStackRequest asks the server to symbolize a stack id referenced by an
-// event (Event.stack.stack_id or HeapCallSite.stack_id). The id is only valid
-// for the build identified by the accompanying StackRef.build_id.
+// event (Event.stack.stack_id, HeapCallSite.stack_id or LockEntry.stack_id).
+// The id is only valid for the build identified by the accompanying
+// StackRef.build_id, and is namespaced per capturing tracer — pass back exactly
+// the value the event carried, never a bare kernel id.
 type ResolveStackRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StackId       uint64                 `protobuf:"varint,1,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`

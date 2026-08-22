@@ -395,14 +395,31 @@ message FdEvent {
 }
 
 // ─── Locks (futex) ──────────────────────────────────────────────────────────
+// LockEntry is one contended futex word. uaddr identifies it inside the LIVE
+// process only — ASLR and arena reuse give the same logical lock a different
+// address on the next run, and hand a freed address to an unrelated lock. The
+// call site below (#89) is the identity that survives that, the way
+// HeapCallSite's is for an allocation: compare locks across runs/deploys by
+// call_site.module+offset (or func/file:line), never by uaddr.
 message LockEntry {
-  uint64 uaddr = 1; // futex word virtual address (no symbols → shown in hex)
+  uint64 uaddr = 1; // futex word virtual address (live process only; shown in hex)
   uint64 waiters = 2; // cumulative wait_count
   uint64 wakers = 3; // cumulative wake_count
   uint64 wait_delta = 4; // new waits in the current window
   double latency_ms = 5; // average per call
   int32 last_wait_tid = 6;
   int32 last_wake_tid = 7;
+  // Symbolized application frame that blocked on this futex — the DOMINANT
+  // contention site of the window when the lock is taken from several places
+  // (the one with the most waits). eBPF-only, and only in pid mode: a cgroup
+  // subtree spans processes with no single memory map to symbolize against.
+  // Unset when the stack walk failed (no frame pointers).
+  StackFrame call_site = 8;
+  // Kernel stack id of that contention site, for
+  // EventStreamService.ResolveStack (the full leaf-first stack). Namespaced per
+  // tracer — the high 32 bits select the source map, the low 32 the kernel id —
+  // so pass the value back verbatim. 0 means no stack.
+  uint64 stack_id = 9;
 }
 message LockSnapshot {
   repeated LockEntry locks = 1;

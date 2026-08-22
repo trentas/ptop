@@ -16,6 +16,21 @@ import (
 //go:embed programs/futex.bpf.o
 var futexBPFObj []byte
 
+// futexStackDepth mirrors FUTEX_STACK_DEPTH in programs/futex.bpf.c — the user
+// stack depth captured at a contention site.
+const futexStackDepth = 32
+
+// FutexKey mirrors `struct futex_key`: the futex word plus the user stack
+// captured where a thread blocked on it (#89). Waits are counted per
+// (lock, contention site) so a lock keeps an identity that survives ASLR —
+// uaddr alone does not. StackID is -1 on wake-class calls (no stack is walked)
+// and on a failed walk.
+type FutexKey struct {
+	UAddr   uint64
+	StackID int32
+	_       uint32 // struct futex_key's explicit pad; part of the hash key
+}
+
 // FutexStat mirrors `struct futex_stat` in programs/futex.bpf.c 1:1.
 // 40 bytes (4 × u64 + 2 × u32).
 type FutexStat struct {
@@ -28,11 +43,13 @@ type FutexStat struct {
 }
 
 // FutexTracer loads futex.bpf.o, attaches sys_enter/exit_futex and exposes
-// Stats() to read the futex_stats map keyed by uaddr.
+// Stats() to read the futex_stats map keyed by (uaddr, contention site), plus
+// ResolveStack() for that site's frames.
 type FutexTracer struct {
-	coll  *ebpf.Collection
-	links []link.Link
-	smap  *ebpf.Map
+	coll      *ebpf.Collection
+	links     []link.Link
+	smap      *ebpf.Map
+	stacksMap *ebpf.Map
 }
 
 func OpenFutexTracer(target Target) (*FutexTracer, error) {
@@ -69,9 +86,10 @@ func OpenFutexTracer(target Target) (*FutexTracer, error) {
 	}
 
 	t.smap = coll.Maps["futex_stats"]
-	if t.smap == nil {
+	t.stacksMap = coll.Maps["futex_stacks"]
+	if t.smap == nil || t.stacksMap == nil {
 		t.Close()
-		return nil, errors.New("futex_stats map missing")
+		return nil, errors.New("futex maps missing")
 	}
 
 	tracepoints := []struct{ group, name, prog string }{
@@ -95,13 +113,14 @@ func OpenFutexTracer(target Target) (*FutexTracer, error) {
 	return t, nil
 }
 
-// Stats returns a complete snapshot of the futex_stats map: uaddr → stat.
-func (t *FutexTracer) Stats() (map[uint64]FutexStat, error) {
+// Stats returns a complete snapshot of the futex_stats map:
+// (uaddr, contention site) → stat.
+func (t *FutexTracer) Stats() (map[FutexKey]FutexStat, error) {
 	if t == nil || t.smap == nil {
 		return nil, errors.New("tracer not initialized")
 	}
-	out := make(map[uint64]FutexStat, 64)
-	var k uint64
+	out := make(map[FutexKey]FutexStat, 64)
+	var k FutexKey
 	var v FutexStat
 	iter := t.smap.Iterate()
 	for iter.Next(&k, &v) {
@@ -111,6 +130,27 @@ func (t *FutexTracer) Stats() (map[uint64]FutexStat, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// ResolveStack returns the user-stack frames captured for stackID (leaf first),
+// trailing zero slots trimmed. A negative id (wake op, or a failed walk) yields
+// nil. Mirrors HeapTracer.ResolveStack.
+func (t *FutexTracer) ResolveStack(stackID int32) ([]uint64, error) {
+	if stackID < 0 {
+		return nil, nil
+	}
+	if t == nil || t.stacksMap == nil {
+		return nil, errors.New("tracer not initialized")
+	}
+	var frames [futexStackDepth]uint64
+	if err := t.stacksMap.Lookup(uint32(stackID), &frames); err != nil {
+		return nil, err
+	}
+	n := len(frames)
+	for n > 0 && frames[n-1] == 0 {
+		n--
+	}
+	return frames[:n], nil
 }
 
 func (t *FutexTracer) Close() error {
@@ -125,6 +165,7 @@ func (t *FutexTracer) Close() error {
 		t.coll.Close()
 		t.coll = nil
 		t.smap = nil
+		t.stacksMap = nil
 	}
 	return nil
 }

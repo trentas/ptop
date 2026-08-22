@@ -157,6 +157,10 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 				Uaddr: l.UAddr, Waiters: l.Waiters, Wakers: l.Wakers,
 				WaitDelta: l.WaitDelta, LatencyMs: l.LatencyMs,
 				LastWaitTid: int32(l.LastWaitTID), LastWakeTid: int32(l.LastWakeTID),
+				// The lock's cross-run identity (#89); absent when the stack
+				// walk failed, so consumers never key on a made-up site.
+				CallSite: lockCallSite(l),
+				StackId:  taggedStackID(StackSourceFutex, l.StackID),
 			}
 		}
 		ev.Payload = &pb.Event_Locks{Locks: &pb.LockSnapshot{Locks: locks}}
@@ -223,7 +227,7 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 			CallSite: s.CallSite, AddrHex: s.AddrHex, LiveBytes: s.LiveBytes,
 			AllocCount: s.AllocCount, AvgLifetimeMs: s.AvgLifetimeMs, Suspected: s.Suspected,
 			Func: s.Func, File: s.File, Line: int32(s.Line), Module: s.Module, Offset: s.Offset,
-			StackId: stackID(s.StackID),
+			StackId: taggedStackID(StackSourceHeap, s.StackID),
 		}
 	}
 	return out
@@ -231,22 +235,28 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 
 // stackRef builds the envelope StackRef for a stack-bearing event, or nil when
 // the stack walk failed (negative kernel sentinel) so consumers don't chase a
-// dead id.
+// dead id. Heap events are the only stack-bearing ones today (#54).
 func stackRef(stackID int32, buildID string) *pb.StackRef {
 	if stackID < 0 {
 		return nil
 	}
-	return &pb.StackRef{StackId: uint64(stackID), BuildId: buildID}
+	return &pb.StackRef{
+		StackId: taggedStackID(StackSourceHeap, stackID),
+		BuildId: buildID,
+	}
 }
 
-// stackID widens a kernel stack id for the wire. A negative sentinel (walk
-// failed) becomes 0 — ResolveStack(0) reports not-found, the same as any id the
-// kernel has since evicted.
-func stackID(id int32) uint64 {
-	if id < 0 {
-		return 0
+// lockCallSite is the symbolized frame that blocked on a lock (#89), or nil
+// when nothing was resolved — an unresolved site is reported as absent rather
+// than as a frame of zeros.
+func lockCallSite(l collector.LockEntry) *pb.StackFrame {
+	if l.Func == "" && l.Module == "" && l.Offset == 0 {
+		return nil
 	}
-	return uint64(id)
+	return &pb.StackFrame{
+		Func: l.Func, File: l.File, Line: int32(l.Line),
+		Module: l.Module, Offset: l.Offset,
+	}
 }
 
 // stackFrames maps resolved symbol frames onto the wire form for ResolveStack.

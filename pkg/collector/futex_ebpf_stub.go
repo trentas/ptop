@@ -2,7 +2,11 @@
 
 package collector
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/trentas/ptop/pkg/symbol"
+)
 
 type FutexEBPFCollector struct{}
 
@@ -24,3 +28,9 @@ func (c *FutexEBPFCollector) Stop() {}
 func (c *FutexEBPFCollector) Subscribe() <-chan interface{} {
 	return nil
 }
+
+// ResolveStack / ProcessBuildID satisfy the serve.StackResolver shape so the
+// headless server can hold a *FutexEBPFCollector uniformly (#89); without eBPF
+// there is nothing to resolve.
+func (*FutexEBPFCollector) ResolveStack(uint64) ([]symbol.Frame, bool) { return nil, false }
+func (*FutexEBPFCollector) ProcessBuildID() string                     { return "" }

@@ -75,10 +75,20 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 			}},
 		{"fd_event", collector.FDEvent{Message: "openat /etc/hosts", Timestamp: time.Unix(4, 0)},
 			pb.Category_CATEGORY_FD, func(e *pb.Event) bool { return e.GetFdEvent().GetMessage() == "openat /etc/hosts" }},
-		{"locks", []collector.LockEntry{{UAddr: 0xdead, Waiters: 2, LastWaitTID: 9}},
+		{"locks", []collector.LockEntry{{UAddr: 0xdead, Waiters: 2, LastWaitTID: 9,
+			CallSite: 0xabc, Func: "pool.acquire", File: "/build/db.go", Line: 42,
+			Module: "app", Offset: 0x1a3, StackID: 7}},
 			pb.Category_CATEGORY_LOCK, func(e *pb.Event) bool {
 				l := e.GetLocks().GetLocks()
-				return len(l) == 1 && l[0].GetUaddr() == 0xdead && l[0].GetLastWaitTid() == 9
+				if len(l) != 1 || l[0].GetUaddr() != 0xdead || l[0].GetLastWaitTid() != 9 {
+					return false
+				}
+				cs := l[0].GetCallSite()
+				return cs.GetFunc() == "pool.acquire" && cs.GetFile() == "/build/db.go" &&
+					cs.GetLine() == 42 && cs.GetModule() == "app" && cs.GetOffset() == 0x1a3 &&
+					// tagged with its source so ResolveStack reaches the futex
+					// tracer, not the heap one
+					l[0].GetStackId() == taggedStackID(StackSourceFutex, 7)
 			}},
 		{"timeline_lock", collector.TimelineEvent{Category: "lock", Message: "futex", Timestamp: time.Unix(5, 0)},
 			pb.Category_CATEGORY_LOCK, func(e *pb.Event) bool { return e.GetTimeline().GetMessage() == "futex" }},
@@ -130,6 +140,22 @@ func TestToEventNegativeStackID(t *testing.T) {
 	})
 	if id := ev.GetHeap().GetTopCallSites()[0].GetStackId(); id != 0 {
 		t.Errorf("StackId = %d, want 0 for a failed stack walk", id)
+	}
+}
+
+// A lock whose contention stack couldn't be walked reports no call site and no
+// stack id, rather than a frame of zeros pointing at a dead id.
+func TestToEventLockWithoutCallSite(t *testing.T) {
+	ev := toEvent(1, "bid", []collector.LockEntry{{UAddr: 0xdead, Waiters: 2, StackID: -1}})
+	l := ev.GetLocks().GetLocks()[0]
+	if l.GetCallSite() != nil {
+		t.Errorf("CallSite = %v, want nil for a failed stack walk", l.GetCallSite())
+	}
+	if l.GetStackId() != 0 {
+		t.Errorf("StackId = %d, want 0 for a failed stack walk", l.GetStackId())
+	}
+	if l.GetUaddr() != 0xdead {
+		t.Errorf("Uaddr = %#x, want 0xdead — the live-process identity still ships", l.GetUaddr())
 	}
 }
 
