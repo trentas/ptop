@@ -30,10 +30,12 @@ const (
 // EventStreamService is ptop's headless collection surface. ptop runs with the
 // elevated capabilities (CAP_BPF/CAP_PERFMON); subscribers connect with none.
 type EventStreamServiceClient interface {
-	// Subscribe streams collector events for the server's target until the client
-	// disconnects. The first response is always a StreamMeta carrying TargetInfo,
-	// so a consumer knows the scope of what follows. Multiple subscribers fan out
-	// from one collector.
+	// Subscribe streams collector events for the requested target until the
+	// client disconnects. The first response is always a StreamMeta carrying
+	// TargetInfo, so a consumer knows the scope of what follows. Multiple
+	// subscribers of one target fan out from a single set of collectors; an
+	// on-demand server starts a target's collectors for its first subscriber and
+	// releases them when the last one disconnects.
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[SubscribeResponse], error)
 	// ResolveStack symbolizes a stack id seen on the stream into its leaf-first
 	// frames — an out-of-band lookup so high-rate events stay small (they carry
@@ -85,10 +87,12 @@ func (c *eventStreamServiceClient) ResolveStack(ctx context.Context, in *Resolve
 // EventStreamService is ptop's headless collection surface. ptop runs with the
 // elevated capabilities (CAP_BPF/CAP_PERFMON); subscribers connect with none.
 type EventStreamServiceServer interface {
-	// Subscribe streams collector events for the server's target until the client
-	// disconnects. The first response is always a StreamMeta carrying TargetInfo,
-	// so a consumer knows the scope of what follows. Multiple subscribers fan out
-	// from one collector.
+	// Subscribe streams collector events for the requested target until the
+	// client disconnects. The first response is always a StreamMeta carrying
+	// TargetInfo, so a consumer knows the scope of what follows. Multiple
+	// subscribers of one target fan out from a single set of collectors; an
+	// on-demand server starts a target's collectors for its first subscriber and
+	// releases them when the last one disconnects.
 	Subscribe(*SubscribeRequest, grpc.ServerStreamingServer[SubscribeResponse]) error
 	// ResolveStack symbolizes a stack id seen on the stream into its leaf-first
 	// frames — an out-of-band lookup so high-rate events stay small (they carry

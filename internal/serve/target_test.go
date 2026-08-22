@@ -25,7 +25,9 @@ func handshakeFor(t *testing.T, target Target) *pb.TargetInfo {
 
 	f := newFake(4)
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, target, collector.StartBus(ctx, []collector.Collector{f}), nil, Options{}) }()
+	go func() {
+		runErr <- Run(ctx, addr, target, collector.StartBus(ctx, []collector.Collector{f}), nil, Options{})
+	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))

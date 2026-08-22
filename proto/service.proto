@@ -7,11 +7,18 @@ import "event.proto";
 option go_package = "github.com/trentas/ptop/pkg/streampb;streampb";
 
 // SubscribeRequest opens a stream. categories filters which Event categories
-// the server sends; empty means all. The target is fixed per server instance
-// (set via `ptop --serve --pid` or `--cgroup`), so it is not part of the
-// request — see TargetInfo, which the server reports on the stream.
+// the server sends; empty means all.
+//
+// pid names the process to observe (#72). It is required when the server was
+// started without a target (`ptop --serve` with no `--pid`/`--cgroup`), which
+// serves targets on demand: the collectors for a pid start with its first
+// subscriber and stop with its last. When the server WAS started with a fixed
+// target, pid must be 0 or that exact pid — anything else is rejected rather
+// than silently served the wrong process. Either way the server reports what it
+// is actually observing in the TargetInfo handshake.
 message SubscribeRequest {
   repeated Category categories = 1;
+  int32 pid = 2;
 }
 
 // TargetMode is how the server was told what to observe (#94).
@@ -69,6 +76,11 @@ message SubscribeResponse {
 // the value the event carried, never a bare kernel id.
 message ResolveStackRequest {
   uint64 stack_id = 1;
+  // The process the stack was captured in (#72). Kernel stack maps are
+  // per-target, so the same id means different stacks in different processes:
+  // required on an on-demand server, and on a fixed-target server it must be 0
+  // or the server's own pid.
+  int32 pid = 2;
 }
 
 // ResolveStackResponse returns the leaf-first symbolized frames for the stack
@@ -82,10 +94,12 @@ message ResolveStackResponse {
 // EventStreamService is ptop's headless collection surface. ptop runs with the
 // elevated capabilities (CAP_BPF/CAP_PERFMON); subscribers connect with none.
 service EventStreamService {
-  // Subscribe streams collector events for the server's target until the client
-  // disconnects. The first response is always a StreamMeta carrying TargetInfo,
-  // so a consumer knows the scope of what follows. Multiple subscribers fan out
-  // from one collector.
+  // Subscribe streams collector events for the requested target until the
+  // client disconnects. The first response is always a StreamMeta carrying
+  // TargetInfo, so a consumer knows the scope of what follows. Multiple
+  // subscribers of one target fan out from a single set of collectors; an
+  // on-demand server starts a target's collectors for its first subscriber and
+  // releases them when the last one disconnects.
   rpc Subscribe(SubscribeRequest) returns (stream SubscribeResponse);
 
   // ResolveStack symbolizes a stack id seen on the stream into its leaf-first

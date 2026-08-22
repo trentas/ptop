@@ -53,7 +53,15 @@ func TestCheckTargetFlags(t *testing.T) {
 		// #71: one pid, watched live and streamed at the same time.
 		{name: "pid with serve and tui", pid: 42, serveAddr: sock, withTUI: true},
 		{name: "pid with no-ebpf", pid: 42, noEBPF: true},
+		// #72: no target named + --serve is the on-demand mode; subscribers say
+		// which pid they want.
+		{name: "no target with serve", serveAddr: sock},
+		{name: "no target with serve and max-targets", serveAddr: sock},
 		{name: "no target at all", wantErrHas: "--pid is required"},
+		// There is no one process for the TUI to draw when the target is
+		// whatever each subscriber asks for.
+		{name: "no target with serve and tui", serveAddr: sock, withTUI: true,
+			wantErrHas: "--tui needs a target"},
 		{name: "negative pid", pid: -5, wantErrHas: "not a valid PID"},
 
 		{name: "cgroup with serve", cgroup: "/kubepods.slice/x.scope", serveAddr: sock},

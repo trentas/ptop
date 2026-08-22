@@ -30,7 +30,7 @@ func TestResolveStackRPC(t *testing.T) {
 			},
 		},
 	}
-	svc := &eventStreamService{resolver: res}
+	svc := &eventStreamService{reg: &fixedRegistry{target: TargetPID(7), resolver: res}}
 
 	// Known id → found, frames mapped leaf-first 1:1.
 	resp, err := svc.ResolveStack(context.Background(), &pb.ResolveStackRequest{StackId: 42})
@@ -49,6 +49,16 @@ func TestResolveStackRPC(t *testing.T) {
 		t.Errorf("frame[0] = %+v", f0)
 	}
 
+	// A pid this server does not observe → found=false, never another
+	// process's stack (#72).
+	resp, err = svc.ResolveStack(context.Background(), &pb.ResolveStackRequest{StackId: 42, Pid: 999})
+	if err != nil {
+		t.Fatalf("ResolveStack(other pid): %v", err)
+	}
+	if resp.GetFound() {
+		t.Error("found = true for a pid this server does not observe")
+	}
+
 	// Unknown id → found=false, no error.
 	resp, err = svc.ResolveStack(context.Background(), &pb.ResolveStackRequest{StackId: 99})
 	if err != nil {
@@ -61,7 +71,7 @@ func TestResolveStackRPC(t *testing.T) {
 
 func TestResolveStackRPCNilResolver(t *testing.T) {
 	// A build without symbolization (nil resolver) never errors — just not-found.
-	svc := &eventStreamService{}
+	svc := &eventStreamService{reg: &fixedRegistry{target: TargetPID(7)}}
 	resp, err := svc.ResolveStack(context.Background(), &pb.ResolveStackRequest{StackId: 1})
 	if err != nil {
 		t.Fatalf("ResolveStack: %v", err)
