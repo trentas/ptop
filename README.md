@@ -244,6 +244,16 @@ Quitting the TUI stops the server.
 sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock --tui
 ```
 
+Started **without** `--pid`, the server has no target of its own: each
+subscriber names the process it wants in `SubscribeRequest.pid`, that pid's
+collectors start with its first subscriber and are released when its last one
+disconnects. `--serve-max-targets` (default 8) caps how many run at once, since
+each target carries its own eBPF programs.
+
+```bash
+sudo ./bin/ptop --serve unix:///run/ptop.sock          # subscribers pick the target
+```
+
 ### Transport security
 
 The stream carries process internals — heap call sites, filesystem paths and,

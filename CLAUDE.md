@@ -106,6 +106,7 @@ ptop/
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
+│   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
 │   │   ├── stackid.go             wire stack-id namespace + combined resolver (#89)
 │   │   ├── service.go             EventStream gRPC service impl
 │   │   └── mapper.go              collector value → streampb.Event
@@ -387,6 +388,8 @@ ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
 ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
 ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gRPC, no TUI
 ptop --pid <PID> --serve unix:///run/ptop.sock --tui   TUI *and* stream, one set of collectors (#71)
+ptop --serve unix:///run/ptop.sock          no --pid: each subscriber names its target (#72)
+ptop --serve unix:///run/ptop.sock --serve-max-targets 16   raise the concurrent-target cap (default 8)
 ptop --cgroup <path|container-id> --serve <addr>  target a cgroup subtree instead of a PID (#94)
 ptop --pid <PID> --serve tcp://127.0.0.1:50051 --serve-insecure   headless over TCP, cleartext (opt-in)
 ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>   over TLS
@@ -441,6 +444,31 @@ once the endpoint is bound, so a bad address or certificate is reported before
 the alt-screen instead of behind a TUI with nothing behind it. `--export` keeps
 its `--serve` meaning there (the event-level JSONL), not the TUI's
 state-snapshot one.
+
+**`--serve` with no `--pid`/`--cgroup` serves targets on demand** (#72):
+`SubscribeRequest.pid` names the process, a target's collectors start with its
+first subscriber and are released when its last one disconnects, so nothing
+keeps eBPF loaded for a process nobody watches. `internal/serve/registry.go`
+holds both shapes behind one interface — `fixedRegistry` (the command-line
+target; it starts and releases nothing) and `onDemandRegistry` (refcounted
+`collector.Feed` + `Hub` per pid, capped by `--serve-max-targets`, default 8).
+One mutex covers the whole map and is held across collector startup, which
+serializes an eBPF load for pid B behind one for pid A; that is deliberate —
+it makes a teardown-vs-subscribe race for the same pid impossible.
+
+Three consequences worth knowing:
+
+- **`ResolveStack` takes a pid too.** Kernel stack maps are per-target, so the
+  same id means different stacks in different processes. It uses `lookup`, not
+  `acquire`: an id for a process nobody is streaming reports `found=false`
+  rather than starting collectors to answer, because that stack died with the
+  tracer.
+- **A fixed-target server validates the pid** instead of ignoring it: `0` (the
+  pre-#72 request shape) or its own pid are served, anything else is
+  `InvalidArgument` — never the wrong process silently.
+- **`--export` and `--tui` need a fixed target.** A JSONL export names one
+  target in its header, and the TUI shows one process; both are refused at
+  startup in on-demand mode.
 
 The gRPC subscriber and the JSONL writer are interchangeable `Sink`s
 (`internal/serve/sink.go`) fed by the hub. `--serve --export` adds the JSONL

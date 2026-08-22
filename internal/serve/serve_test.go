@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/trentas/ptop/pkg/collector"
@@ -284,4 +285,145 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("condition not met within deadline")
+}
+
+// #72 end to end: one server, no target of its own, two subscribers on two
+// different pids. Each gets its own handshake and its own events — the whole
+// point being that neither one's collectors are the other's.
+func TestServeOnDemandTwoTargets(t *testing.T) {
+	sock := shortSock(t)
+	addr := "unix://" + sock
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := newTestFactory()
+	runErr := make(chan error, 1)
+	go func() { runErr <- RunOnDemand(ctx, addr, f.make, Options{}) }()
+	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	client := pb.NewEventStreamServiceClient(conn)
+
+	// Two live processes to observe: this test binary and its parent.
+	pidA, pidB := os.Getpid(), os.Getppid()
+	if pidA == pidB {
+		t.Skip("need two distinct live pids")
+	}
+
+	// A's stream gets its own context so the test can hang up on it alone.
+	ctxA, hangUpA := context.WithCancel(ctx)
+	defer hangUpA()
+	streamA, err := client.Subscribe(ctxA, &pb.SubscribeRequest{Pid: int32(pidA)})
+	if err != nil {
+		t.Fatalf("subscribe A: %v", err)
+	}
+	streamB, err := client.Subscribe(ctx, &pb.SubscribeRequest{Pid: int32(pidB)})
+	if err != nil {
+		t.Fatalf("subscribe B: %v", err)
+	}
+
+	// The handshake tells each subscriber which process it is watching.
+	for _, tc := range []struct {
+		name   string
+		stream pb.EventStreamService_SubscribeClient
+		pid    int
+	}{{"A", streamA, pidA}, {"B", streamB, pidB}} {
+		resp, err := tc.stream.Recv()
+		if err != nil {
+			t.Fatalf("%s handshake: %v", tc.name, err)
+		}
+		target := resp.GetMeta().GetTarget()
+		if target.GetMode() != pb.TargetMode_TARGET_MODE_PID || target.GetPid() != int32(tc.pid) {
+			t.Fatalf("%s handshake target = %v, want pid %d", tc.name, target, tc.pid)
+		}
+	}
+
+	// Each target's collectors feed only its own subscriber.
+	waitFor(t, func() bool { return f.callsFor(pidA) == 1 && f.callsFor(pidB) == 1 })
+	f.mu.Lock()
+	chA, chB := f.feeds[pidA].ch, f.feeds[pidB].ch
+	f.mu.Unlock()
+	chA <- collector.CpuSample{UsagePct: 11, Timestamp: time.Now()}
+	chB <- collector.CpuSample{UsagePct: 22, Timestamp: time.Now()}
+
+	for _, tc := range []struct {
+		name   string
+		stream pb.EventStreamService_SubscribeClient
+		pid    int
+		usage  float64
+	}{{"A", streamA, pidA, 11}, {"B", streamB, pidB, 22}} {
+		resp, err := tc.stream.Recv()
+		if err != nil {
+			t.Fatalf("%s event: %v", tc.name, err)
+		}
+		ev := resp.GetEvent()
+		if ev.GetPid() != int32(tc.pid) || ev.GetCpu().GetUsagePct() != tc.usage {
+			t.Errorf("%s got pid=%d usage=%v, want pid=%d usage=%v",
+				tc.name, ev.GetPid(), ev.GetCpu().GetUsagePct(), tc.pid, tc.usage)
+		}
+	}
+
+	// Hanging up on A releases A's collectors — its context is cancelled — and
+	// leaves B's alone. Nothing keeps eBPF loaded for a process nobody watches.
+	hangUpA()
+	waitFor(t, func() bool { return f.ctxFor(pidA).Err() != nil })
+	if err := f.ctxFor(pidB).Err(); err != nil {
+		t.Errorf("B's target was torn down when A disconnected: %v", err)
+	}
+
+	cancel()
+	<-runErr
+}
+
+// An on-demand subscriber that names no pid is told what to do, rather than
+// being served some arbitrary process.
+func TestServeOnDemandRequiresAPID(t *testing.T) {
+	sock := shortSock(t)
+	addr := "unix://" + sock
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := newTestFactory()
+	runErr := make(chan error, 1)
+	go func() { runErr <- RunOnDemand(ctx, addr, f.make, Options{}) }()
+	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
+
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	stream, err := pb.NewEventStreamServiceClient(conn).Subscribe(ctx, &pb.SubscribeRequest{})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if _, err := stream.Recv(); statusCode(t, err) != codes.InvalidArgument {
+		t.Errorf("recv = %v, want InvalidArgument", err)
+	}
+
+	cancel()
+	<-runErr
+}
+
+// An event export names one target in its header, so it cannot describe a
+// server whose targets come and go. Refused at startup, before binding.
+func TestServeOnDemandRefusesExport(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sock := shortSock(t)
+	err := RunOnDemand(ctx, "unix://"+sock, newTestFactory().make, Options{JSONLPath: filepath.Join(t.TempDir(), "e.jsonl")})
+	if err == nil {
+		t.Fatal("RunOnDemand with --export = nil, want an error")
+	}
+	if _, statErr := os.Stat(sock); statErr == nil {
+		t.Error("the endpoint was bound despite the refused configuration")
+	}
 }

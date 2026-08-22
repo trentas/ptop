@@ -40,6 +40,7 @@ func main() {
 	serveTLSClientCA := flag.String("serve-tls-client-ca", "", "--serve over mTLS: PEM CA bundle; subscribers must present a certificate signed by it")
 	serveInsecure := flag.Bool("serve-insecure", false, "Allow a PLAINTEXT tcp:// --serve endpoint (unencrypted, unauthenticated) — deliberate opt-in")
 	withTUI := flag.Bool("tui", false, "With --serve: also run the TUI on the same collectors (without --serve the TUI is already the default)")
+	maxTargets := flag.Int("serve-max-targets", 0, "With --serve and no --pid: how many processes to observe at once (0 = default)")
 	cgroupSpec := flag.String("cgroup", "", "Target a cgroup subtree instead of one PID — a cgroup path or a container id (requires --serve and eBPF)")
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
@@ -60,11 +61,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>")
 		fmt.Fprintln(os.Stderr, "       ptop --cgroup <path|container-id> --serve tcp://127.0.0.1:50051")
+		fmt.Fprintln(os.Stderr, "       ptop --serve unix:///run/ptop.sock          (no --pid: subscribers pick the target)")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
 	}
 
-	if *cgroupSpec == "" {
+	// With no target of our own the pid arrives per subscriber, and the server
+	// checks each one when it starts that target's collectors (#72).
+	if *cgroupSpec == "" && *pid != 0 {
 		if err := checkPIDExists(*pid); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
@@ -111,7 +115,13 @@ func main() {
 				fmt.Fprint(os.Stderr, diag)
 				os.Exit(1)
 			}
-			fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Starting tracers...")
+			if *serveAddr != "" && *pid == 0 && *cgroupSpec == "" {
+				// On-demand mode loads nothing until a subscriber names a pid,
+				// so don't claim tracers are starting (#72).
+				fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Tracers start per target, on subscribe.")
+			} else {
+				fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Starting tracers...")
+			}
 		}
 	}
 
@@ -167,6 +177,18 @@ func main() {
 		if *export {
 			opts.JSONLPath = fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405"))
 		}
+		// No --pid and no --cgroup: serve whatever pid each subscriber asks
+		// for, starting and stopping collectors with its subscribers (#72).
+		if *pid == 0 && *cgroupSpec == "" {
+			opts.MaxTargets = *maxTargets
+			if *export {
+				fmt.Fprintln(os.Stderr, "error: --export needs a fixed target (--pid): an event export names one target in its header")
+				os.Exit(1)
+			}
+			runServeOnDemand(*serveAddr, *noEBPF, tlsEnabled, tlsCap, opts)
+			return
+		}
+
 		var tuiCfg *tui.Config
 		if *withTUI {
 			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap}
@@ -183,6 +205,43 @@ func main() {
 		TLS:         tlsEnabled,
 		TLSMaxBytes: tlsCap,
 	})
+}
+
+// runServeOnDemand serves targets its subscribers pick (#72): no collectors run
+// until someone subscribes to a pid, and a target's collectors are released
+// when its last subscriber disconnects. Everything about a single target is
+// built exactly as runServe builds its one — same Set config, same resolver.
+func runServeOnDemand(addr string, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	factory := func(ctx context.Context, pid int) (*collector.Feed, serve.StackResolver, error) {
+		feed := collector.StartFeed(ctx, collector.SetConfig{
+			PID: pid, NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
+		})
+		return feed, stackResolverFor(feed.Set), nil
+	}
+
+	if err := serve.RunOnDemand(ctx, addr, factory, opts); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// stackResolverFor builds the ResolveStack backing for one target. The heap
+// (#54) and futex (#89) collectors each own a stack tracer + symbolizer, and
+// wire ids are namespaced by source, so one combined resolver serves both. Only
+// a collector that actually started is registered — a nil pointer stored in the
+// map would still read as a non-nil interface.
+func stackResolverFor(set *collector.Set) serve.StackResolver {
+	resolvers := make(map[serve.StackSource]serve.StackResolver, 2)
+	if set.HeapEBPF != nil {
+		resolvers[serve.StackSourceHeap] = set.HeapEBPF
+	}
+	if set.FutexEBPF != nil {
+		resolvers[serve.StackSourceFutex] = set.FutexEBPF
+	}
+	return serve.CombineStackResolvers(resolvers)
 }
 
 // runTUI drives the interactive program to completion: it builds the model
@@ -224,11 +283,21 @@ func runTUI(cfg tui.Config) {
 // combinations here beats a TUI that renders an empty shell.
 func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI bool) error {
 	if cgroupSpec == "" {
-		if pid == 0 {
-			return errors.New("--pid is required (or --cgroup with --serve)")
-		}
 		if pid < 0 {
 			return fmt.Errorf("--pid %d is not a valid PID", pid)
+		}
+		if pid > 0 {
+			return nil
+		}
+		// No target named at all. With --serve that is the on-demand mode
+		// (#72): subscribers name the pid, and each target's collectors live
+		// only as long as someone is watching it. Without --serve there is
+		// nothing to show.
+		switch {
+		case serveAddr == "":
+			return errors.New("--pid is required (or --cgroup/--serve with no --pid, where subscribers pick the target)")
+		case withTUI:
+			return errors.New("--tui needs a target: with no --pid the target is chosen per subscriber, and the TUI shows one process")
 		}
 		return nil
 	}
@@ -293,19 +362,7 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	defer feed.Stop()
 	set := feed.Set
 
-	// The heap (#54) and futex (#89) collectors each own a stack tracer +
-	// symbolizer, so they back the stack references and the ResolveStack RPC.
-	// Wire ids are namespaced by source, so one combined resolver serves both.
-	// Only register a collector that actually started — a nil pointer stored in
-	// the map would still read as a non-nil interface.
-	resolvers := make(map[serve.StackSource]serve.StackResolver, 2)
-	if set.HeapEBPF != nil {
-		resolvers[serve.StackSourceHeap] = set.HeapEBPF
-	}
-	if set.FutexEBPF != nil {
-		resolvers[serve.StackSourceFutex] = set.FutexEBPF
-	}
-	resolver := serve.CombineStackResolvers(resolvers)
+	resolver := stackResolverFor(set)
 
 	if tuiCfg == nil {
 		if err := serve.Run(ctx, addr, target, feed.Bus, resolver, opts); err != nil {

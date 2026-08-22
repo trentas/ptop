@@ -7,6 +7,7 @@ package serve
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -63,6 +64,12 @@ type Options struct {
 	// takes no TLS at all. See serverCredentials for the full policy.
 	TLS TLSOptions
 
+	// MaxTargets caps how many processes a RunOnDemand server observes at once
+	// (#72); 0 uses defaultMaxTargets. Each target carries its own eBPF programs
+	// and perf events, so this is a resource ceiling. Ignored with a fixed
+	// target — there is only ever one.
+	MaxTargets int
+
 	// Ready, if set, is closed once the endpoint is bound and the server is
 	// about to serve. It exists so a caller that runs Run in a goroutine can
 	// tell "up" from "failed at startup" without racing a timer — everything
@@ -98,34 +105,77 @@ func Run(ctx context.Context, addr string, target Target, bus *collector.Bus, re
 	}
 	defer cleanup()
 
-	return runServer(ctx, lis, creds, mode, target, bus, resolver, opts)
+	reg := fixedTargetRegistry(ctx, target, bus, resolver)
+	return runServer(ctx, lis, creds, mode, reg, reg.hub, opts)
 }
 
-// runServer owns everything after the listener exists: the hub, the sinks, the
-// gRPC server and the shutdown. Split out of Run so tests can drive a real
-// server on an ephemeral tcp port (listen() picks it, only lis knows it).
-func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, target Target, bus *collector.Bus, resolver StackResolver, opts Options) error {
-	var buildID string
+// RunOnDemand starts the gRPC server bound to addr with NO target of its own
+// (#72): each subscriber names the pid it wants in SubscribeRequest.pid, and
+// factory starts that process's collectors for its first subscriber. They are
+// released when its last subscriber disconnects, so nothing keeps eBPF loaded
+// for a process nobody is watching. opts.MaxTargets caps how many run at once.
+//
+// Everything else matches Run: the same transport-security policy, the same
+// event stream, the same handshake — a subscriber cannot tell how the server
+// was started except by what TargetInfo says.
+func RunOnDemand(ctx context.Context, addr string, factory FeedFactory, opts Options) error {
+	if factory == nil {
+		return errors.New("serve: RunOnDemand needs a FeedFactory")
+	}
+	// An event-level export has one TargetInfo header and one file; with targets
+	// coming and going there is no single scope it could honestly claim. Refuse
+	// before binding, like every other startup misconfiguration.
+	if opts.JSONLPath != "" {
+		return errors.New("serve: --export needs a fixed target (--pid), not one chosen per subscriber")
+	}
+
+	creds, mode, err := serverCredentials(addr, opts.TLS)
+	if err != nil {
+		return err
+	}
+
+	lis, cleanup, err := listen(addr)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+
+	return runServer(ctx, lis, creds, mode, newOnDemandRegistry(ctx, factory, opts.MaxTargets), nil, opts)
+}
+
+// fixedTargetRegistry starts the hub for a server whose target was named on the
+// command line, and wraps it in the registry the service talks to.
+func fixedTargetRegistry(ctx context.Context, target Target, bus *collector.Bus, resolver StackResolver) *fixedRegistry {
+	buildID := ""
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
 	}
 	hub := NewHub(target, buildID)
 	hub.Start(ctx, bus)
+	return &fixedRegistry{target: target, hub: hub, resolver: resolver}
+}
 
+// runServer owns everything after the listener exists: the sinks, the gRPC
+// server and the shutdown. Split out of Run so tests can drive a real server on
+// an ephemeral tcp port (listen() picks it, only lis knows it).
+// reg maps a request's pid to the target serving it; sinkHub is the one hub a
+// JSONL export can attach to, and is nil when targets are chosen per subscriber
+// (there is no single stream to write).
+func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, reg registry, sinkHub *Hub, opts Options) error {
 	// Optional JSONL sink: a non-gRPC consumer of the same event stream.
-	if opts.JSONLPath != "" {
-		js, err := newJSONLSink(opts.JSONLPath, hub.targetInfo())
+	if opts.JSONLPath != "" && sinkHub != nil {
+		js, err := newJSONLSink(opts.JSONLPath, sinkHub.targetInfo())
 		if err != nil {
 			return fmt.Errorf("serve: jsonl export: %w", err)
 		}
-		hub.AddSink(js)
+		sinkHub.AddSink(js)
 		// RemoveSink before Close so no Emit races the channel close.
-		defer func() { hub.RemoveSink(js); _ = js.Close() }()
+		defer func() { sinkHub.RemoveSink(js); _ = js.Close() }()
 		fmt.Fprintf(os.Stderr, "[ptop] also exporting events to %s\n", opts.JSONLPath)
 	}
 
 	srv := grpc.NewServer(grpc.Creds(creds))
-	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{hub: hub, resolver: resolver})
+	pb.RegisterEventStreamServiceServer(srv, &eventStreamService{reg: reg})
 
 	// On cancel, Stop() (not GracefulStop): Subscribe streams are long-lived and
 	// only end when the client disconnects, so GracefulStop would block forever.
@@ -140,7 +190,7 @@ func runServer(ctx context.Context, lis net.Listener, creds credentials.Transpor
 		fmt.Fprintln(os.Stderr, "       unauthenticated. Anyone who reaches the port reads process internals.")
 	}
 	fmt.Fprintf(os.Stderr, "[ptop] serving events for %s on %s://%s (%s)\n",
-		target, lis.Addr().Network(), lis.Addr().String(), mode)
+		reg.describe(), lis.Addr().Network(), lis.Addr().String(), mode)
 	if opts.Ready != nil {
 		close(opts.Ready)
 	}

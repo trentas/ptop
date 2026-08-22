@@ -75,12 +75,19 @@ func (TargetMode) EnumDescriptor() ([]byte, []int) {
 }
 
 // SubscribeRequest opens a stream. categories filters which Event categories
-// the server sends; empty means all. The target is fixed per server instance
-// (set via `ptop --serve --pid` or `--cgroup`), so it is not part of the
-// request — see TargetInfo, which the server reports on the stream.
+// the server sends; empty means all.
+//
+// pid names the process to observe (#72). It is required when the server was
+// started without a target (`ptop --serve` with no `--pid`/`--cgroup`), which
+// serves targets on demand: the collectors for a pid start with its first
+// subscriber and stop with its last. When the server WAS started with a fixed
+// target, pid must be 0 or that exact pid — anything else is rejected rather
+// than silently served the wrong process. Either way the server reports what it
+// is actually observing in the TargetInfo handshake.
 type SubscribeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Categories    []Category             `protobuf:"varint,1,rep,packed,name=categories,proto3,enum=ptop.v1.Category" json:"categories,omitempty"`
+	Pid           int32                  `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -120,6 +127,13 @@ func (x *SubscribeRequest) GetCategories() []Category {
 		return x.Categories
 	}
 	return nil
+}
+
+func (x *SubscribeRequest) GetPid() int32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
 }
 
 // TargetInfo describes the SCOPE of everything on this stream. The server sends
@@ -349,8 +363,13 @@ func (*SubscribeResponse_Meta) isSubscribeResponse_Kind() {}
 // StackRef.build_id, and is namespaced per capturing tracer — pass back exactly
 // the value the event carried, never a bare kernel id.
 type ResolveStackRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StackId       uint64                 `protobuf:"varint,1,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	StackId uint64                 `protobuf:"varint,1,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
+	// The process the stack was captured in (#72). Kernel stack maps are
+	// per-target, so the same id means different stacks in different processes:
+	// required on an on-demand server, and on a fixed-target server it must be 0
+	// or the server's own pid.
+	Pid           int32 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -388,6 +407,13 @@ func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
 func (x *ResolveStackRequest) GetStackId() uint64 {
 	if x != nil {
 		return x.StackId
+	}
+	return 0
+}
+
+func (x *ResolveStackRequest) GetPid() int32 {
+	if x != nil {
+		return x.Pid
 	}
 	return 0
 }
@@ -451,11 +477,12 @@ var File_service_proto protoreflect.FileDescriptor
 
 const file_service_proto_rawDesc = "" +
 	"\n" +
-	"\rservice.proto\x12\aptop.v1\x1a\vevent.proto\"E\n" +
+	"\rservice.proto\x12\aptop.v1\x1a\vevent.proto\"W\n" +
 	"\x10SubscribeRequest\x121\n" +
 	"\n" +
 	"categories\x18\x01 \x03(\x0e2\x11.ptop.v1.CategoryR\n" +
-	"categories\"\x85\x01\n" +
+	"categories\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\x85\x01\n" +
 	"\n" +
 	"TargetInfo\x12'\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x13.ptop.v1.TargetModeR\x04mode\x12\x10\n" +
@@ -470,9 +497,10 @@ const file_service_proto_rawDesc = "" +
 	"\x11SubscribeResponse\x12&\n" +
 	"\x05event\x18\x01 \x01(\v2\x0e.ptop.v1.EventH\x00R\x05event\x12)\n" +
 	"\x04meta\x18\x02 \x01(\v2\x13.ptop.v1.StreamMetaH\x00R\x04metaB\x06\n" +
-	"\x04kind\"0\n" +
+	"\x04kind\"B\n" +
 	"\x13ResolveStackRequest\x12\x19\n" +
-	"\bstack_id\x18\x01 \x01(\x04R\astackId\"Y\n" +
+	"\bstack_id\x18\x01 \x01(\x04R\astackId\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\"Y\n" +
 	"\x14ResolveStackResponse\x12+\n" +
 	"\x06frames\x18\x01 \x03(\v2\x13.ptop.v1.StackFrameR\x06frames\x12\x14\n" +
 	"\x05found\x18\x02 \x01(\bR\x05found*V\n" +
