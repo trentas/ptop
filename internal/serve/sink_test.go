@@ -2,6 +2,7 @@ package serve
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -16,8 +17,8 @@ import (
 	pb "github.com/trentas/ptop/pkg/streampb"
 )
 
-// jsonlSink opens with a target header, then writes one parseable protojson
-// Event per line, and Close flushes what's queued.
+// jsonlSink writes one parseable protojson SubscribeResponse per line — a meta
+// header first, then events — and Close flushes what's queued.
 func TestJSONLSinkRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "events.jsonl")
 	s, err := newJSONLSink(path, &pb.TargetInfo{
@@ -48,32 +49,41 @@ func TestJSONLSinkRoundTrip(t *testing.T) {
 
 	sc := bufio.NewScanner(f)
 
-	// Line 1 is the header, not an event.
+	// Line 1 is the target handshake, not an event.
 	if !sc.Scan() {
 		t.Fatal("empty export: no target header")
 	}
-	var meta pb.StreamMeta
-	if err := protojson.Unmarshal(sc.Bytes(), &meta); err != nil {
-		t.Fatalf("first line is not a StreamMeta: %v", err)
-	}
-	if meta.GetTarget().GetPid() != 7 || meta.GetTarget().GetMode() != pb.TargetMode_TARGET_MODE_PID {
-		t.Errorf("header target = %v, want pid mode for pid 7", meta.GetTarget())
+	first := unmarshalResponse(t, sc.Bytes())
+	if ti := first.GetMeta().GetTarget(); ti.GetPid() != 7 || ti.GetMode() != pb.TargetMode_TARGET_MODE_PID {
+		t.Errorf("header target = %v, want pid mode for pid 7", ti)
 	}
 
 	var lines int
 	for sc.Scan() {
-		var ev pb.Event
-		if err := protojson.Unmarshal(sc.Bytes(), &ev); err != nil {
-			t.Fatalf("line %d not valid protojson Event: %v", lines, err)
+		resp := unmarshalResponse(t, sc.Bytes())
+		ev := resp.GetEvent()
+		if ev == nil {
+			t.Fatalf("line %d is not an event: %v", lines, resp)
 		}
 		if ev.GetPid() != 7 || ev.GetCategory() != pb.Category_CATEGORY_CPU {
-			t.Errorf("line %d: unexpected event %v", lines, &ev)
+			t.Errorf("line %d: unexpected event %v", lines, ev)
 		}
 		lines++
 	}
 	if lines != n {
 		t.Errorf("got %d event lines, want %d", lines, n)
 	}
+}
+
+// unmarshalResponse parses one JSONL line, which is a SubscribeResponse exactly
+// like the one a gRPC subscriber receives.
+func unmarshalResponse(t *testing.T, line []byte) *pb.SubscribeResponse {
+	t.Helper()
+	var resp pb.SubscribeResponse
+	if err := protojson.Unmarshal(line, &resp); err != nil {
+		t.Fatalf("line is not a SubscribeResponse: %v (%s)", err, line)
+	}
+	return &resp
 }
 
 // A cgroup-mode export must be attributable: the events carry no pid at all, so
@@ -100,11 +110,7 @@ func TestJSONLSinkHeaderCarriesCgroupTarget(t *testing.T) {
 		t.Fatalf("read: %v", err)
 	}
 	first := strings.SplitN(string(b), "\n", 2)[0]
-	var meta pb.StreamMeta
-	if err := protojson.Unmarshal([]byte(first), &meta); err != nil {
-		t.Fatalf("first line is not a StreamMeta: %v", err)
-	}
-	ti := meta.GetTarget()
+	ti := unmarshalResponse(t, []byte(first)).GetMeta().GetTarget()
 	if ti.GetMode() != pb.TargetMode_TARGET_MODE_CGROUP {
 		t.Errorf("mode = %v, want CGROUP", ti.GetMode())
 	}
@@ -136,16 +142,24 @@ type blockingWriter struct {
 	release chan struct{}
 	mu      sync.Mutex
 	written int
+	buf     bytes.Buffer
 }
 
 func (w *blockingWriter) Write(p []byte) (int, error) {
 	<-w.release
 	w.mu.Lock()
 	w.written += len(p)
+	w.buf.Write(p)
 	w.mu.Unlock()
 	return len(p), nil
 }
 func (w *blockingWriter) Close() error { return nil }
+
+func (w *blockingWriter) contents() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
 
 // A stalled writer must cause drops (counted), never block the Emit caller.
 func TestJSONLSinkDropsWhenWriterBlocked(t *testing.T) {
@@ -188,5 +202,65 @@ func TestJSONLSinkDropsWhenWriterBlocked(t *testing.T) {
 	close(bw.release) // unblock so Close can drain and return
 	if err := s.Close(); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+// A gap in the export must be recorded IN the export. The stderr summary at
+// Close is for whoever is watching the terminal; a file read later has to carry
+// its own holes, or a deploy-vs-deploy comparison reads a dropped burst as a
+// change in behavior.
+func TestJSONLSinkRecordsDropsInBand(t *testing.T) {
+	bw := &blockingWriter{release: make(chan struct{})}
+	s, err := newJSONLSinkWriter(bw, nil) // header would block on this writer
+	if err != nil {
+		t.Fatalf("newJSONLSinkWriter: %v", err)
+	}
+
+	// Overflow the bounded channel while the writer is stalled, so events are
+	// dropped and counted.
+	for i := 0; i < subBuffer+200; i++ {
+		s.Emit(&pb.Event{Pid: 1, Category: pb.Category_CATEGORY_CPU,
+			Payload: &pb.Event_Cpu{Cpu: &pb.CpuSample{UsagePct: float64(i)}}})
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && atomic.LoadUint64(&s.dropped) == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if atomic.LoadUint64(&s.dropped) == 0 {
+		t.Fatal("expected drops while the writer was stalled")
+	}
+
+	close(bw.release) // let the queue drain
+	if err := s.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	var dropMetas, events int
+	var lastDropped uint64
+	for _, line := range strings.Split(strings.TrimSpace(bw.contents()), "\n") {
+		if line == "" {
+			continue
+		}
+		resp := unmarshalResponse(t, []byte(line))
+		if m := resp.GetMeta(); m != nil {
+			dropMetas++
+			lastDropped = m.GetDropped()
+			continue
+		}
+		events++
+	}
+
+	if dropMetas == 0 {
+		t.Error("no drop meta in the export: the gap went unrecorded")
+	}
+	if lastDropped == 0 {
+		t.Errorf("drop meta reports %d dropped, want the real count", lastDropped)
+	}
+	if events == 0 {
+		t.Error("no events survived to be written")
+	}
+	// The file must account for everything the sink saw.
+	if total := uint64(events) + lastDropped; total < subBuffer {
+		t.Errorf("export accounts for %d of the %d emitted events", total, subBuffer+200)
 	}
 }

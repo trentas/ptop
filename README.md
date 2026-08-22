@@ -232,8 +232,8 @@ eBPF programs in `internal/bpf/programs/`:
 The TUI is one consumer of a richer event model. `ptop --pid <PID> --serve
 <addr>` runs headless and streams every observation as a typed protobuf `Event`
 over gRPC (package `ptop.v1`) to any number of unprivileged subscribers — and,
-with `--export`, also to a JSONL file: a `StreamMeta` header line naming the
-target, then one protojson line per event. ptop
+with `--export`, also to a JSONL file: one protojson `SubscribeResponse` per
+line — the same messages, so a file and a live stream parse identically. ptop
 holds `CAP_BPF`/`CAP_PERFMON`; subscribers connect with none.
 
 ### Transport security
@@ -313,6 +313,10 @@ envelope):
 
 High-rate events reference a captured stack by id; the `ResolveStack` RPC
 symbolizes it on demand (`addr → func (file:line)`, build-id keyed).
+
+Some `Event` payloads, shown unwrapped for readability — on the wire and in the
+JSONL each one arrives inside a `SubscribeResponse` (`{"event":{…}}`), which is
+also where the target handshake and the drop notices live:
 
 ```jsonl
 {"tsUnixNano":"…","pid":4242,"category":"CATEGORY_PROCESS","uid":1000,"gid":1000,"cgroupId":"2817","procContext":{"pidNs":"4026532630","cgroup":"/docker/3127f7e31dab…","container":"docker:3127f7e31dab"}}

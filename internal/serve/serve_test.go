@@ -10,7 +10,6 @@ import (
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/trentas/ptop/pkg/collector"
 	pb "github.com/trentas/ptop/pkg/streampb"
@@ -206,24 +205,20 @@ func TestServeJSONLExport(t *testing.T) {
 	defer f2.Close()
 	sc := bufio.NewScanner(f2)
 
-	// The export opens with the same target handshake a gRPC subscriber gets,
-	// so the file says what it observed. Events follow.
+	// Every line is a SubscribeResponse, the same message a gRPC subscriber
+	// receives — starting with the target handshake, so the file says what it
+	// observed.
 	if !sc.Scan() {
 		t.Fatal("empty export: no target header")
 	}
-	var meta pb.StreamMeta
-	if err := protojson.Unmarshal(sc.Bytes(), &meta); err != nil {
-		t.Fatalf("first line is not a StreamMeta: %v", err)
-	}
-	if meta.GetTarget().GetPid() != 5 {
-		t.Errorf("header target = %v, want pid 5", meta.GetTarget())
+	if ti := unmarshalResponse(t, sc.Bytes()).GetMeta().GetTarget(); ti.GetPid() != 5 {
+		t.Errorf("header target = %v, want pid 5", ti)
 	}
 
 	var lines int
 	for sc.Scan() {
-		var ev pb.Event
-		if err := protojson.Unmarshal(sc.Bytes(), &ev); err != nil {
-			t.Fatalf("line %d not valid Event: %v", lines, err)
+		if unmarshalResponse(t, sc.Bytes()).GetEvent() == nil {
+			continue // a drop notice is legitimate here
 		}
 		lines++
 	}

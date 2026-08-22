@@ -63,16 +63,23 @@ func (s *grpcSink) Emit(ev *pb.Event) {
 
 func (s *grpcSink) Close() error { return nil }
 
-// jsonlSink writes a target header followed by every event as one protojson
-// line to a file. A bounded channel + writer goroutine keep disk I/O off the
-// hub's broadcast path; on overflow events are dropped and counted (reported on
-// Close).
+// jsonlSink writes the event stream to a file as one protojson
+// SubscribeResponse per line — the same message a gRPC subscriber receives, in
+// the same order. A bounded channel + writer goroutine keep disk I/O off the
+// hub's broadcast path.
 //
-// The FIRST line is a StreamMeta carrying TargetInfo, mirroring the handshake a
-// gRPC subscriber receives; every line after it is an Event. Without it an
-// export is unattributable after the fact — nothing in a file of cgroup-mode
-// events says which cgroup produced them, since the envelope pid is 0 there and
-// several payloads carry no pid of their own.
+// Being the same message type is the point: one parser reads either surface,
+// and everything the stream says gets said in the file too.
+//
+//   - The first line is a meta carrying TargetInfo, mirroring the subscriber
+//     handshake. Without it an export is unattributable after the fact —
+//     nothing in a file of cgroup-mode events says which cgroup produced them,
+//     since the envelope pid is 0 there and several payloads carry no pid.
+//   - A meta with dropped>0 is written whenever the counter advances, exactly
+//     as the gRPC path does. A slow disk used to hole the file silently, with
+//     only a stderr line at Close to say so — and an unrecorded gap in an
+//     export read months later is worse than a recorded one, because a
+//     deploy-vs-deploy comparison reads the hole as a behavior change.
 type jsonlSink struct {
 	w       io.WriteCloser
 	ch      chan *pb.Event
@@ -100,11 +107,7 @@ func newJSONLSink(path string, target *pb.TargetInfo) (*jsonlSink, error) {
 // its header fails here, at startup, instead of producing a headerless export.
 func newJSONLSinkWriter(w io.WriteCloser, target *pb.TargetInfo) (*jsonlSink, error) {
 	if target != nil {
-		b, err := jsonlMarshal.Marshal(&pb.StreamMeta{Target: target})
-		if err != nil {
-			return nil, fmt.Errorf("serve: jsonl target header: %w", err)
-		}
-		if _, err := w.Write(append(b, '\n')); err != nil {
+		if err := writeJSONLLine(w, metaResponse(&pb.StreamMeta{Target: target})); err != nil {
 			return nil, fmt.Errorf("serve: jsonl target header: %w", err)
 		}
 	}
@@ -113,9 +116,26 @@ func newJSONLSinkWriter(w io.WriteCloser, target *pb.TargetInfo) (*jsonlSink, er
 	return s, nil
 }
 
-// jsonlMarshal keeps the header and the events on identical marshalling terms:
-// compact, one object per line.
+// jsonlMarshal keeps every line on identical marshalling terms: compact, one
+// object per line.
 var jsonlMarshal = protojson.MarshalOptions{}
+
+func metaResponse(m *pb.StreamMeta) *pb.SubscribeResponse {
+	return &pb.SubscribeResponse{Kind: &pb.SubscribeResponse_Meta{Meta: m}}
+}
+
+func eventResponse(ev *pb.Event) *pb.SubscribeResponse {
+	return &pb.SubscribeResponse{Kind: &pb.SubscribeResponse_Event{Event: ev}}
+}
+
+func writeJSONLLine(w io.Writer, resp *pb.SubscribeResponse) error {
+	b, err := jsonlMarshal.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(b, '\n'))
+	return err
+}
 
 func (s *jsonlSink) Emit(ev *pb.Event) {
 	select {
@@ -127,16 +147,42 @@ func (s *jsonlSink) Emit(ev *pb.Event) {
 
 func (s *jsonlSink) run() {
 	defer close(s.done)
+
+	var reported uint64
 	for ev := range s.ch {
-		b, err := jsonlMarshal.Marshal(ev)
-		if err != nil {
-			continue
+		// Same policy as the gRPC path (see service.Subscribe): when the drop
+		// counter has advanced, a meta goes out ahead of the next event, so the
+		// gap is recorded where it happened.
+		if cur := atomic.LoadUint64(&s.dropped); cur != reported {
+			reported = cur
+			if !s.writeLine(metaResponse(&pb.StreamMeta{Dropped: cur})) {
+				return
+			}
 		}
-		if _, err := s.w.Write(append(b, '\n')); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: jsonl export write: %v\n", err)
+		if !s.writeLine(eventResponse(ev)) {
 			return
 		}
 	}
+
+	// Drops after the last event still belong in the file.
+	if cur := atomic.LoadUint64(&s.dropped); cur != reported {
+		s.writeLine(metaResponse(&pb.StreamMeta{Dropped: cur}))
+	}
+}
+
+// writeLine reports whether the writer is still usable: a value that cannot be
+// marshalled is skipped, while a failed write ends the goroutine, since every
+// line after it would fail the same way.
+func (s *jsonlSink) writeLine(resp *pb.SubscribeResponse) bool {
+	b, err := jsonlMarshal.Marshal(resp)
+	if err != nil {
+		return true
+	}
+	if _, err := s.w.Write(append(b, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: jsonl export write: %v\n", err)
+		return false
+	}
+	return true
 }
 
 // Close flushes the queued events and closes the writer. The caller must
