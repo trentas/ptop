@@ -204,8 +204,22 @@ func TestServeJSONLExport(t *testing.T) {
 		t.Fatalf("open jsonl: %v", err)
 	}
 	defer f2.Close()
-	var lines int
 	sc := bufio.NewScanner(f2)
+
+	// The export opens with the same target handshake a gRPC subscriber gets,
+	// so the file says what it observed. Events follow.
+	if !sc.Scan() {
+		t.Fatal("empty export: no target header")
+	}
+	var meta pb.StreamMeta
+	if err := protojson.Unmarshal(sc.Bytes(), &meta); err != nil {
+		t.Fatalf("first line is not a StreamMeta: %v", err)
+	}
+	if meta.GetTarget().GetPid() != 5 {
+		t.Errorf("header target = %v, want pid 5", meta.GetTarget())
+	}
+
+	var lines int
 	for sc.Scan() {
 		var ev pb.Event
 		if err := protojson.Unmarshal(sc.Bytes(), &ev); err != nil {
