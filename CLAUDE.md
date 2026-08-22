@@ -421,10 +421,12 @@ collector→`streampb` mapping + server live in `internal/serve`.
 
 The gRPC subscriber and the JSONL writer are interchangeable `Sink`s
 (`internal/serve/sink.go`) fed by the hub. `--serve --export` adds the JSONL
-sink: its first line is a protojson `StreamMeta` carrying `TargetInfo` (the same
-handshake a gRPC subscriber gets — without it an export is unattributable, since
-cgroup-mode events have `pid` 0 and several payloads carry no pid), and every
-line after it is one protojson `Event`, in `ptop-events-<ts>.jsonl`
+sink: `ptop-events-<ts>.jsonl` holds one protojson **`SubscribeResponse` per
+line** — the same message a gRPC subscriber receives, in the same order, so one
+parser reads either surface. The first line is a meta carrying `TargetInfo`
+(without it an export is unattributable: cgroup-mode events have `pid` 0 and
+several payloads carry no pid), a meta with `dropped` records a gap where it
+happened, and everything else is an `event`
 (event-level — distinct from the TUI's state-snapshot `ptop-export-<ts>.jsonl`).
 
 Stack symbolization (#54) rides this surface: heap events carry a
