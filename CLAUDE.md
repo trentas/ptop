@@ -139,6 +139,7 @@ ptop/
 │   ├── collector/                 /proc + eBPF collectors + shared types
 │       ├── types.go               public type contracts (see below)
 │       ├── set.go                 source-priority selection + lifecycle (Set)
+│       ├── bus.go                 single fan-out: Set → N consumers (Feed, #71)
 │       ├── source_{linux,darwin}.go  platform source labels (Source*)
 │       ├── cpu_proc.go            /proc/<pid>/stat utime+stime
 │       ├── cpu_ebpf.go            eBPF perf_event sampling
@@ -298,6 +299,17 @@ Messages flow through `Update(msg tea.Msg)`:
 - `tea.WindowSizeMsg`: layout reflow
 - `tea.KeyMsg`: tab switch / pause / filter / snapshot / quit
 
+Collector values reach the model through **one** consumer, `waitBus` (#71),
+which reads the model's `collector.Bus` subscription and maps the value to a
+message with `busMsg`. Every collector case in `Update` re-arms that same
+command — there is no waiter per collector any more, and no case may read a
+collector channel directly: a collector hands out one shared channel, so a
+direct read would steal events from the gRPC stream and the JSONL export.
+`busMsg` demuxes on the value's own type, which is why a `TimelineEvent` from
+the fd collector and one from futex are the same message. A value it maps to
+nil (a per-allocation `HeapEvent`) is skipped inside the command, so the render
+loop never wakes for a payload no panel shows.
+
 ### Layout
 
 Use `lipgloss.JoinHorizontal` / `lipgloss.JoinVertical` to compose panels.
@@ -374,6 +386,7 @@ ptop --pid <PID> --fps 10   render rate (default: 5)
 ptop --pid <PID> --export   save JSON snapshot on exit (also bound to 'e')
 ptop --pid <PID> --no-ebpf  degraded mode: /proc only, no eBPF
 ptop --pid <PID> --serve unix:///run/ptop.sock   headless: stream events over gRPC, no TUI
+ptop --pid <PID> --serve unix:///run/ptop.sock --tui   TUI *and* stream, one set of collectors (#71)
 ptop --cgroup <path|container-id> --serve <addr>  target a cgroup subtree instead of a PID (#94)
 ptop --pid <PID> --serve tcp://127.0.0.1:50051 --serve-insecure   headless over TCP, cleartext (opt-in)
 ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>   over TLS
@@ -419,6 +432,15 @@ subscribers (fan-out), with bounded per-subscriber buffers that drop-with-counte
 under backpressure (surfaced as `StreamMeta`). `addr` is `unix:///path` or
 `tcp://host:port`. SIGINT/SIGTERM shuts down and releases collectors. The
 collector→`streampb` mapping + server live in `internal/serve`.
+
+`--serve --tui` (#71) adds the TUI as a second consumer of the same collectors:
+one `collector.Feed` (a `Set` plus the `Bus` fanning it out), the hub attached
+as an inline bus handler and the model as a bus subscription. The TUI runs in
+the foreground and quitting it stops the server; `serve.Options.Ready` closes
+once the endpoint is bound, so a bad address or certificate is reported before
+the alt-screen instead of behind a TUI with nothing behind it. `--export` keeps
+its `--serve` meaning there (the event-level JSONL), not the TUI's
+state-snapshot one.
 
 The gRPC subscriber and the JSONL writer are interchangeable `Sink`s
 (`internal/serve/sink.go`) fed by the hub. `--serve --export` adds the JSONL

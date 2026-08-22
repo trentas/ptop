@@ -236,6 +236,14 @@ with `--export`, also to a JSONL file: one protojson `SubscribeResponse` per
 line — the same messages, so a file and a live stream parse identically. ptop
 holds `CAP_BPF`/`CAP_PERFMON`; subscribers connect with none.
 
+Add `--tui` to watch the process while it streams: the TUI and the subscribers
+become consumers of the *same* running collectors, so nobody sees half a stream.
+Quitting the TUI stops the server.
+
+```bash
+sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock --tui
+```
+
 ### Transport security
 
 The stream carries process internals — heap call sites, filesystem paths and,

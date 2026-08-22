@@ -26,7 +26,7 @@ func TestHubFanOut(t *testing.T) {
 	f := newFake(8)
 	h := NewHub(TargetPID(7), "")
 	sub := h.subscribe(nil)
-	h.Start(ctx, []collector.Collector{f})
+	h.Start(ctx, collector.StartBus(ctx, []collector.Collector{f}))
 
 	f.ch <- collector.CpuSample{UsagePct: 50, Timestamp: time.Now()}
 
@@ -54,7 +54,7 @@ func TestHubCategoryFilter(t *testing.T) {
 	f := newFake(8)
 	h := NewHub(TargetPID(1), "")
 	sub := h.subscribe([]pb.Category{pb.Category_CATEGORY_NETWORK})
-	h.Start(ctx, []collector.Collector{f})
+	h.Start(ctx, collector.StartBus(ctx, []collector.Collector{f}))
 
 	// CPU is filtered out; the network snapshot gets through. So the first (and
 	// only) thing the subscriber sees must be the network event.
@@ -86,7 +86,7 @@ func TestHubBackpressureDrops(t *testing.T) {
 	f := newFake(subBuffer + 200)
 	h := NewHub(TargetPID(1), "")
 	sub := h.subscribe(nil) // never read → its buffer fills, then drops
-	h.Start(ctx, []collector.Collector{f})
+	h.Start(ctx, collector.StartBus(ctx, []collector.Collector{f}))
 
 	const n = subBuffer + 100
 	for i := 0; i < n; i++ {
@@ -115,5 +115,53 @@ func TestHubUnsubscribe(t *testing.T) {
 	h.unsubscribe(sub)
 	if h.sinkCount() != 0 {
 		t.Fatalf("count = %d, want 0 after unsubscribe", h.sinkCount())
+	}
+}
+
+// The point of #71: the headless hub and another consumer of the same bus (the
+// TUI, in the real program) each see the WHOLE stream. Before the bus they read
+// the collector channel directly and split it between them.
+func TestHubSharesTheBusWithAnotherConsumer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	f := newFake(64)
+	bus := collector.StartBus(ctx, []collector.Collector{f})
+
+	h := NewHub(TargetPID(7), "")
+	sub := h.subscribe(nil)
+	h.Start(ctx, bus)
+
+	// Stands in for the TUI: a plain bus subscription with its own queue.
+	viewer := bus.Subscribe(64)
+	defer viewer.Close()
+
+	const n = 20
+	for i := 0; i < n; i++ {
+		f.ch <- collector.CpuSample{UsagePct: float64(i), Timestamp: time.Now()}
+	}
+
+	for i := 0; i < n; i++ {
+		select {
+		case resp := <-sub.ch:
+			if got := resp.GetEvent().GetCpu().GetUsagePct(); got != float64(i) {
+				t.Fatalf("subscriber event %d = %v, want %v", i, got, float64(i))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("gRPC subscriber only received %d of %d events", i, n)
+		}
+
+		select {
+		case v := <-viewer.C():
+			s, ok := v.(collector.CpuSample)
+			if !ok || s.UsagePct != float64(i) {
+				t.Fatalf("viewer value %d = %#v, want CpuSample{%v}", i, v, float64(i))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("viewer only received %d of %d values", i, n)
+		}
+	}
+	if d := viewer.Dropped(); d != 0 {
+		t.Errorf("viewer dropped %d values", d)
 	}
 }

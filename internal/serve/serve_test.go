@@ -41,7 +41,9 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}()
 
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, TargetPID(99), []collector.Collector{f}, nil, Options{}) }()
+	go func() {
+		runErr <- Run(ctx, addr, TargetPID(99), collector.StartBus(ctx, []collector.Collector{f}), nil, Options{})
+	}()
 
 	// Wait for the listener socket to appear before dialing.
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
@@ -111,6 +113,18 @@ func TestServeUnixEndToEnd(t *testing.T) {
 // exercised through the real gRPC stream (not just the hub). We never call Recv
 // during a large burst, so the transport stalls, the subscriber's bounded
 // buffer overflows, and the service surfaces the drop count.
+//
+// The stall has to be forced, not hoped for: with gRPC's dynamic flow-control
+// window the client's stack can absorb the whole burst without the test ever
+// reading, the sink queue then never fills, and the test fails having proved
+// nothing (it flaked roughly 1 run in 4 that way). Pinning small window sizes
+// disables the BDP tuner, so the server blocks in Send while the queue is still
+// bounded — which is the condition under test.
+// minWindowSize is gRPC's floor for a flow-control window (64KB); anything
+// smaller is raised to it. Setting it explicitly is what turns the dynamic
+// window off.
+const minWindowSize = 64 * 1024
+
 func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 	sock := shortSock(t)
 	addr := "unix://" + sock
@@ -120,10 +134,16 @@ func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 
 	f := newFake(8192) // holds the burst without blocking the producer
 	runErr := make(chan error, 1)
-	go func() { runErr <- Run(ctx, addr, TargetPID(1), []collector.Collector{f}, nil, Options{}) }()
+	go func() {
+		runErr <- Run(ctx, addr, TargetPID(1), collector.StartBus(ctx, []collector.Collector{f}), nil, Options{})
+	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(addr,
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithInitialWindowSize(minWindowSize),
+		grpc.WithInitialConnWindowSize(minWindowSize),
+	)
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
@@ -188,7 +208,7 @@ func TestServeJSONLExport(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), []collector.Collector{f}, nil, Options{JSONLPath: jsonl})
+		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), collector.StartBus(ctx, []collector.Collector{f}), nil, Options{JSONLPath: jsonl})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
