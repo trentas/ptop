@@ -62,12 +62,21 @@ type Options struct {
 	// Serving tcp:// in cleartext requires TLS.AllowInsecure; a unix socket
 	// takes no TLS at all. See serverCredentials for the full policy.
 	TLS TLSOptions
+
+	// Ready, if set, is closed once the endpoint is bound and the server is
+	// about to serve. It exists so a caller that runs Run in a goroutine can
+	// tell "up" from "failed at startup" without racing a timer — everything
+	// that can go wrong (address, TLS material, bind) happens before it closes.
+	// Run closes it exactly once, and never closes it on a startup failure.
+	Ready chan<- struct{}
 }
 
 // Run starts the gRPC server bound to addr, streaming events for the given
-// target — a pid or a cgroup subtree — from cols. It blocks until ctx is cancelled, then stops the server
-// and returns. The caller owns the collectors' lifecycle (typically
-// set.Collectors() here and set.Stop() after Run returns). addr is
+// target — a pid or a cgroup subtree — off bus, the shared fan-out over the
+// running collectors (#71). It blocks until ctx is cancelled, then stops the
+// server and returns. The caller owns the feed's lifecycle (typically
+// collector.StartFeed here and feed.Stop() after Run returns), and may attach
+// other consumers to the same bus — the TUI does, under --serve --tui. addr is
 // "unix:///path" or "tcp://host:port"; a tcp:// endpoint must carry TLS
 // material or an explicit opt-in to cleartext (see serverCredentials).
 //
@@ -75,7 +84,7 @@ type Options struct {
 // per-process build-id onto every StackRef and backs the ResolveStack RPC.
 // Build it with CombineStackResolvers over the collectors that captured stacks
 // (heap, futex); nil leaves events without stack references.
-func Run(ctx context.Context, addr string, target Target, cols []collector.Collector, resolver StackResolver, opts Options) error {
+func Run(ctx context.Context, addr string, target Target, bus *collector.Bus, resolver StackResolver, opts Options) error {
 	// Resolve transport security first: a missing certificate or a refused
 	// cleartext endpoint should fail before anything is bound.
 	creds, mode, err := serverCredentials(addr, opts.TLS)
@@ -89,19 +98,19 @@ func Run(ctx context.Context, addr string, target Target, cols []collector.Colle
 	}
 	defer cleanup()
 
-	return runServer(ctx, lis, creds, mode, target, cols, resolver, opts)
+	return runServer(ctx, lis, creds, mode, target, bus, resolver, opts)
 }
 
 // runServer owns everything after the listener exists: the hub, the sinks, the
 // gRPC server and the shutdown. Split out of Run so tests can drive a real
 // server on an ephemeral tcp port (listen() picks it, only lis knows it).
-func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, target Target, cols []collector.Collector, resolver StackResolver, opts Options) error {
+func runServer(ctx context.Context, lis net.Listener, creds credentials.TransportCredentials, mode string, target Target, bus *collector.Bus, resolver StackResolver, opts Options) error {
 	var buildID string
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
 	}
 	hub := NewHub(target, buildID)
-	hub.Start(ctx, cols)
+	hub.Start(ctx, bus)
 
 	// Optional JSONL sink: a non-gRPC consumer of the same event stream.
 	if opts.JSONLPath != "" {
@@ -132,6 +141,9 @@ func runServer(ctx context.Context, lis net.Listener, creds credentials.Transpor
 	}
 	fmt.Fprintf(os.Stderr, "[ptop] serving events for %s on %s://%s (%s)\n",
 		target, lis.Addr().Network(), lis.Addr().String(), mode)
+	if opts.Ready != nil {
+		close(opts.Ready)
+	}
 	if err := srv.Serve(lis); err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}

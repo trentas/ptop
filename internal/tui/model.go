@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"debug/buildinfo"
 	"fmt"
 	"math"
@@ -70,6 +71,13 @@ type Config struct {
 	// TLS payload capture (#55) — opt-in, stream/export-only (no live panel).
 	TLS         bool
 	TLSMaxBytes int
+
+	// Feed, when set, is an already-running Set plus the Bus fanning it out
+	// (#71) — how `--serve --tui` drives the TUI and the gRPC stream from ONE
+	// set of collectors. The model then does not own it: Close leaves the
+	// collectors running for whoever started them. Nil (the default) makes the
+	// model start and own its own feed, exactly as before.
+	Feed *collector.Feed
 }
 
 // ─── Bubbletea messages ──────────────────────────────────────────────────────
@@ -95,7 +103,6 @@ type ProcContextMsg collector.ProcContext
 type ProcLifecycleMsg collector.ProcLifecycleEvent
 type SecurityMsg collector.SecurityEvent
 type LockGraphMsg []collector.LockEntry
-type LockTimelineMsg collector.TimelineEvent
 
 // exportTickMsg fires periodically when continuous export is ON.
 type exportTickMsg time.Time
@@ -170,6 +177,19 @@ type Model struct {
 	// collector.Set, shared with the headless gRPC server (#51). Never nil
 	// after NewModel — an empty Set (PID <= 0) leaves every Mock* true.
 	collectors *collector.Set
+
+	// The model is one consumer of the collector bus (#71), never a direct
+	// reader of a collector channel: a collector hands out a single shared
+	// channel, so reading one directly would steal events from the gRPC stream
+	// and the JSONL export. busSub is its bounded queue — falling behind drops
+	// values (counted) instead of stalling the collectors.
+	//
+	// ownsFeed says whether Close stops the collectors: false when the feed was
+	// handed in (--serve --tui), true when the model started it.
+	feed     *collector.Feed
+	busSub   *collector.Subscription
+	ownsFeed bool
+	stopFeed context.CancelFunc
 
 	// Simulation
 	rng                *rand.Rand
@@ -257,9 +277,22 @@ func NewModel(cfg Config) Model {
 	// duplicated. PID <= 0 yields an empty Set: every Mock* stays true and the
 	// model simulates everything. eBPF start failures are logged to stderr by
 	// the Set (before the alt-screen) and fall back to /proc where possible.
-	m.collectors = collector.NewSet(collector.SetConfig{
-		PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
-	})
+	//
+	// A caller can hand in a feed it already started (--serve --tui, #71); the
+	// model then shares those collectors instead of starting a second set that
+	// would fight the first for the same eBPF programs.
+	if cfg.Feed != nil {
+		m.feed = cfg.Feed
+	} else {
+		ctx, cancel := context.WithCancel(context.Background())
+		m.stopFeed = cancel
+		m.ownsFeed = true
+		m.feed = collector.StartFeed(ctx, collector.SetConfig{
+			PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
+		})
+	}
+	m.collectors = m.feed.Set
+	m.busSub = m.feed.Bus.Subscribe(busQueue)
 
 	// Mirror the Set's source labels + mock state into the model fields the
 	// help overlay (?) reads. Source "" means no real source started → mock.
@@ -304,64 +337,10 @@ func NewModel(cfg Config) Model {
 // ─── Init / Update / View ────────────────────────────────────────────────────
 
 func (m Model) Init() tea.Cmd {
-	cmds := []tea.Cmd{tick(m.cfg.FPS)}
-	if m.collectors.FD != nil {
-		cmds = append(cmds, waitForFD(m.collectors.FD))
-	}
-	if m.collectors.CPUProc != nil {
-		cmds = append(cmds, waitForCPU(m.collectors.CPUProc))
-	}
-	if m.collectors.CPUEBPF != nil {
-		cmds = append(cmds, waitForCPUEBPF(m.collectors.CPUEBPF))
-	}
-	if m.collectors.ThreadsProc != nil {
-		cmds = append(cmds, waitForThreads(m.collectors.ThreadsProc))
-	}
-	if m.collectors.MemProc != nil {
-		cmds = append(cmds, waitForMem(m.collectors.MemProc))
-	}
-	if m.collectors.IOWait != nil {
-		cmds = append(cmds, waitForIOWait(m.collectors.IOWait))
-	}
-	if m.collectors.IOThroughput != nil {
-		cmds = append(cmds, waitForIOThroughput(m.collectors.IOThroughput))
-	}
-	if m.collectors.SyscallsEBPF != nil {
-		cmds = append(cmds, waitForSyscalls(m.collectors.SyscallsEBPF))
-	}
-	if m.collectors.IOEBPF != nil {
-		cmds = append(cmds, waitForIOEBPF(m.collectors.IOEBPF))
-	}
-	if m.collectors.NetworkEBPF != nil {
-		cmds = append(cmds, waitForNetEBPF(m.collectors.NetworkEBPF))
-	}
-	if m.collectors.ThreadsEBPF != nil {
-		cmds = append(cmds, waitForThreadsEBPF(m.collectors.ThreadsEBPF))
-	}
-	if m.collectors.MemEBPF != nil {
-		cmds = append(cmds, waitForMemEBPF(m.collectors.MemEBPF))
-	}
-	if m.collectors.HeapEBPF != nil {
-		cmds = append(cmds, waitForHeapEBPF(m.collectors.HeapEBPF))
-	}
-	if m.collectors.FutexEBPF != nil {
-		cmds = append(cmds, waitForFutexEBPF(m.collectors.FutexEBPF))
-	}
-	if m.collectors.SignalEBPF != nil {
-		cmds = append(cmds, waitForSignalEBPF(m.collectors.SignalEBPF))
-	}
-	if m.collectors.TLSEBPF != nil {
-		cmds = append(cmds, waitForTLSEBPF(m.collectors.TLSEBPF))
-	}
-	if m.collectors.ProcContext != nil {
-		cmds = append(cmds, waitForProcContext(m.collectors.ProcContext))
-	}
-	if m.collectors.ProcLifecycleEBPF != nil {
-		cmds = append(cmds, waitForProcLifecycleEBPF(m.collectors.ProcLifecycleEBPF))
-	}
-	if m.collectors.SecurityEBPF != nil {
-		cmds = append(cmds, waitForSecurityEBPF(m.collectors.SecurityEBPF))
-	}
+	// One consumer for every collector: the bus fans them out (#71), so the
+	// model no longer arms a waiter per collector — and no longer competes with
+	// the gRPC stream / JSONL export for the same channels.
+	cmds := []tea.Cmd{tick(m.cfg.FPS), m.waitBus()}
 	if m.exportFile != nil {
 		cmds = append(cmds, exportTick())
 	}
@@ -400,11 +379,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.render.commit = true
 		return m, tick(m.cfg.FPS)
 
+	case busClosedMsg:
+		// The feed ended (shutdown). Nothing left to consume; the last state
+		// stays on screen until the program exits.
+		return m, nil
+
 	case FDMsg:
 		m.FDs = []collector.FDEntry(v)
 		m.usingMockFDs = false
 		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
-		return m, waitForFD(m.collectors.FD)
+		return m, m.waitBus()
 
 	case TimelineMsg:
 		// Timeline is prepended; most recent on top. Cap at 120 (same limit
@@ -413,52 +397,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForFD(m.collectors.FD)
+		return m, m.waitBus()
 
 	case FDEventMsg:
 		m.FDEvents = append([]collector.FDEvent{collector.FDEvent(v)}, m.FDEvents...)
 		if len(m.FDEvents) > 60 {
 			m.FDEvents = m.FDEvents[:60]
 		}
-		return m, waitForFD(m.collectors.FD)
+		return m, m.waitBus()
 
 	case CpuMsg:
 		s := collector.CpuSample(v)
 		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
 		m.usingMockCPU = false
-		// Reschedule on the active source: eBPF takes priority when available.
-		if m.collectors.CPUEBPF != nil {
-			return m, waitForCPUEBPF(m.collectors.CPUEBPF)
-		}
-		return m, waitForCPU(m.collectors.CPUProc)
+		return m, m.waitBus()
 
 	case ThreadsMsg:
 		m.Threads = []collector.ThreadInfo(v)
 		m.usingMockThreads = false
-		// ThreadsMsg can come from eBPF or /proc — reschedule on the active source.
-		if m.collectors.ThreadsEBPF != nil {
-			return m, waitForThreadsEBPF(m.collectors.ThreadsEBPF)
-		}
-		return m, waitForThreads(m.collectors.ThreadsProc)
+		return m, m.waitBus()
 
 	case MemMsg:
 		m.MemStats = collector.MemStats(v)
 		m.usingMockMem = false
-		// Reschedule on the active source.
-		if m.collectors.MemEBPF != nil {
-			return m, waitForMemEBPF(m.collectors.MemEBPF)
-		}
-		return m, waitForMem(m.collectors.MemProc)
+		return m, m.waitBus()
 
 	case HeapMsg:
 		m.HeapStats = collector.HeapStats(v)
 		m.HeapLiveHist = appendCapped(m.HeapLiveHist, float64(m.HeapStats.LiveHeapBytes), 60)
-		return m, waitForHeapEBPF(m.collectors.HeapEBPF)
+		return m, m.waitBus()
 
 	case IOWaitMsg:
 		m.IOStats.IOWaitPct = collector.IOWaitSample(v).Pct
 		m.usingMockIOWait = false
-		return m, waitForIOWait(m.collectors.IOWait)
+		return m, m.waitBus()
 
 	case clearToastMsg:
 		m.toast = ""
@@ -483,12 +455,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// We overwrite the entire counts: the tracer keeps the per-pid cumulative.
 		m.SyscallCounts = map[string]uint64(v)
 		m.usingMockSyscalls = false
-		return m, waitForSyscalls(m.collectors.SyscallsEBPF)
+		return m, m.waitBus()
 
 	case NetMsg:
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
-		return m, waitForNetEBPF(m.collectors.NetworkEBPF)
+		return m, m.waitBus()
 
 	case NetErrorMsg:
 		// Real kernel network error (#56) — record it for the F3 Anomalies
@@ -508,7 +480,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForNetEBPF(m.collectors.NetworkEBPF)
+		return m, m.waitBus()
 
 	case SignalMsg:
 		// Real signal delivered to the target (#58) — record it (newest-first,
@@ -527,7 +499,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForSignalEBPF(m.collectors.SignalEBPF)
+		return m, m.waitBus()
 
 	case TLSPayloadMsg:
 		// Real TLS payload (#55). Stream/export-only — there is no live panel
@@ -539,14 +511,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.TLSPayloads) > 40 {
 			m.TLSPayloads = m.TLSPayloads[:40]
 		}
-		return m, waitForTLSEBPF(m.collectors.TLSEBPF)
+		return m, m.waitBus()
 
 	case ProcContextMsg:
 		// Execution/container context refresh (#60). We keep only the latest
 		// snapshot — the header shows the container badge; the full context is
 		// in the export and the stream. Never simulated.
 		m.ProcCtx = collector.ProcContext(v)
-		return m, waitForProcContext(m.collectors.ProcContext)
+		return m, m.waitBus()
 
 	case ProcLifecycleMsg:
 		// Real exec-lineage event (#60) — fork/exec/exit in the target's
@@ -566,7 +538,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForProcLifecycleEBPF(m.collectors.ProcLifecycleEBPF)
+		return m, m.waitBus()
 
 	case SecurityMsg:
 		// Real security event (#59) — a runtime PROT_EXEC mapping or an LSM
@@ -586,19 +558,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForSecurityEBPF(m.collectors.SecurityEBPF)
+		return m, m.waitBus()
 
 	case LockGraphMsg:
 		m.LockGraph = []collector.LockEntry(v)
-		return m, waitForFutexEBPF(m.collectors.FutexEBPF)
-
-	case LockTimelineMsg:
-		ev := collector.TimelineEvent(v)
-		m.Timeline = append([]collector.TimelineEvent{ev}, m.Timeline...)
-		if len(m.Timeline) > 120 {
-			m.Timeline = m.Timeline[:120]
-		}
-		return m, waitForFutexEBPF(m.collectors.FutexEBPF)
+		return m, m.waitBus()
 
 	case IOEBPFMsg:
 		s := collector.IOEBPFSnapshot(v)
@@ -614,7 +578,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.IOStats.LatencyBuckets = s.Buckets
 		}
 		m.usingMockIOFiles = false
-		return m, waitForIOEBPF(m.collectors.IOEBPF)
+		return m, m.waitBus()
 
 	case FSEventMsg:
 		// Real kernel filesystem event (#57) — record it for the F5 Anomalies
@@ -635,7 +599,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.Timeline) > 120 {
 			m.Timeline = m.Timeline[:120]
 		}
-		return m, waitForIOEBPF(m.collectors.IOEBPF)
+		return m, m.waitBus()
 
 	case IOThroughputMsg:
 		s := collector.IOThroughputSample(v)
@@ -654,7 +618,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.ioMaxWrite = 100 * 1024
 		}
 		m.usingMockIOThrough = false
-		return m, waitForIOThroughput(m.collectors.IOThroughput)
+		return m, m.waitBus()
 	}
 	return m, nil
 }
@@ -1227,323 +1191,105 @@ func (m Model) Close() {
 	if m.exportFile != nil {
 		_ = m.exportFile.Close()
 	}
-	m.collectors.Stop()
+	if m.busSub != nil {
+		m.busSub.Close()
+	}
+	// Only stop what we started: under --serve --tui the collectors belong to
+	// the server, and quitting the TUI must not take the stream down with it.
+	if !m.ownsFeed {
+		return
+	}
+	if m.stopFeed != nil {
+		m.stopFeed()
+	}
+	m.feed.Stop()
 }
 
-// waitForFD blocks until receiving a message from the FD collector and delivers it to Update.
-// FDCollector publishes 3 different types on the same channel; we demux via
-// type-switch and map to specific tea.Msg.
-func waitForFD(c *collector.FDCollector) tea.Cmd {
-	if c == nil {
+// busQueue bounds the model's queue on the collector bus. Deep enough to ride
+// out a render, small enough that a stalled TUI sheds events instead of hoarding
+// them: the newest state is what a live view wants, not a backlog.
+const busQueue = 256
+
+// busClosedMsg says the feed is finished (the bus subscription was closed at
+// shutdown). The model stops consuming; the render keeps working on the last
+// state it had.
+type busClosedMsg struct{}
+
+// waitBus is the model's ONLY collector consumer (#71): it takes the next value
+// off the bus subscription and turns it into the tea.Msg the Update switch
+// already knows. Every collector case re-arms it, so exactly one read is in
+// flight at a time.
+//
+// Values the TUI has no panel for are skipped here rather than delivered and
+// ignored — that is what keeps the per-allocation HeapEvent flood (#53) from
+// waking Update thousands of times a second for a panel that only renders the
+// periodic HeapStats aggregate.
+func (m Model) waitBus() tea.Cmd {
+	sub := m.busSub
+	if sub == nil {
 		return nil
 	}
 	return func() tea.Msg {
-		v := <-c.Subscribe()
-		switch t := v.(type) {
-		case []collector.FDEntry:
-			return FDMsg(t)
-		case collector.TimelineEvent:
-			return TimelineMsg(t)
-		case collector.FDEvent:
-			return FDEventMsg(t)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForCPU(c *collector.CPUCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		v := <-c.Subscribe()
-		if s, ok := v.(collector.CpuSample); ok {
-			return CpuMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForCPUEBPF(c *collector.CPUEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		v := <-ch
-		if s, ok := v.(collector.CpuSample); ok {
-			return CpuMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForThreadsEBPF(c *collector.ThreadsEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		v := <-ch
-		if t, ok := v.([]collector.ThreadInfo); ok {
-			return ThreadsMsg(t)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForThreads(c *collector.ThreadsCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		v := <-c.Subscribe()
-		if t, ok := v.([]collector.ThreadInfo); ok {
-			return ThreadsMsg(t)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForFutexEBPF(c *collector.FutexEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		v := <-ch
-		switch t := v.(type) {
-		case []collector.LockEntry:
-			return LockGraphMsg(t)
-		case collector.TimelineEvent:
-			return LockTimelineMsg(t)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForSignalEBPF(c *collector.SignalEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		if s, ok := (<-ch).(collector.SignalEvent); ok {
-			return SignalMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForProcContext(c *collector.ProcContextCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		if s, ok := (<-ch).(collector.ProcContext); ok {
-			return ProcContextMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForProcLifecycleEBPF(c *collector.ProcLifecycleEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		if s, ok := (<-ch).(collector.ProcLifecycleEvent); ok {
-			return ProcLifecycleMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForSecurityEBPF(c *collector.SecurityEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		if s, ok := (<-ch).(collector.SecurityEvent); ok {
-			return SecurityMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForTLSEBPF(c *collector.TLSEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		if p, ok := (<-ch).(collector.TLSPayload); ok {
-			return TLSPayloadMsg(p)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForMemEBPF(c *collector.MemEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		v := <-ch
-		if s, ok := v.(collector.MemStats); ok {
-			return MemMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-// waitForHeapEBPF drains the heap collector's channel. It carries two payloads:
-// the periodic HeapStats aggregate (what the F1 panel renders) and per-alloc/free
-// HeapEvents (for the gRPC stream). The TUI only surfaces the aggregate, so it
-// blocks reading — discarding HeapEvents — until the next HeapStats, which avoids
-// a per-allocation render storm.
-func waitForHeapEBPF(c *collector.HeapEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		for v := range ch {
-			if s, ok := v.(collector.HeapStats); ok {
-				return HeapMsg(s)
+		for v := range sub.C() {
+			if msg := busMsg(v); msg != nil {
+				return msg
 			}
-			// HeapEvent: not shown in the aggregate panel — keep reading.
 		}
-		return TickMsg(time.Now())
+		return busClosedMsg{}
 	}
 }
 
-func waitForMem(c *collector.MemCollector) tea.Cmd {
-	if c == nil {
-		return nil
+// busMsg maps a published collector value onto the model's message type, or nil
+// when the TUI has nothing to do with it. This is the whole demux: the value's
+// own type says what it is, so it no longer matters which collector produced it
+// (a TimelineEvent from the fd collector and one from futex are the same event
+// to the timeline, and CpuSample means the same whether eBPF or /proc sent it).
+func busMsg(v interface{}) tea.Msg {
+	switch t := v.(type) {
+	case []collector.FDEntry:
+		return FDMsg(t)
+	case collector.FDEvent:
+		return FDEventMsg(t)
+	case collector.TimelineEvent:
+		return TimelineMsg(t)
+	case collector.CpuSample:
+		return CpuMsg(t)
+	case []collector.ThreadInfo:
+		return ThreadsMsg(t)
+	case collector.MemStats:
+		return MemMsg(t)
+	case collector.HeapStats:
+		return HeapMsg(t)
+	case collector.IOWaitSample:
+		return IOWaitMsg(t)
+	case collector.IOThroughputSample:
+		return IOThroughputMsg(t)
+	case map[string]uint64:
+		return SyscallsMsg(t)
+	case collector.IOEBPFSnapshot:
+		return IOEBPFMsg(t)
+	case collector.FSEvent:
+		return FSEventMsg(t)
+	case []collector.NetConn:
+		return NetMsg(t)
+	case collector.NetError:
+		return NetErrorMsg(t)
+	case []collector.LockEntry:
+		return LockGraphMsg(t)
+	case collector.SignalEvent:
+		return SignalMsg(t)
+	case collector.TLSPayload:
+		return TLSPayloadMsg(t)
+	case collector.ProcContext:
+		return ProcContextMsg(t)
+	case collector.ProcLifecycleEvent:
+		return ProcLifecycleMsg(t)
+	case collector.SecurityEvent:
+		return SecurityMsg(t)
 	}
-	return func() tea.Msg {
-		v := <-c.Subscribe()
-		if s, ok := v.(collector.MemStats); ok {
-			return MemMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForIOWait(c *collector.IOWaitCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		v := <-c.Subscribe()
-		if s, ok := v.(collector.IOWaitSample); ok {
-			return IOWaitMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForIOThroughput(c *collector.IOThroughputCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		v := <-c.Subscribe()
-		if s, ok := v.(collector.IOThroughputSample); ok {
-			return IOThroughputMsg(s)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForSyscalls(c *collector.SyscallsEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		v := <-ch
-		if m, ok := v.(map[string]uint64); ok {
-			return SyscallsMsg(m)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForNetEBPF(c *collector.NetworkEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		switch v := (<-ch).(type) {
-		case []collector.NetConn:
-			return NetMsg(v)
-		case collector.NetError:
-			return NetErrorMsg(v)
-		}
-		return TickMsg(time.Now())
-	}
-}
-
-func waitForIOEBPF(c *collector.IOEBPFCollector) tea.Cmd {
-	if c == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		ch := c.Subscribe()
-		if ch == nil {
-			return TickMsg(time.Now())
-		}
-		switch v := (<-ch).(type) {
-		case collector.IOEBPFSnapshot:
-			return IOEBPFMsg(v)
-		case collector.FSEvent:
-			return FSEventMsg(v)
-		}
-		return TickMsg(time.Now())
-	}
+	// collector.HeapEvent lands here: the F1 panel renders the aggregate, and
+	// waking Update per allocation would be a render storm for nothing.
+	return nil
 }
 
 func appendCapped(s []float64, v float64, capN int) []float64 {

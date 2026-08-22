@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -171,6 +172,25 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 				return statusRow("security", false, m.securitySource)
 			}
 			return statusRowNA("security", "needs eBPF (PROT_EXEC mmap/mprotect, SELinux AVC)")
+		}(),
+		// The view is one consumer of the collector bus (#71), never the only
+		// one. A non-zero drop count is the honest signal that this view fell
+		// behind and is missing values — the same thing a stream subscriber is
+		// told about itself.
+		func() string {
+			detail := "own collectors"
+			if !m.ownsFeed {
+				detail = "shared with the --serve stream"
+			}
+			line := keyStyle.Render(padRight("feed", 14)) + descStyle.Render(" ") +
+				sourceStyle.Render("one bus consumer — "+detail)
+			if m.busSub != nil {
+				if d := m.busSub.Dropped(); d > 0 {
+					line += lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel).
+						Render(fmt.Sprintf(" · dropped %d", d))
+				}
+			}
+			return line
 		}(),
 	}
 

@@ -39,6 +39,7 @@ func main() {
 	serveTLSKey := flag.String("serve-tls-key", "", "--serve over TLS: PEM server private key (needs --serve-tls-cert)")
 	serveTLSClientCA := flag.String("serve-tls-client-ca", "", "--serve over mTLS: PEM CA bundle; subscribers must present a certificate signed by it")
 	serveInsecure := flag.Bool("serve-insecure", false, "Allow a PLAINTEXT tcp:// --serve endpoint (unencrypted, unauthenticated) — deliberate opt-in")
+	withTUI := flag.Bool("tui", false, "With --serve: also run the TUI on the same collectors (without --serve the TUI is already the default)")
 	cgroupSpec := flag.String("cgroup", "", "Target a cgroup subtree instead of one PID — a cgroup path or a container id (requires --serve and eBPF)")
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
@@ -53,7 +54,7 @@ func main() {
 
 	// One target, named one of two ways (#94). Everything that cannot hold for a
 	// cgroup subtree is rejected here rather than half-working later.
-	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF); err != nil {
+	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF, *withTUI); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
@@ -166,19 +167,29 @@ func main() {
 		if *export {
 			opts.JSONLPath = fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405"))
 		}
-		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, opts)
+		var tuiCfg *tui.Config
+		if *withTUI {
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap}
+		}
+		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, opts, tuiCfg)
 		return
 	}
 
-	cfg := tui.Config{
+	runTUI(tui.Config{
 		PID:         *pid,
 		FPS:         *fps,
 		NoEBPF:      *noEBPF,
 		Export:      *export,
 		TLS:         tlsEnabled,
 		TLSMaxBytes: tlsCap,
-	}
+	})
+}
 
+// runTUI drives the interactive program to completion: it builds the model
+// (which starts its own collectors unless cfg.Feed hands it a running set),
+// runs it, and then releases what the model owns and writes the --export
+// snapshot.
+func runTUI(cfg tui.Config) {
 	// Resolve the terminal color profile once and pin it. Otherwise lipgloss
 	// re-resolves it lazily and each styled segment re-probes the profile when
 	// converting the 24-bit palette to ANSI — wasteful on the render hot path.
@@ -211,7 +222,7 @@ func main() {
 // eBPF, and it names a set of processes, which the TUI has nowhere to put — its
 // header, thread table and fd list are all one process's. Rejecting those
 // combinations here beats a TUI that renders an empty shell.
-func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF bool) error {
+func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI bool) error {
 	if cgroupSpec == "" {
 		if pid == 0 {
 			return errors.New("--pid is required (or --cgroup with --serve)")
@@ -227,6 +238,8 @@ func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF bool) error 
 		return errors.New("--cgroup and --pid name different targets — pass one")
 	case serveAddr == "":
 		return errors.New("--cgroup requires --serve: a cgroup subtree is a set of processes, and the TUI shows one")
+	case withTUI:
+		return errors.New("--cgroup cannot be shown in the TUI: a cgroup subtree is a set of processes, and the TUI shows one")
 	case noEBPF:
 		return errors.New("--cgroup needs eBPF (the subtree filter runs in the kernel) — it cannot work with --no-ebpf")
 	}
@@ -256,20 +269,29 @@ func checkPIDExists(pid int) error {
 	}
 }
 
-// runServe builds the collector Set and streams it over gRPC until SIGINT/
-// SIGTERM. The Set's lifecycle is owned here: serve.Run only stops the server,
+// runServe builds the collector feed and streams it over gRPC until SIGINT/
+// SIGTERM. The feed's lifecycle is owned here: serve.Run only stops the server,
 // so we stop the collectors after it returns. opts carries the transport
 // security and, with --export, the event-level JSONL path (distinct from the
 // TUI's state-snapshot ptop-export-*.jsonl).
-func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options) {
+//
+// tuiCfg (--tui, #71) makes the TUI a second consumer of the same bus: one set
+// of collectors, watched live and streamed at once. The TUI then runs in the
+// foreground and quitting it shuts the server down; without it this is headless
+// as before.
+func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options, tuiCfg *tui.Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	set := collector.NewSet(collector.SetConfig{
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	feed := collector.StartFeed(ctx, collector.SetConfig{
 		PID: target.PID, Cgroup: target.CgroupPath,
 		NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
 	})
-	defer set.Stop()
+	defer feed.Stop()
+	set := feed.Set
 
 	// The heap (#54) and futex (#89) collectors each own a stack tracer +
 	// symbolizer, so they back the stack references and the ResolveStack RPC.
@@ -285,9 +307,41 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	}
 	resolver := serve.CombineStackResolvers(resolvers)
 
-	if err := serve.Run(ctx, addr, target, set.Collectors(), resolver, opts); err != nil {
-		set.Stop() // os.Exit skips the defer
+	if tuiCfg == nil {
+		if err := serve.Run(ctx, addr, target, feed.Bus, resolver, opts); err != nil {
+			feed.Stop() // os.Exit skips the defer
+			fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// --serve --tui. The server goes to the background, but only after it is
+	// actually up: opts.Ready closes once the endpoint is bound, so a bad
+	// address or certificate is reported here instead of behind a TUI that
+	// looks fine while nothing is being served.
+	ready := make(chan struct{})
+	opts.Ready = ready
+	srvErr := make(chan error, 1)
+	go func() { srvErr <- serve.Run(ctx, addr, target, feed.Bus, resolver, opts) }()
+
+	select {
+	case <-ready:
+	case err := <-srvErr:
+		feed.Stop()
 		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+		os.Exit(1)
+	}
+
+	tuiCfg.Feed = feed
+	runTUI(*tuiCfg)
+
+	// The TUI is the foreground process here: quitting it stops the server and
+	// releases the collectors both were reading.
+	cancel()
+	if err := <-srvErr; err != nil {
+		feed.Stop()
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 }

@@ -46,39 +46,31 @@ func (h *Hub) targetInfo() *pb.TargetInfo {
 	}
 }
 
-// Start launches one fan-in goroutine per collector. Each maps published values
-// to Events and broadcasts them to every sink. The goroutines exit when ctx is
-// cancelled or their source channel closes. Non-blocking — returns immediately.
-func (h *Hub) Start(ctx context.Context, cols []collector.Collector) {
-	for _, c := range cols {
-		ch := c.Subscribe()
-		if ch == nil {
-			continue
-		}
-		go h.drain(ctx, ch)
-	}
+// Start attaches the hub to the shared collector bus (#71) — the same bus the
+// TUI can be reading, so `--serve --tui` runs one set of collectors for both.
+// The handler runs inline on the bus's drain goroutine: it only maps and hands
+// off to the sinks, which own their buffering, so it adds no queue and no
+// second place for events to go missing. Detaches when ctx is cancelled.
+// Non-blocking — returns immediately.
+func (h *Hub) Start(ctx context.Context, bus *collector.Bus) {
+	handler := bus.AddHandler(h.handle)
+	go func() {
+		<-ctx.Done()
+		bus.RemoveHandler(handler)
+	}()
 }
 
-func (h *Hub) drain(ctx context.Context, ch <-chan interface{}) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case v, ok := <-ch:
-			if !ok {
-				return
-			}
-			// A ProcContext refreshes the cached identity before it (and every
-			// subsequent event) is stamped — so the snapshot event itself
-			// carries its own up-to-date uid/gid/cgroup_id.
-			if pc, ok := v.(collector.ProcContext); ok {
-				h.setIdent(pc)
-			}
-			if ev := toEvent(h.target.PID, h.buildID, v); ev != nil {
-				h.stampIdent(ev)
-				h.broadcast(ev)
-			}
-		}
+// handle maps one published collector value onto the stream and broadcasts it.
+func (h *Hub) handle(v interface{}) {
+	// A ProcContext refreshes the cached identity before it (and every
+	// subsequent event) is stamped — so the snapshot event itself carries its
+	// own up-to-date uid/gid/cgroup_id.
+	if pc, ok := v.(collector.ProcContext); ok {
+		h.setIdent(pc)
+	}
+	if ev := toEvent(h.target.PID, h.buildID, v); ev != nil {
+		h.stampIdent(ev)
+		h.broadcast(ev)
 	}
 }
 
