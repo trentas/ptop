@@ -11,12 +11,23 @@
 //
 // Maps:
 //   futex_target_pid    ARRAY[1]  struct target_filter (written by the Go loader)
-//   futex_inflight      HASH      tgid_pid → {uaddr, op, ts_ns}
+//   futex_inflight      HASH      tgid_pid → {uaddr, op, ts_ns, stack_id}
 //                                 correlates enter→exit to compute
-//                                 per-call latency
-//   futex_stats         HASH      uaddr → {wait_count, wake_count,
+//                                 per-call latency, and carries the stack
+//                                 captured at enter to the exit that accounts it
+//   futex_stats         HASH      {uaddr, stack_id} → {wait_count, wake_count,
 //                                 lat_sum_ns, lat_count, last_wait_tid,
 //                                 last_wake_tid}
+//   futex_stacks        STACK_TRACE  user stacks captured at the WAIT call site
+//
+// Why the key carries a stack id (#89):
+//   uaddr alone identifies a lock only inside the live process — ASLR and
+//   arena reuse give the same logical lock a different address on the next
+//   run. The stack captured where a thread blocks is the address-independent
+//   identity (module+offset survives ASLR), so waits are counted per
+//   (uaddr, contention site) and userspace picks the dominant site as the
+//   lock's name. Wake-class calls get stack_id = -1: they never name a lock,
+//   and skipping the walk keeps the cheap path cheap.
 //
 // Op filtering:
 //   FUTEX_CMD_MASK = 0x7F strips FUTEX_PRIVATE_FLAG (0x80) and
@@ -30,6 +41,11 @@
 char LICENSE[] SEC("license") = "GPL";
 
 #define FUTEX_CMD_MASK 0x7F
+
+// User-stack depth captured per contention site — enough to step over libc's
+// pthread/futex wrappers and reach the application caller. Mirrors
+// heap.bpf.c's HEAP_STACK_DEPTH; futexStackDepth in internal/bpf/futex.go.
+#define FUTEX_STACK_DEPTH 32
 
 // Wait-class ops (thread sleeps on the uaddr)
 #define FUTEX_WAIT             0
@@ -68,6 +84,15 @@ struct futex_inflight {
     __u64 uaddr;
     __u64 ts_ns;
     __u32 op;
+    __s32 stack_id; // wait-site user stack (<0 → unknown, or a wake op)
+};
+
+// futex_stats key. A hash key is compared byte-wise, so _pad must be zeroed on
+// every lookup/update — always build it as `struct futex_key k = {};`.
+// Mirrored by FutexKey in internal/bpf/futex.go.
+struct futex_key {
+    __u64 uaddr;
+    __s32 stack_id;
     __u32 _pad;
 };
 
@@ -96,10 +121,17 @@ struct {
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
-    __type(key, __u64);
+    __type(key, struct futex_key);
     __type(value, struct futex_stat);
-    __uint(max_entries, 4096);
+    __uint(max_entries, 8192); // (lock × contention site) pairs, not locks
 } futex_stats SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_STACK_TRACE);
+    __uint(key_size, sizeof(__u32));
+    __uint(value_size, FUTEX_STACK_DEPTH * sizeof(__u64));
+    __uint(max_entries, 4096);
+} futex_stacks SEC(".maps");
 
 static __always_inline int is_futex_target(void)
 {
@@ -131,9 +163,14 @@ int handle_enter_futex(struct sys_enter_futex_args *ctx)
 
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     struct futex_inflight inf = {
-        .uaddr = ctx->uaddr,
-        .ts_ns = bpf_ktime_get_ns(),
-        .op    = base_op,
+        .uaddr    = ctx->uaddr,
+        .ts_ns    = bpf_ktime_get_ns(),
+        .op       = base_op,
+        // Only a WAIT names a lock (the caller is blocking ON it); a WAKE is
+        // the release path and would only add noise plus a stack walk.
+        .stack_id = is_wait_op(base_op)
+                        ? (__s32)bpf_get_stackid(ctx, &futex_stacks, BPF_F_USER_STACK)
+                        : -1,
     };
     bpf_map_update_elem(&futex_inflight, &pid_tgid, &inf, BPF_ANY);
     return 0;
@@ -148,12 +185,14 @@ int handle_exit_futex(struct sys_exit_args *ctx)
         return 0;
 
     __u64 lat_ns = bpf_ktime_get_ns() - inf->ts_ns;
-    __u64 uaddr = inf->uaddr;
     __u32 op = inf->op;
     __u32 tid = (__u32)pid_tgid;
+    struct futex_key key = {}; // zero-init: the padding is part of the hash key
+    key.uaddr = inf->uaddr;
+    key.stack_id = inf->stack_id;
     bpf_map_delete_elem(&futex_inflight, &pid_tgid);
 
-    struct futex_stat *s = bpf_map_lookup_elem(&futex_stats, &uaddr);
+    struct futex_stat *s = bpf_map_lookup_elem(&futex_stats, &key);
     if (!s) {
         struct futex_stat ns = {};
         if (is_wait_op(op)) {
@@ -165,7 +204,7 @@ int handle_exit_futex(struct sys_exit_args *ctx)
         }
         ns.lat_sum_ns = lat_ns;
         ns.lat_count = 1;
-        bpf_map_update_elem(&futex_stats, &uaddr, &ns, BPF_ANY);
+        bpf_map_update_elem(&futex_stats, &key, &ns, BPF_ANY);
         return 0;
     }
     if (is_wait_op(op)) {

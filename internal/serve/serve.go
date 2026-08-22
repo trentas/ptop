@@ -72,8 +72,9 @@ type Options struct {
 // material or an explicit opt-in to cleartext (see serverCredentials).
 //
 // resolver (optional, nil-safe) symbolizes captured stacks: it stamps the
-// per-process build-id onto every StackRef and backs the ResolveStack RPC. Pass
-// set.HeapEBPF when non-nil; nil leaves heap events without stack references.
+// per-process build-id onto every StackRef and backs the ResolveStack RPC.
+// Build it with CombineStackResolvers over the collectors that captured stacks
+// (heap, futex); nil leaves events without stack references.
 func Run(ctx context.Context, addr string, target Target, cols []collector.Collector, resolver StackResolver, opts Options) error {
 	// Resolve transport security first: a missing certificate or a refused
 	// cleartext endpoint should fail before anything is bound.

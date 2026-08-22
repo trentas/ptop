@@ -4,24 +4,42 @@ package collector
 
 import (
 	"fmt"
-	"sort"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // FutexEBPFCollector consumes the futex_stats map periodically and publishes
 // a []LockEntry ranked by contention in the current window (delta of
 // waits in the last interval). Emits TimelineEvent category="lock" when
-// some uaddr passes the contention threshold for the interval.
+// some lock passes the contention threshold for the interval.
+//
+// The kernel counts waits per (futex word, contention site), so each lock is
+// named by the call site doing most of the blocking (#89) — an identity that
+// survives ASLR, unlike the futex word address. Symbolization needs one
+// process's memory map, so in cgroup mode (a subtree of processes) the sites
+// stay unresolved and only the address is reported.
 type FutexEBPFCollector struct {
 	tracer *bpf.FutexTracer
+	sym    *symbol.Symbolizer // nil in cgroup mode, or if /proc maps failed
 	ch     chan interface{}
 	stop   chan struct{}
 
-	mu   sync.Mutex
-	prev map[uint64]bpf.FutexStat
+	mu         sync.Mutex
+	prev       map[uint64]uint64        // uaddr → cumulative waits last window
+	siteCache  map[int32]lockSite       // stack_id → resolved contention site
+	stackCache map[int32][]symbol.Frame // stack_id → full leaf-first frames
+}
+
+// lockSite is the resolved contention site for a stack_id: the raw frame
+// address plus its symbolization. Cached because stacks are stable for the
+// process lifetime and symbolizing re-reads ELF modules.
+type lockSite struct {
+	addr  uint64
+	frame symbol.Frame
 }
 
 // contentionThreshold defines how many new waits in the interval (1s) are
@@ -35,26 +53,39 @@ const topLockEntries = 8
 
 func NewFutexEBPFCollector() *FutexEBPFCollector {
 	return &FutexEBPFCollector{
-		ch:   make(chan interface{}, 8),
-		stop: make(chan struct{}),
-		prev: make(map[uint64]bpf.FutexStat),
+		ch:         make(chan interface{}, 8),
+		stop:       make(chan struct{}),
+		prev:       make(map[uint64]uint64),
+		siteCache:  make(map[int32]lockSite),
+		stackCache: make(map[int32][]symbol.Frame),
 	}
 }
 
-func (c *FutexEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid)) }
+func (c *FutexEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pid), pid) }
 
 // StartCgroup tracks futex contention across a whole cgroup subtree instead of
-// one pid (#94). Implements CgroupTargeter.
+// one pid (#94). Implements CgroupTargeter. Contention sites stay unresolved:
+// symbolization reads one process's memory map, and a subtree has no single
+// process to read.
 func (c *FutexEBPFCollector) StartCgroup(spec string) error {
-	return c.start(bpf.TargetCgroup(spec))
+	return c.start(bpf.TargetCgroup(spec), 0)
 }
 
-func (c *FutexEBPFCollector) start(t bpf.Target) error {
+func (c *FutexEBPFCollector) start(t bpf.Target, pid int) error {
 	tracer, err := bpf.OpenFutexTracer(t)
 	if err != nil {
 		return fmt.Errorf("futex eBPF: %w", err)
 	}
 	c.tracer = tracer
+	// Symbolize best-effort: without /proc maps the sites degrade to the bare
+	// address, exactly as before #89 — never fail Start over it.
+	if pid <= 0 {
+		c.sym = nil
+	} else if sym, err := symbol.NewSymbolizer(pid); err == nil {
+		c.sym = sym
+	} else {
+		fmt.Fprintf(os.Stderr, "futex: call-site symbolization unavailable for pid %d: %v\n", pid, err)
+	}
 	go c.loop()
 	return nil
 }
@@ -65,10 +96,61 @@ func (c *FutexEBPFCollector) Stop() {
 		_ = c.tracer.Close()
 		c.tracer = nil
 	}
+	if c.sym != nil {
+		_ = c.sym.Close()
+		c.sym = nil
+	}
 }
 
 func (c *FutexEBPFCollector) Subscribe() <-chan interface{} {
 	return c.ch
+}
+
+// ResolveStack returns the full leaf-first symbolized frames of a captured
+// contention stack, or ok=false when the id is unknown (wake-path sentinel,
+// evicted from the kernel map, or empty). Results are cached (stacks are
+// immutable for the process lifetime). Safe for concurrent use — the headless
+// server calls it from gRPC handlers while the publish loop runs. Backs the
+// EventStreamService.ResolveStack RPC for LockEntry.stack_id (#54/#89).
+func (c *FutexEBPFCollector) ResolveStack(stackID uint64) ([]symbol.Frame, bool) {
+	if c.tracer == nil || int32(stackID) < 0 {
+		return nil, false
+	}
+	sid := int32(stackID)
+	c.mu.Lock()
+	if fr, ok := c.stackCache[sid]; ok {
+		c.mu.Unlock()
+		return fr, true
+	}
+	c.mu.Unlock()
+
+	addrs, err := c.tracer.ResolveStack(sid)
+	if err != nil || len(addrs) == 0 {
+		return nil, false
+	}
+	frames := make([]symbol.Frame, len(addrs))
+	for i, a := range addrs {
+		if c.sym != nil {
+			frames[i] = c.sym.Symbolize(a)
+		} else {
+			frames[i] = symbol.Frame{Offset: a}
+		}
+	}
+
+	c.mu.Lock()
+	c.stackCache[sid] = frames
+	c.mu.Unlock()
+	return frames, true
+}
+
+// ProcessBuildID returns the target executable's GNU build-id — the stable
+// per-process key for the stack ids this collector hands out. "" in cgroup mode
+// or when the target has no build-id.
+func (c *FutexEBPFCollector) ProcessBuildID() string {
+	if c.sym == nil {
+		return ""
+	}
+	return c.sym.ProcessBuildID()
 }
 
 func (c *FutexEBPFCollector) loop() {
@@ -84,7 +166,7 @@ func (c *FutexEBPFCollector) loop() {
 			case c.ch <- snap:
 			default:
 			}
-			// Timeline events: one per "hot" uaddr in the interval.
+			// Timeline events: one per "hot" lock in the interval.
 			// Cap at 3 per tick to avoid flooding.
 			emitted := 0
 			for _, e := range hot {
@@ -96,8 +178,8 @@ func (c *FutexEBPFCollector) loop() {
 					Timestamp: time.Now(),
 					Category:  "lock",
 					Message: fmt.Sprintf(
-						"futex@0x%x ↑ %d waits (avg %.1fms, last tid %d)",
-						e.UAddr, e.WaitDelta, e.LatencyMs, e.LastWaitTID,
+						"%s ↑ %d waits (avg %.1fms, last tid %d)",
+						lockName(e), e.WaitDelta, e.LatencyMs, e.LastWaitTID,
 					),
 				}:
 					emitted++
@@ -108,9 +190,10 @@ func (c *FutexEBPFCollector) loop() {
 	}
 }
 
-// snapshot reads futex_stats, computes delta vs prev, returns the top-N
-// by window contention and the "hot" list (those past the threshold for
-// emitting timeline events).
+// snapshot reads futex_stats, folds the per-site rows into one entry per lock,
+// computes the window delta vs the previous read and returns the top-N by
+// contention plus the "hot" list (those past the threshold for a timeline
+// event). Only the entries actually published get their call site symbolized.
 func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 	if c.tracer == nil {
 		return nil, nil
@@ -120,46 +203,101 @@ func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 		return nil, nil
 	}
 
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	all := make([]LockEntry, 0, len(stats))
-	for uaddr, s := range stats {
-		p := c.prev[uaddr]
-		waitDelta := s.WaitCount - p.WaitCount
-		latMs := 0.0
-		if s.LatCount > 0 {
-			latMs = float64(s.LatSumNs) / float64(s.LatCount) / 1e6
-		}
-		entry := LockEntry{
-			UAddr:       uaddr,
-			Waiters:     s.WaitCount,
-			Wakers:      s.WakeCount,
-			WaitDelta:   waitDelta,
-			LatencyMs:   latMs,
+	samples := make([]lockSample, 0, len(stats))
+	for k, s := range stats {
+		samples = append(samples, lockSample{
+			UAddr:       k.UAddr,
+			StackID:     k.StackID,
+			WaitCount:   s.WaitCount,
+			WakeCount:   s.WakeCount,
+			LatSumNs:    s.LatSumNs,
+			LatCount:    s.LatCount,
 			LastWaitTID: int(s.LastWaitTID),
 			LastWakeTID: int(s.LastWakeTID),
-		}
-		all = append(all, entry)
-		if waitDelta >= contentionThreshold {
-			hot = append(hot, entry)
-		}
+		})
 	}
-	c.prev = stats
 
-	// Ranking: by WaitDelta desc, with total Waiters as tiebreaker.
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].WaitDelta != all[j].WaitDelta {
-			return all[i].WaitDelta > all[j].WaitDelta
-		}
-		return all[i].Waiters > all[j].Waiters
-	})
-	if len(all) > topLockEntries {
-		all = all[:topLockEntries]
+	c.mu.Lock()
+	entries, cur := aggregateLocks(samples, c.prev)
+	c.prev = cur
+	c.mu.Unlock()
+
+	ranked := rankLocks(entries, -1)
+	hotN := countHot(ranked, contentionThreshold)
+
+	// Everything published is either in the top-N or hot, and rankLocks sorts
+	// by window delta first, so both are prefixes of ranked.
+	resolveN := topLockEntries
+	if hotN > resolveN {
+		resolveN = hotN
 	}
-	// Hot list also sorted by delta desc.
-	sort.Slice(hot, func(i, j int) bool {
-		return hot[i].WaitDelta > hot[j].WaitDelta
-	})
-	return all, hot
+	if resolveN > len(ranked) {
+		resolveN = len(ranked)
+	}
+	for i := range ranked[:resolveN] {
+		c.attachSite(&ranked[i])
+	}
+
+	snap = ranked[:min(topLockEntries, len(ranked))]
+	return snap, ranked[:hotN]
+}
+
+// attachSite fills e's call-site fields from its dominant contention stack.
+// A lock whose stack walk failed keeps StackID < 0 and zeroed site fields.
+func (c *FutexEBPFCollector) attachSite(e *LockEntry) {
+	if e.StackID < 0 {
+		return
+	}
+	site := c.resolveSite(e.StackID)
+	e.CallSite = site.addr
+	e.Func = site.frame.Func
+	e.File = site.frame.File
+	e.Line = site.frame.Line
+	e.Module = site.frame.Module
+	e.Offset = site.frame.Offset
+}
+
+// resolveSite maps a stack_id to the application frame that blocked on the
+// futex — the first frame outside libc/ld, since the leaf is libc's
+// pthread/futex wrapper. Cached under c.mu; returns a zero site when the stack
+// walk failed or nothing could be read.
+func (c *FutexEBPFCollector) resolveSite(stackID int32) lockSite {
+	if stackID < 0 || c.tracer == nil {
+		return lockSite{}
+	}
+	c.mu.Lock()
+	if s, ok := c.siteCache[stackID]; ok {
+		c.mu.Unlock()
+		return s
+	}
+	c.mu.Unlock()
+
+	frames, err := c.tracer.ResolveStack(stackID)
+	if err != nil || len(frames) == 0 {
+		return lockSite{}
+	}
+
+	var site lockSite
+	if c.sym != nil {
+		for _, f := range frames {
+			if f == 0 {
+				continue
+			}
+			fr := c.sym.Symbolize(f)
+			if !isLoaderModule(fr.Module) {
+				site = lockSite{addr: f, frame: fr}
+				break
+			}
+		}
+		if site.addr == 0 { // every frame was loader/libc — fall back to the leaf
+			site = lockSite{addr: frames[0], frame: c.sym.Symbolize(frames[0])}
+		}
+	} else {
+		site = lockSite{addr: frames[0]}
+	}
+
+	c.mu.Lock()
+	c.siteCache[stackID] = site
+	c.mu.Unlock()
+	return site
 }

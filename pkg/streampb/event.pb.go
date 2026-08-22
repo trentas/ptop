@@ -2766,15 +2766,32 @@ func (x *FdEvent) GetMessage() string {
 }
 
 // ─── Locks (futex) ──────────────────────────────────────────────────────────
+// LockEntry is one contended futex word. uaddr identifies it inside the LIVE
+// process only — ASLR and arena reuse give the same logical lock a different
+// address on the next run, and hand a freed address to an unrelated lock. The
+// call site below (#89) is the identity that survives that, the way
+// HeapCallSite's is for an allocation: compare locks across runs/deploys by
+// call_site.module+offset (or func/file:line), never by uaddr.
 type LockEntry struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Uaddr         uint64                 `protobuf:"varint,1,opt,name=uaddr,proto3" json:"uaddr,omitempty"`                           // futex word virtual address (no symbols → shown in hex)
-	Waiters       uint64                 `protobuf:"varint,2,opt,name=waiters,proto3" json:"waiters,omitempty"`                       // cumulative wait_count
-	Wakers        uint64                 `protobuf:"varint,3,opt,name=wakers,proto3" json:"wakers,omitempty"`                         // cumulative wake_count
-	WaitDelta     uint64                 `protobuf:"varint,4,opt,name=wait_delta,json=waitDelta,proto3" json:"wait_delta,omitempty"`  // new waits in the current window
-	LatencyMs     float64                `protobuf:"fixed64,5,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"` // average per call
-	LastWaitTid   int32                  `protobuf:"varint,6,opt,name=last_wait_tid,json=lastWaitTid,proto3" json:"last_wait_tid,omitempty"`
-	LastWakeTid   int32                  `protobuf:"varint,7,opt,name=last_wake_tid,json=lastWakeTid,proto3" json:"last_wake_tid,omitempty"`
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Uaddr       uint64                 `protobuf:"varint,1,opt,name=uaddr,proto3" json:"uaddr,omitempty"`                           // futex word virtual address (live process only; shown in hex)
+	Waiters     uint64                 `protobuf:"varint,2,opt,name=waiters,proto3" json:"waiters,omitempty"`                       // cumulative wait_count
+	Wakers      uint64                 `protobuf:"varint,3,opt,name=wakers,proto3" json:"wakers,omitempty"`                         // cumulative wake_count
+	WaitDelta   uint64                 `protobuf:"varint,4,opt,name=wait_delta,json=waitDelta,proto3" json:"wait_delta,omitempty"`  // new waits in the current window
+	LatencyMs   float64                `protobuf:"fixed64,5,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"` // average per call
+	LastWaitTid int32                  `protobuf:"varint,6,opt,name=last_wait_tid,json=lastWaitTid,proto3" json:"last_wait_tid,omitempty"`
+	LastWakeTid int32                  `protobuf:"varint,7,opt,name=last_wake_tid,json=lastWakeTid,proto3" json:"last_wake_tid,omitempty"`
+	// Symbolized application frame that blocked on this futex — the DOMINANT
+	// contention site of the window when the lock is taken from several places
+	// (the one with the most waits). eBPF-only, and only in pid mode: a cgroup
+	// subtree spans processes with no single memory map to symbolize against.
+	// Unset when the stack walk failed (no frame pointers).
+	CallSite *StackFrame `protobuf:"bytes,8,opt,name=call_site,json=callSite,proto3" json:"call_site,omitempty"`
+	// Kernel stack id of that contention site, for
+	// EventStreamService.ResolveStack (the full leaf-first stack). Namespaced per
+	// tracer — the high 32 bits select the source map, the low 32 the kernel id —
+	// so pass the value back verbatim. 0 means no stack.
+	StackId       uint64 `protobuf:"varint,9,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2854,6 +2871,20 @@ func (x *LockEntry) GetLastWaitTid() int32 {
 func (x *LockEntry) GetLastWakeTid() int32 {
 	if x != nil {
 		return x.LastWakeTid
+	}
+	return 0
+}
+
+func (x *LockEntry) GetCallSite() *StackFrame {
+	if x != nil {
+		return x.CallSite
+	}
+	return nil
+}
+
+func (x *LockEntry) GetStackId() uint64 {
+	if x != nil {
+		return x.StackId
 	}
 	return 0
 }
@@ -3170,7 +3201,7 @@ const file_event_proto_rawDesc = "" +
 	"FdSnapshot\x12\"\n" +
 	"\x03fds\x18\x01 \x03(\v2\x10.ptop.v1.FdEntryR\x03fds\"#\n" +
 	"\aFdEvent\x12\x18\n" +
-	"\amessage\x18\x01 \x01(\tR\amessage\"\xd9\x01\n" +
+	"\amessage\x18\x01 \x01(\tR\amessage\"\xa6\x02\n" +
 	"\tLockEntry\x12\x14\n" +
 	"\x05uaddr\x18\x01 \x01(\x04R\x05uaddr\x12\x18\n" +
 	"\awaiters\x18\x02 \x01(\x04R\awaiters\x12\x16\n" +
@@ -3180,7 +3211,9 @@ const file_event_proto_rawDesc = "" +
 	"\n" +
 	"latency_ms\x18\x05 \x01(\x01R\tlatencyMs\x12\"\n" +
 	"\rlast_wait_tid\x18\x06 \x01(\x05R\vlastWaitTid\x12\"\n" +
-	"\rlast_wake_tid\x18\a \x01(\x05R\vlastWakeTid\"8\n" +
+	"\rlast_wake_tid\x18\a \x01(\x05R\vlastWakeTid\x120\n" +
+	"\tcall_site\x18\b \x01(\v2\x13.ptop.v1.StackFrameR\bcallSite\x12\x19\n" +
+	"\bstack_id\x18\t \x01(\x04R\astackId\"8\n" +
 	"\fLockSnapshot\x12(\n" +
 	"\x05locks\x18\x01 \x03(\v2\x12.ptop.v1.LockEntryR\x05locks\")\n" +
 	"\rTimelineEvent\x12\x18\n" +
@@ -3284,12 +3317,13 @@ var file_event_proto_depIdxs = []int32{
 	20, // 28: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
 	2,  // 29: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
 	27, // 30: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
-	30, // 31: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
-	32, // [32:32] is the sub-list for method output_type
-	32, // [32:32] is the sub-list for method input_type
-	32, // [32:32] is the sub-list for extension type_name
-	32, // [32:32] is the sub-list for extension extendee
-	0,  // [0:32] is the sub-list for field type_name
+	2,  // 31: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
+	30, // 32: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
+	33, // [33:33] is the sub-list for method output_type
+	33, // [33:33] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_event_proto_init() }

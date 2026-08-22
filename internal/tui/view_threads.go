@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -59,11 +60,12 @@ func renderLockGraph(m Model, w int) string {
 	return strings.Join(lines, "\n")
 }
 
-// renderLockLine: "futex@0xADDR  ↑42 waits  avg 3.2ms  last tid 1247"
+// renderLockLine: "pool.acquire (db.go:42) · ↑42 · 3.2ms · tid=1247".
+// The lock is named by the call site contending on it (#89) and falls back to
+// the futex word address — see lockSiteLabel. The name absorbs whatever width
+// the fixed-size right-hand fields leave, so a long symbol can't overflow the
+// panel.
 func renderLockLine(e collector.LockEntry, w int) string {
-	addrStyle := lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel)
-	addr := addrStyle.Render(fmt.Sprintf("futex@0x%x", e.UAddr))
-
 	deltaColor := ColorMuted
 	switch {
 	case e.WaitDelta >= 100:
@@ -76,13 +78,42 @@ func renderLockLine(e collector.LockEntry, w int) string {
 	delta := lipgloss.NewStyle().Foreground(deltaColor).Background(ColorPanel).
 		Render(fmt.Sprintf("↑%d", e.WaitDelta))
 
-	lat := MutedStyle.Render(fmt.Sprintf("%.1fms", e.LatencyMs))
-
-	tid := ""
+	parts := []string{delta, MutedStyle.Render(fmt.Sprintf("%.1fms", e.LatencyMs))}
 	if e.LastWaitTID != 0 {
-		tid = MutedStyle.Render(fmt.Sprintf("tid=%d", e.LastWaitTID))
+		parts = append(parts, MutedStyle.Render(fmt.Sprintf("tid=%d", e.LastWaitTID)))
 	}
+	sep := MutedStyle.Render(" · ")
+	tail := strings.Join(parts, sep)
 
-	parts := []string{addr, delta, lat, tid}
-	return strings.Join(parts, MutedStyle.Render(" · "))
+	avail := w - lipgloss.Width(tail) - lipgloss.Width(sep)
+	if avail < 8 {
+		avail = 8 // never squeeze the name to nothing; the row may wrap instead
+	}
+	name := lipgloss.NewStyle().Foreground(ColorAmber).Background(ColorPanel).
+		Render(truncate(lockSiteLabel(e), avail))
+
+	return name + sep + tail
+}
+
+// lockSiteLabel names a lock by the most specific form available, mirroring
+// heapSiteLabel:
+//
+//	func (file:line)  — contention site resolved with a line table (Go)
+//	func              — resolved by symbol name only (C; no DWARF line info)
+//	module+0xoffset   — stripped module, located by load offset
+//	futex@0xADDR      — no site: stack walk failed, /proc mode, or cgroup mode
+//
+// The first three survive ASLR; the address does not (it is this run's futex
+// word), which is why it is the last resort.
+func lockSiteLabel(e collector.LockEntry) string {
+	if e.Func != "" {
+		if e.File != "" && e.Line > 0 {
+			return fmt.Sprintf("%s (%s:%d)", e.Func, filepath.Base(e.File), e.Line)
+		}
+		return e.Func
+	}
+	if e.Module != "" {
+		return fmt.Sprintf("%s+0x%x", e.Module, e.Offset)
+	}
+	return fmt.Sprintf("futex@0x%x", e.UAddr)
 }
