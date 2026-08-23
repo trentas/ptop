@@ -93,3 +93,57 @@ func TestMemPanelClassicWithoutHeap(t *testing.T) {
 		t.Errorf("F1 overview missing the Memory panel entirely")
 	}
 }
+
+// On the Go lane nothing observes a free, so live bytes, leak suspicion and
+// lifetime are not measured. The panel must say so rather than render the
+// zeros as findings — "Live heap 0 B" and "Leaks ✓ none" would both be false
+// all-clears on a process that is allocating 200 MB/s.
+func TestHeapPanelDoesNotClaimLiveFiguresOnGoLane(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	hs := collector.HeapStats{
+		Lane:           collector.HeapLaneGo,
+		LiveMeasured:   false,
+		AllocRate:      259943,
+		AllocBytesRate: 208 << 20,
+		TopCallSites: []collector.HeapCallSite{
+			{CallSite: 0x82e50, AddrHex: "0x82e50", Func: "main.allocBig",
+				File: "/build/app/main.go", Line: 22, Module: "app",
+				AllocBytes: 1 << 30, AllocCount: 15678},
+		},
+	}
+	nm, _ := m.Update(HeapMsg(hs))
+	mm := nm.(Model)
+	mm.Width, mm.Height = 180, 50
+	mm.ActiveTab = TabOverview
+	out := mm.View()
+
+	for _, unwanted := range []string{"Live heap", "✓ none"} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("go lane presents %q, which it did not measure", unwanted)
+		}
+	}
+	for _, want := range []string{"Alloc bytes", "main.allocBig", "n/a on the go lane", "cumulative"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("go lane panel missing %q", want)
+		}
+	}
+
+	// The sparkline tracks the quantity shown beside it, not the unmeasured one.
+	if n := len(mm.HeapLiveHist); n == 0 || mm.HeapLiveHist[n-1] != hs.AllocBytesRate {
+		t.Errorf("HeapLiveHist = %v, want the alloc-byte rate %v", mm.HeapLiveHist, hs.AllocBytesRate)
+	}
+}
+
+// An empty snapshot has no lane yet. It must keep the live layout rather than
+// flipping into the go-lane presentation and back once the first sample lands.
+func TestHeapPanelEmptySnapshotKeepsLiveLayout(t *testing.T) {
+	if !heapLiveShown(collector.HeapStats{}) {
+		t.Error("empty HeapStats treated as the go lane")
+	}
+	if !heapLiveShown(collector.HeapStats{Lane: collector.HeapLaneLibc, LiveMeasured: true}) {
+		t.Error("libc lane treated as unmeasured")
+	}
+	if heapLiveShown(collector.HeapStats{Lane: collector.HeapLaneGo}) {
+		t.Error("go lane treated as measured")
+	}
+}

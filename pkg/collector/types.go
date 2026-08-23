@@ -106,9 +106,10 @@ type HeapCallSite struct {
 	Module        string  // backing module basename ("" if unresolved)
 	Offset        uint64  // module-relative offset of the call site
 	StackID       int32   // kernel stack-map id (<0 unknown); resolves to full frames
-	LiveBytes     uint64  // bytes still live from this site
+	LiveBytes     uint64  // bytes still live from this site (0 when unmeasured — see HeapStats.LiveMeasured)
+	AllocBytes    uint64  // total bytes ever allocated from this site
 	AllocCount    uint64  // total allocations ever from this site
-	AvgLifetimeMs float64 // mean lifetime of freed allocations from this site
+	AvgLifetimeMs float64 // mean lifetime of freed allocations from this site (0 when unmeasured)
 	Suspected     bool    // has live allocations older than the leak threshold
 }
 
@@ -120,9 +121,32 @@ type HeapStats struct {
 	Timestamp          time.Time
 	LiveHeapBytes      uint64
 	AllocRate          float64
+	AllocBytesRate     float64
 	TopCallSites       []HeapCallSite
 	SuspectedLeakBytes uint64
+
+	// Lane names the mechanism that produced this snapshot: HeapLaneLibc
+	// (uprobes on the libc allocator) or HeapLaneGo (a uprobe on
+	// runtime.mallocgc). Diagnostic — LiveMeasured is the field to branch on.
+	Lane string
+
+	// LiveMeasured reports whether LiveHeapBytes, LiveBytes,
+	// SuspectedLeakBytes and AvgLifetimeMs mean anything in this snapshot.
+	//
+	// False on the Go lane, where nothing frees at an observable point (the GC
+	// sweeper reclaims spans in bulk, asynchronously, naming no object), so
+	// those fields carry 0 as "not measured", NOT as "measured, and zero". A
+	// consumer that diffs deploys must branch on this: reading an unmeasured 0
+	// against a libc-lane baseline would report a total collapse of the live
+	// heap where nothing changed at all.
+	LiveMeasured bool
 }
+
+// Heap collection lanes — see HeapStats.Lane.
+const (
+	HeapLaneLibc = "libc" // uprobes on malloc/calloc/realloc/free
+	HeapLaneGo   = "go"   // uprobe on runtime.mallocgc
+)
 
 // ─── Threads ─────────────────────────────────────────────────────────────────
 

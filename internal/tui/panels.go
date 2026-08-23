@@ -578,26 +578,52 @@ func renderMemMini(s collector.MemStats, heap collector.HeapStats, liveHist []fl
 	return renderMemHeap(s, heap, liveHist, w, h)
 }
 
+// heapLiveShown reports whether the live-set fields (live heap, per-site live
+// bytes, leak suspicion) should be presented as measurements.
+//
+// It keys on the lane rather than reading HeapStats.LiveMeasured directly so
+// that the EMPTY snapshot — before any sample has arrived, when Lane is "" —
+// keeps the live layout. Reading the bool there would flip the panel into "not
+// measured on the go lane" for a target whose lane is not yet known, and flip
+// it back a moment later.
+func heapLiveShown(heap collector.HeapStats) bool {
+	return heap.Lane != collector.HeapLaneGo
+}
+
 func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []float64, w, h int) string {
 	lines := []string{
 		kvLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, w),
 		kvLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, w),
 	}
 
-	// Live heap: sparkline of the kernel live-set sum + its current value.
+	// The headline row is whichever quantity this lane actually measures: the
+	// live set where allocations are paired with their frees, allocation
+	// throughput where they are not. Rendering "Live heap 0 B" on the Go lane
+	// would be a measurement the collector never took, shown as a fact.
 	label := MutedStyle.Render("Live heap")
 	val := TealStyle.Render(fmtBytes(heap.LiveHeapBytes))
+	if !heapLiveShown(heap) {
+		label = MutedStyle.Render("Alloc bytes")
+		val = TealStyle.Render(fmtBytesPerSec(heap.AllocBytesRate))
+	}
 	sparkW := w - lipgloss.Width(label) - lipgloss.Width(val) - 2
 	if sparkW < 4 {
 		sparkW = 4
 	}
 	lines = append(lines, label+panelSp1+Sparkline(liveHist, sparkW, ColorTeal)+panelSp1+val)
 
-	// Real allocation rate from malloc/free events (not the /proc fault proxy).
+	// Real allocation rate from allocator events (not the /proc fault proxy).
 	lines = append(lines, kvLine("Alloc rate", fmtRate(heap.AllocRate), ColorGreen, w))
 
-	// Suspected-leak summary — live allocations older than the leak threshold.
-	if heap.SuspectedLeakBytes > 0 {
+	switch {
+	case !heapLiveShown(heap):
+		// Leak detection needs to know an allocation is still live, which
+		// needs a free to observe. The Go GC frees in bulk from the sweeper,
+		// naming no object — so this is not "no leaks", it is "no answer", and
+		// saying "✓ none" here would be a false all-clear.
+		lines = append(lines, kvGap(MutedStyle.Render("Leaks"),
+			MutedStyle.Render("— n/a on the go lane"), w))
+	case heap.SuspectedLeakBytes > 0:
 		nLeak := 0
 		for _, cs := range heap.TopCallSites {
 			if cs.Suspected {
@@ -606,34 +632,47 @@ func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []fl
 		}
 		lines = append(lines, kvGap(MutedStyle.Render("Suspected leak"),
 			RedStyle.Render(fmt.Sprintf("⚠ %s · %d site%s", fmtBytes(heap.SuspectedLeakBytes), nLeak, plural(nLeak))), w))
-	} else {
+	default:
 		lines = append(lines, kvGap(MutedStyle.Render("Leaks"), GreenStyle.Render("✓ none"), w))
 	}
 
 	// Top allocating call sites — fill whatever vertical room is left (one line
 	// reserved for the header).
 	if avail := h - len(lines) - 1; avail >= 1 {
-		lines = append(lines, DimStyle.Render(truncate("─ top alloc sites ───────────────────────────────", w)))
+		header := "─ top alloc sites (live) ────────────────────────"
+		if !heapLiveShown(heap) {
+			header = "─ top alloc sites (cumulative) ──────────────────"
+		}
+		lines = append(lines, DimStyle.Render(truncate(header, w)))
 		sites := heap.TopCallSites
 		if len(sites) > avail {
 			sites = sites[:avail]
 		}
 		for _, cs := range sites {
-			lines = append(lines, renderHeapSiteRow(cs, w))
+			lines = append(lines, renderHeapSiteRow(cs, w, heapLiveShown(heap)))
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
 // renderHeapSiteRow lays out one call site: leak marker, symbolized site label
-// (#54), live bytes, and cumulative allocation count.
-func renderHeapSiteRow(cs collector.HeapCallSite, w int) string {
+// (#54), a byte figure, and the cumulative allocation count.
+//
+// The byte column is live bytes when the lane pairs frees, and bytes ever
+// allocated when it does not — the same reason the headline row switches. Both
+// answer "how much of the heap does this line account for"; only the second is
+// available on the Go lane.
+func renderHeapSiteRow(cs collector.HeapCallSite, w int, liveMeasured bool) string {
 	leak := MutedStyle.Render("  ")
 	if cs.Suspected {
 		leak = RedStyle.Render("⚠ ")
 	}
 	const bytesW, countW = 8, 7
-	bytesSpan := BrightStyle.Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(cs.LiveBytes))
+	bytes := cs.LiveBytes
+	if !liveMeasured {
+		bytes = cs.AllocBytes
+	}
+	bytesSpan := BrightStyle.Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(bytes))
 	countSpan := MutedStyle.Width(countW).Align(lipgloss.Right).Render(fmt.Sprintf("×%d", cs.AllocCount))
 
 	siteW := w - lipgloss.Width(leak) - bytesW - countW - 2

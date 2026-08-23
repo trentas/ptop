@@ -424,7 +424,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case HeapMsg:
 		m.HeapStats = collector.HeapStats(v)
-		m.HeapLiveHist = appendCapped(m.HeapLiveHist, float64(m.HeapStats.LiveHeapBytes), 60)
+		// The sparkline plots whatever the lane measures, matching the
+		// headline value beside it (see renderMemHeap): the live set where
+		// frees are observable, allocation throughput where they are not.
+		trend := float64(m.HeapStats.LiveHeapBytes)
+		if !heapLiveShown(m.HeapStats) {
+			trend = m.HeapStats.AllocBytesRate
+		}
+		m.HeapLiveHist = appendCapped(m.HeapLiveHist, trend, 60)
 		return m, m.waitBus()
 
 	case IOWaitMsg:

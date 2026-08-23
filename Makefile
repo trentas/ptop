@@ -61,6 +61,7 @@ BPF_SRCS := \
 	internal/bpf/programs/threads.bpf.c \
 	internal/bpf/programs/memory.bpf.c \
 	internal/bpf/programs/heap.bpf.c \
+	internal/bpf/programs/goalloc.bpf.c \
 	internal/bpf/programs/futex.bpf.c \
 	internal/bpf/programs/signal.bpf.c \
 	internal/bpf/programs/tls.bpf.c \

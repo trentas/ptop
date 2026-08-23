@@ -204,6 +204,11 @@ message HeapCallSite {
   // (the full leaf-first stack). A sentinel (resolves to not-found) when the
   // stack walk failed.
   uint64 stack_id = 12;
+  // Total bytes ever allocated from this site. Unlike live_bytes this only
+  // grows, so it is comparable across a capture window regardless of what the
+  // GC or free() did in between — and it is the ranking signal on the Go lane,
+  // where live_bytes is not measured at all.
+  uint64 alloc_bytes = 13;
 }
 
 // HeapSnapshot is the periodic heap aggregate. live_heap_bytes and
@@ -215,6 +220,25 @@ message HeapSnapshot {
   double alloc_rate = 2;
   uint64 suspected_leak_bytes = 3;
   repeated HeapCallSite top_call_sites = 4;
+  // Bytes allocated per second over the last window. Measured on every lane.
+  double alloc_bytes_rate = 5;
+  // Which mechanism produced this snapshot: "libc" (uprobes on
+  // malloc/calloc/realloc/free) or "go" (a uprobe on runtime.mallocgc). A Go
+  // process allocates through neither malloc nor free, so on the libc lane its
+  // call-site axis comes back empty; the go lane is what makes func/file/line
+  // — and therefore attribution to a commit — reachable for a Go target.
+  // Diagnostic: branch on live_measured, not on this.
+  string lane = 6;
+  // Whether live_heap_bytes, suspected_leak_bytes, HeapCallSite.live_bytes and
+  // HeapCallSite.avg_lifetime_ms mean anything in this snapshot.
+  //
+  // False on the "go" lane: nothing frees a Go allocation at a point a probe
+  // can observe (the GC sweeper reclaims spans in bulk, asynchronously, naming
+  // no object), so those fields carry 0 as "NOT MEASURED", not as "measured,
+  // and zero". A consumer diffing two deploys must check this before comparing
+  // them — an unmeasured 0 read against a libc-lane baseline reports the live
+  // heap collapsing to nothing when in fact nothing changed.
+  bool live_measured = 7;
 }
 
 // ─── Threads ────────────────────────────────────────────────────────────────

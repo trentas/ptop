@@ -76,8 +76,11 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		ev.Payload = &pb.Event_Heap{Heap: &pb.HeapSnapshot{
 			LiveHeapBytes:      x.LiveHeapBytes,
 			AllocRate:          x.AllocRate,
+			AllocBytesRate:     x.AllocBytesRate,
 			SuspectedLeakBytes: x.SuspectedLeakBytes,
 			TopCallSites:       heapCallSites(x.TopCallSites),
+			Lane:               x.Lane,
+			LiveMeasured:       x.LiveMeasured,
 		}}
 
 	case collector.HeapEvent:
@@ -225,6 +228,7 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 	for i, s := range in {
 		out[i] = &pb.HeapCallSite{
 			CallSite: s.CallSite, AddrHex: s.AddrHex, LiveBytes: s.LiveBytes,
+			AllocBytes: s.AllocBytes,
 			AllocCount: s.AllocCount, AvgLifetimeMs: s.AvgLifetimeMs, Suspected: s.Suspected,
 			Func: s.Func, File: s.File, Line: int32(s.Line), Module: s.Module, Offset: s.Offset,
 			StackId: taggedStackID(StackSourceHeap, s.StackID),

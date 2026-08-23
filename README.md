@@ -222,10 +222,45 @@ eBPF programs in `internal/bpf/programs/`:
 - `futex.bpf.c` — wait/wake → lock graph
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
+- `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume)
 - `signal.bpf.c` — `signal:signal_generate` → signals delivered, with sender
 - `proc.bpf.c` — `sched_process_{fork,exec,exit}` → exec-lineage subtree
 - `security.bpf.c` — PROT_EXEC `mmap`/`mprotect` + SELinux AVC denials
 - `tls.bpf.c` — libssl `SSL_write`/`SSL_read` uprobes → plaintext (opt-in `--tls`)
+
+### Heap: two lanes, picked from the target
+
+`heap.bpf.c` probes the libc allocator. The Go runtime never calls it —
+`runtime.mallocgc` carves out of per-P caches backed by mmap'd spans — so a Go
+process observed on that lane produces an **empty** call-site axis. Since the
+call-site axis is the only part of the heap surface carrying `func`/`file:line`,
+that means no link from allocation behaviour back to source for an entire
+runtime family.
+
+`goalloc.bpf.c` attaches one uprobe to `runtime.mallocgc`, the single funnel
+every Go heap allocation passes through (`newobject`, `makeslice`, `growslice`
+and `reflect.unsafe_New` all call it; the size-specialised fast paths are
+dispatched from inside it). ptop picks the lane from the target's own
+executable — a Go image gets the Go lane, including a cgo build with libc
+mapped, since that is where a Go program's allocations actually are.
+
+The lanes measure different things, and the snapshot says which:
+
+| | `lane="libc"` | `lane="go"` |
+|---|---|---|
+| allocation rate + volume per site | yes | yes |
+| `func` / `file:line` per site | func only (no DWARF yet) | yes, via `.gopclntab` |
+| live bytes, lifetime, leak suspects | yes | **no** — `live_measured=false` |
+
+Nothing frees a Go allocation at a point a probe can observe: the GC sweeper
+reclaims spans in bulk, asynchronously, naming no object. So the Go lane sets
+`live_measured=false` and leaves those fields at 0 to mean *not measured*,
+never *measured, and zero* — a consumer diffing two deploys must check the flag
+before comparing them.
+
+Symbolization works on stripped release builds (`-ldflags="-s -w"`): `.symtab`
+is gone but `.gopclntab` survives, because the runtime needs it for tracebacks.
+
 
 ## Event stream (`--serve`)
 
@@ -320,7 +355,7 @@ envelope):
 
 | Category | Event | What it captures |
 |---|---|---|
-| `MEMORY` | `HeapEvent` / `HeapSnapshot` | libc malloc/free paired → live-heap, lifetime, leak suspects, top call sites (symbolized) |
+| `MEMORY` | `HeapEvent` / `HeapSnapshot` | allocations by call site (symbolized). libc lane: malloc/free paired → live-heap, lifetime, leak suspects. Go lane: rate + volume, `live_measured=false` |
 | `NETWORK` | `NetErrorEvent` | TCP failures: connection refused, reset, retransmits |
 | `NETWORK` | `TLSPayloadEvent` | pre-encryption / post-decryption plaintext (opt-in `--tls`) |
 | `IO` | `FSEvent` | filesystem semantics: permission denials, deletes, renames (real paths) |
