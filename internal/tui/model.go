@@ -71,6 +71,8 @@ type Config struct {
 	// TLS payload capture (#55) — opt-in, stream/export-only (no live panel).
 	TLS         bool
 	TLSMaxBytes int
+	// Disable names subsystems not to collect; see collector.SetConfig.
+	Disable map[string]bool
 
 	// Feed, when set, is an already-running Set plus the Bus fanning it out
 	// (#71) — how `--serve --tui` drives the TUI and the gRPC stream from ONE
@@ -289,6 +291,7 @@ func NewModel(cfg Config) Model {
 		m.ownsFeed = true
 		m.feed = collector.StartFeed(ctx, collector.SetConfig{
 			PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
+			Disable: cfg.Disable,
 		})
 	}
 	m.collectors = m.feed.Set

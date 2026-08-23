@@ -1,4 +1,4 @@
-.PHONY: all build build-ebpf run gen proto proto-lint clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest
+.PHONY: all build build-ebpf run gen proto proto-lint clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest bench
 
 .DEFAULT_GOAL := all
 
@@ -90,6 +90,28 @@ CLANG  ?= clang
 
 # `make gen` produces all .o files from programs/. Requires libbpf-dev.
 gen: $(BPF_OBJS)
+
+# ─── benchmark ───────────────────────────────────────────────────────────────
+
+# Measure what ptop costs the process it observes (bench/README.md).
+#
+# eBPF needs privileges, and the answer must come from a real kernel, so this
+# runs in a privileged container rather than mocking anything. Override BENCH_ARGS
+# to change the sweep, e.g.
+#   make bench BENCH_ARGS="-repeats 7 -compute-sweep 64,6400"
+BENCH_IMAGE ?= ubuntu:26.04
+BENCH_DIR   ?= $(CURDIR)/bin/bench
+BENCH_ARGS  ?= -repeats 3
+
+bench: gen
+	@mkdir -p $(BENCH_DIR)
+	CGO_ENABLED=0 $(GO) build -o $(BENCH_DIR)/workload ./bench/workload
+	CGO_ENABLED=0 $(GO) build -o $(BENCH_DIR)/runner   ./bench/runner
+	CGO_ENABLED=0 $(GO) build -tags=ebpf -o $(BENCH_DIR)/ptop ./cmd/ptop
+	docker run --rm --privileged -v $(BENCH_DIR):/b $(BENCH_IMAGE) sh -c '\
+		mount -t debugfs nodev /sys/kernel/debug 2>/dev/null; \
+		mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null; \
+		cd /b && ./runner $(BENCH_ARGS)'
 
 # ─── protobuf codegen ─────────────────────────────────────────────────────────
 

@@ -22,6 +22,12 @@ type SetConfig struct {
 	// (0 = metadata only: direction/fd/byte count, no payload bytes).
 	TLS         bool
 	TLSMaxBytes int
+
+	// Disable names subsystems to skip entirely, keyed by the constants in
+	// disable.go. Nil starts everything the platform supports. See disable.go
+	// for why this exists — chiefly that probe costs differ by orders of
+	// magnitude, and the expensive one is nameable.
+	Disable map[string]bool
 }
 
 // Sources records where each subsystem's real data came from. The value is
@@ -89,14 +95,14 @@ func NewSet(cfg SetConfig) *Set {
 		return s
 	}
 
-	if c := NewFDCollector(); c.Start(cfg.PID) == nil {
+	if c := NewFDCollector(); !cfg.off(SubsystemFD) && c.Start(cfg.PID) == nil {
 		s.FD = c
 	} else if !cfg.NoEBPF {
 		fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
 	}
 
 	// CPU: eBPF perf_event @ 100Hz/CPU first, /proc polling as fallback.
-	if !cfg.NoEBPF {
+	if !cfg.NoEBPF && !cfg.off(SubsystemCPU) {
 		c := NewCPUEBPFCollector()
 		if err := c.Start(cfg.PID); err == nil {
 			s.CPUEBPF = c
@@ -105,7 +111,7 @@ func NewSet(cfg SetConfig) *Set {
 			warnEBPFFailure("cpu", err)
 		}
 	}
-	if s.CPUEBPF == nil {
+	if s.CPUEBPF == nil && !cfg.off(SubsystemCPU) {
 		if c := NewCPUCollector(); c.Start(cfg.PID) == nil {
 			s.CPUProc = c
 			s.Sources.CPU = SourceProc
@@ -114,7 +120,7 @@ func NewSet(cfg SetConfig) *Set {
 
 	// Threads: eBPF (sched_switch → real-time CPU% + ctx switches) preferred,
 	// /proc as fallback.
-	if !cfg.NoEBPF {
+	if !cfg.NoEBPF && !cfg.off(SubsystemThreads) {
 		c := NewThreadsEBPFCollector()
 		if err := c.Start(cfg.PID); err == nil {
 			s.ThreadsEBPF = c
@@ -165,96 +171,99 @@ func NewSet(cfg SetConfig) *Set {
 
 	// eBPF-only subsystems: only with -tags=ebpf, kernel >= 5.8 and
 	// CAP_BPF/CAP_PERFMON. No /proc fallback — they stay mock otherwise.
+	//
+	// Each goes through startEBPF so "disabled" and "failed to attach" are
+	// handled the same way everywhere: a disabled subsystem is silent (it was
+	// asked for), a failed one warns.
 	if !cfg.NoEBPF {
+		startEBPF := func(name string, c ebpfStarter, onOK func()) {
+			if cfg.off(name) {
+				return
+			}
+			if err := c.Start(cfg.PID); err != nil {
+				warnEBPFFailure(name, err)
+				return
+			}
+			onOK()
+		}
+
 		c := NewSyscallsEBPFCollector()
-		if err := c.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemSyscalls, c, func() {
 			s.SyscallsEBPF = c
 			s.Sources.Syscalls = "eBPF"
-		} else {
-			warnEBPFFailure("syscalls", err)
-		}
+		})
 
 		c2 := NewIOEBPFCollector()
-		if err := c2.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemIO, c2, func() {
 			s.IOEBPF = c2
 			s.Sources.IOFiles = "eBPF"
-		} else {
-			warnEBPFFailure("io", err)
-		}
+		})
 
 		c3 := NewNetworkEBPFCollector()
-		if err := c3.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemNetwork, c3, func() {
 			s.NetworkEBPF = c3
 			s.Sources.Net = SourceNetworkRich
-		} else {
-			warnEBPFFailure("network", err)
-		}
+		})
 
 		c4 := NewFutexEBPFCollector()
-		if err := c4.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemFutex, c4, func() {
 			s.FutexEBPF = c4
 			s.Sources.Locks = "eBPF"
-		} else {
-			warnEBPFFailure("futex", err)
-		}
+		})
 
-		// Heap (libc malloc/free pairing) augments the memory subsystem. No
-		// /proc fallback and no simulation — absent unless eBPF can attach the
-		// libc uprobes (so static / non-libc targets simply have no heap data).
+		// Heap allocation tracking augments the memory subsystem: libc
+		// malloc/free pairing, or runtime.mallocgc on a Go target. No /proc
+		// fallback and no simulation — absent unless eBPF can attach.
+		//
+		// This is also the expensive one, by a wide margin: its probe fires
+		// once per allocation, where the others fire on comparatively rare
+		// kernel events. It is the subsystem --disable exists for.
 		c5 := NewHeapEBPFCollector()
-		if err := c5.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemHeap, c5, func() {
 			s.HeapEBPF = c5
 			s.Sources.Heap = "eBPF"
-		} else {
-			warnEBPFFailure("heap", err)
-		}
+		})
 
-		// Signals delivered to the target with their origin (#58). eBPF-only:
-		// no /proc fallback and no simulation — absent unless the signal_generate
-		// tracepoint attaches.
+		// Signals delivered to the target with their origin (#58).
 		c6 := NewSignalEBPFCollector()
-		if err := c6.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemSignals, c6, func() {
 			s.SignalEBPF = c6
 			s.Sources.Signals = "eBPF"
-		} else {
-			warnEBPFFailure("signals", err)
-		}
+		})
 
-		// Exec lineage: fork/exec/exit across the target's descendant subtree
-		// (#60). eBPF-only — no /proc fallback, never simulated.
+		// Exec lineage: fork/exec/exit across the target's descendant subtree (#60).
 		c8 := NewProcLifecycleEBPFCollector()
-		if err := c8.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemLifecycle, c8, func() {
 			s.ProcLifecycleEBPF = c8
 			s.Sources.Lifecycle = "eBPF"
-		} else {
-			warnEBPFFailure("lifecycle", err)
-		}
+		})
 
 		// Security: runtime PROT_EXEC mappings + best-effort SELinux LSM
-		// denials (#59). eBPF-only — no /proc fallback, never simulated.
+		// denials (#59).
 		c9 := NewSecurityEBPFCollector()
-		if err := c9.Start(cfg.PID); err == nil {
+		startEBPF(SubsystemSecurity, c9, func() {
 			s.SecurityEBPF = c9
 			s.Sources.Security = "eBPF"
-		} else {
-			warnEBPFFailure("security", err)
-		}
+		})
 
 		// TLS payload capture (#55) — OFF unless explicitly opted in (--tls),
-		// because it observes plaintext. eBPF-only (libssl uprobes), no /proc
-		// fallback, never simulated.
+		// because it observes plaintext.
 		if cfg.TLS {
 			c7 := NewTLSEBPFCollector(cfg.TLSMaxBytes)
-			if err := c7.Start(cfg.PID); err == nil {
+			startEBPF(SubsystemTLS, c7, func() {
 				s.TLSEBPF = c7
 				s.Sources.TLS = "eBPF"
-			} else {
-				warnEBPFFailure("tls", err)
-			}
+			})
 		}
 	}
 
 	return s
+}
+
+// ebpfStarter is the shape every eBPF collector shares: attach to a pid, or
+// explain why not.
+type ebpfStarter interface {
+	Start(pid int) error
 }
 
 // startCgroup starts the collectors that can observe a whole cgroup subtree

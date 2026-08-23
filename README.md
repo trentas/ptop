@@ -56,7 +56,7 @@ what the live binary renders against a real PID.
 │· gc          ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -- ⏳ nanosleep  ││18:06:31.367 I/O  write /var/log/app/api.log 512B     │
 │■ http-pool   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -- ⏳ epoll_wait ││18:06:31.367  FD  openat → fd=15 /tmp/tmpXXXX         │
 └──────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
- F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                          eBPF kernel 6.8 · sampling 100Hz · overhead <0.5%
+ F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                                       eBPF kernel 6.8 · sampling 100Hz
 ```
 
 A live recording (vhs script in [`assets/demo.tape`](assets/demo.tape)) will
@@ -223,10 +223,53 @@ eBPF programs in `internal/bpf/programs/`:
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
 - `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume)
+
+Any subsystem can be switched off with `--disable <name,...>` — see
+[what it costs](#what-it-costs-the-process-it-watches) for why you might.
 - `signal.bpf.c` — `signal:signal_generate` → signals delivered, with sender
 - `proc.bpf.c` — `sched_process_{fork,exec,exit}` → exec-lineage subtree
 - `security.bpf.c` — PROT_EXEC `mmap`/`mprotect` + SELinux AVC denials
 - `tls.bpf.c` — libssl `SSL_write`/`SSL_read` uprobes → plaintext (opt-in `--tls`)
+
+### What it costs the process it watches
+
+Measured, not asserted — the harness, methodology and raw data are in
+[`bench/`](bench/). ptop used to claim `overhead <0.5%` with nothing behind it;
+that claim is gone, and this is what replaced it.
+
+The cost is **not a constant**. ptop's expensive probe fires once per
+allocation, so what it costs depends on how often the target allocates:
+
+| target allocation rate | all probes | without the heap probe | heap probe alone |
+|---|---|---|---|
+| 0 (no allocations) | −4.9% | −4.9% | −4.6% |
+| 11k/s | +14.8% | +0.1% | +15.9% |
+| 114k/s | +109.9% | +0.2% | +98.1% |
+| 1.2M/s | +404.4% | −0.9% | +358.1% |
+| 14.4M/s | +3213.9% | +2.3% | +3159.1% |
+
+Target CPU time per unit of work, median of 3 runs, on a 2-core aarch64 host
+(kernel 7.0). The noise floor there is **±4.9%**, measured from the row that
+allocates nothing — where every cell should read 0% and does not. Nothing
+below that magnitude is resolved, which is why the "without the heap probe"
+column reads as zero rather than as its literal sign.
+
+Two things follow, and both are actionable:
+
+**Everything except the heap probe is free**, at every rate tested — syscalls,
+CPU, threads, I/O, network, locks, signals, security and lifecycle together sit
+inside the noise floor. The old `<0.5%` was, by accident, about right for them.
+
+**The heap probe is the entire cost**, and on an allocation-heavy target it is
+not a tax, it is a different program. `--disable heap` removes it and keeps
+everything else:
+
+```
+ptop --pid <PID> --disable heap
+```
+
+ptop's own CPU is a separate question with a separate answer: 37–53% of one
+core with the heap probe attached, ~1% without.
 
 ### Heap: two lanes, picked from the target
 
