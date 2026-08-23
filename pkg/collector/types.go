@@ -95,13 +95,14 @@ type HeapEvent struct {
 // CallSite is the raw instruction pointer; Func/File/Line/Module/Offset are its
 // symbolization (#54). Func is "" when the address can't be resolved to a
 // function (stripped non-Go module — Module+Offset still locate it); File/Line
-// are set only for Go modules in this cut (C/C++ file:line needs DWARF). AddrHex
+// come from the Go line table, or from DWARF for C/C++ built with debug info; they
+// stay empty for a module with neither. AddrHex
 // is the raw-address fallback ("0x…", or "unknown" when the stack walk failed).
 type HeapCallSite struct {
 	CallSite      uint64  // raw application instruction pointer
 	AddrHex       string  // "0x…" raw-address fallback ("unknown" when unresolved)
 	Func          string  // resolved function name ("" if unresolved)
-	File          string  // source file (Go only in this cut; "" otherwise)
+	File          string  // source file ("" when the module carries no line info)
 	Line          int     // source line (0 if unknown)
 	Module        string  // backing module basename ("" if unresolved)
 	Offset        uint64  // module-relative offset of the call site
@@ -198,7 +199,7 @@ type LockEntry struct {
 	// no single memory map to symbolize against, so these stay zero there.
 	CallSite uint64 // raw instruction pointer (0 when the stack walk failed)
 	Func     string // resolved function name ("" if unresolved)
-	File     string // source file (Go only in this cut; "" otherwise)
+	File     string // source file ("" when the module carries no line info)
 	Line     int    // source line (0 if unknown)
 	Module   string // backing module basename ("" if unresolved)
 	Offset   uint64 // module-relative offset — comparable across runs/ASLR

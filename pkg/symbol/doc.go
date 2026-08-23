@@ -9,9 +9,14 @@
 //
 // Per-module resolution order: the Go line table (.gopclntab) yields func +
 // file:line for Go binaries and survives symbol stripping; the ELF symbol
-// table (.symtab/.dynsym) yields function names for C/C++; a stripped module
-// degrades gracefully to "module+0xoffset". Modules are parsed once and cached.
+// table (.symtab/.dynsym) yields function names for C/C++, and DWARF line info
+// (dwarf.go) fills in their file:line where the image carries debug sections;
+// a stripped module degrades gracefully to "module+0xoffset". Modules are
+// parsed once and cached.
 //
-// Deferred (see #54): C/C++ file:line (DWARF), C++ demangling, and kernel-stack
-// resolution via /proc/kallsyms.
+// Name → address lookup (lookup.go) is the inverse direction, used to place a
+// uprobe on a named function such as runtime.mallocgc.
+//
+// Deferred (see #54): C++ demangling, and kernel-stack resolution via
+// /proc/kallsyms.
 package symbol

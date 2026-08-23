@@ -686,7 +686,7 @@ func renderHeapSiteRow(cs collector.HeapCallSite, w int, liveMeasured bool) stri
 // heapSiteLabel renders a call site as the most specific form available:
 //
 //	func (file:line)  — resolved with a line table (Go)
-//	func              — resolved by symbol name only (C; no DWARF line info)
+//	func              — resolved by symbol name only (no line info in the module)
 //	module+0xoffset   — stripped module, located by load offset
 //	0x… / unknown     — stack walk failed or address fell outside every module
 func heapSiteLabel(cs collector.HeapCallSite) string {

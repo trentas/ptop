@@ -249,7 +249,7 @@ The lanes measure different things, and the snapshot says which:
 | | `lane="libc"` | `lane="go"` |
 |---|---|---|
 | allocation rate + volume per site | yes | yes |
-| `func` / `file:line` per site | func only (no DWARF yet) | yes, via `.gopclntab` |
+| `func` / `file:line` per site | via `.symtab` + DWARF | via `.gopclntab` |
 | live bytes, lifetime, leak suspects | yes | **no** — `live_measured=false` |
 
 Nothing frees a Go allocation at a point a probe can observe: the GC sweeper
@@ -260,6 +260,23 @@ before comparing them.
 
 Symbolization works on stripped release builds (`-ldflags="-s -w"`): `.symtab`
 is gone but `.gopclntab` survives, because the runtime needs it for tracebacks.
+
+### Symbolization
+
+A captured stack address becomes `func (file:line)` through whichever of three
+sources the module carries, in that order:
+
+| Source | Gives | Present in |
+|---|---|---|
+| `.gopclntab` | func + file:line | every Go binary, stripped ones included |
+| `.symtab` / `.dynsym` | func | C/C++ not built with `-s` |
+| DWARF line program | file:line | anything built with `-g` |
+
+A module with none of them degrades to `module+0xoffset` rather than guessing.
+DWARF sections are copied in while the file is open and parsed on demand, so a
+`Module` still holds no file handle; past a size budget the copy is skipped and
+the frame keeps its function name without a line, which is what a
+debug-info-heavy C++ image gets instead of hundreds of pinned megabytes.
 
 
 ## Event stream (`--serve`)

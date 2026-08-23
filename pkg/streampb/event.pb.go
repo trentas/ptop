@@ -162,7 +162,7 @@ func (x *StackRef) GetBuildId() string {
 // StackFrame is one symbolized frame of a captured stack (#54), leaf-first.
 // func is "" when the address couldn't be resolved to a function (stripped
 // non-Go module — module+offset still locate it); file/line are populated only
-// for Go modules in this cut (C/C++ file:line needs DWARF). offset is
+// from the Go line table, or from DWARF for C/C++ built with debug info. offset is
 // module-relative, so it is comparable across runs/ASLR.
 type StackFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1325,7 +1325,8 @@ func (x *HeapEvent) GetLarge() bool {
 // call_site is the raw instruction pointer; func/file/line/module/offset are its
 // symbolization (#54). func is "" when the address can't be resolved to a
 // function (stripped non-Go module — module+offset still locate it); file/line
-// are set only for Go modules in this cut (C/C++ file:line needs DWARF). addr_hex
+// come from the Go line table, or from DWARF for C/C++ built with debug info; they
+// stay empty for a module with neither. addr_hex
 // is the raw-address fallback ("0x…", or "unknown" when the stack walk failed).
 type HeapCallSite struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1336,7 +1337,7 @@ type HeapCallSite struct {
 	AvgLifetimeMs float64                `protobuf:"fixed64,5,opt,name=avg_lifetime_ms,json=avgLifetimeMs,proto3" json:"avg_lifetime_ms,omitempty"`
 	Suspected     bool                   `protobuf:"varint,6,opt,name=suspected,proto3" json:"suspected,omitempty"` // has live allocations older than the leak threshold
 	Func          string                 `protobuf:"bytes,7,opt,name=func,proto3" json:"func,omitempty"`            // resolved function name ("" if unresolved)
-	File          string                 `protobuf:"bytes,8,opt,name=file,proto3" json:"file,omitempty"`            // source file (Go only in this cut; "" otherwise)
+	File          string                 `protobuf:"bytes,8,opt,name=file,proto3" json:"file,omitempty"`            // source file ("" when the module carries no line info)
 	Line          int32                  `protobuf:"varint,9,opt,name=line,proto3" json:"line,omitempty"`           // source line (0 if unknown)
 	Module        string                 `protobuf:"bytes,10,opt,name=module,proto3" json:"module,omitempty"`       // backing module basename ("" if unresolved)
 	Offset        uint64                 `protobuf:"varint,11,opt,name=offset,proto3" json:"offset,omitempty"`      // module-relative offset of the call site

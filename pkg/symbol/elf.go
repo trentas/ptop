@@ -1,6 +1,7 @@
 package symbol
 
 import (
+	"debug/dwarf"
 	"debug/elf"
 	"debug/gosym"
 	"encoding/binary"
@@ -16,8 +17,9 @@ import (
 //
 //   - Func is "" when the address couldn't be resolved to a function (a stripped
 //     non-Go module); Module + Offset still locate it as "lib+0xNN".
-//   - File/Line are populated only for Go modules (via .gopclntab) in this cut.
-//     C/C++ file:line needs DWARF, which is deferred (#54 follow-up).
+//   - File/Line come from .gopclntab for Go modules and from DWARF line info
+//     for C/C++. They stay empty for a module built without debug info, which
+//     is most shipped C/C++ binaries.
 //   - Offset is module-relative (file vaddr − the module's load base), so it is
 //     comparable across runs/ASLR.
 type Frame struct {
@@ -58,6 +60,14 @@ type Module struct {
 	gotab     *gosym.Table
 	pclnData  []byte
 	textAddr  uint64
+
+	// DWARF line info for C/C++ file:line, built lazily for the same reason
+	// (see dwarf.go). dwarfMu guards the stateful readers.
+	dwarfSecs   map[string][]byte
+	dwarfOnce   sync.Once
+	dw          *dwarf.Data
+	dwarfMu     sync.Mutex
+	lineReaders map[dwarf.Offset]*dwarf.LineReader
 }
 
 // OpenModule parses the ELF image in r. name is used for Frame.Module (its
@@ -86,6 +96,7 @@ func OpenModule(r io.ReaderAt, name string) (*Module, error) {
 
 	m.buildID = readBuildID(f)
 	m.funcs = collectFuncs(f)
+	m.dwarfSecs = loadDWARFSections(f)
 
 	// Stash the Go line table inputs for lazy gosym construction.
 	if sec := f.Section(".gopclntab"); sec != nil {
@@ -107,8 +118,15 @@ func (m *Module) Name() string { return m.name }
 func (m *Module) BuildID() string { return m.buildID }
 
 // Resolve maps a file virtual address to a Frame. It tries, in order: the Go
-// line table (func + file:line), the ELF symbol table (func name only), then a
-// module+offset fallback for stripped binaries.
+// line table (func + file:line), the ELF symbol table plus DWARF (func name,
+// and file:line where debug info is present), then a module+offset fallback
+// for stripped binaries.
+//
+// The two file:line sources are kept apart on purpose. .gopclntab is compact,
+// always present in a Go image, and authoritative there — it is consulted
+// first and short-circuits. DWARF is the C/C++ path: optional, much larger,
+// and absent from most shipped binaries, so it runs only after a name has
+// already been found and only fills in what is missing.
 func (m *Module) Resolve(fileVaddr uint64) Frame {
 	fr := Frame{Module: m.name, BuildID: m.buildID, Offset: fileVaddr - m.loadBase}
 
@@ -120,7 +138,9 @@ func (m *Module) Resolve(fileVaddr uint64) Frame {
 	}
 	if name, ok := lookupFunc(m.funcs, fileVaddr); ok {
 		fr.Func = name
-		return fr
+	}
+	if file, line, ok := m.dwarfLine(fileVaddr); ok {
+		fr.File, fr.Line = file, line
 	}
 	return fr
 }

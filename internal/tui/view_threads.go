@@ -99,7 +99,7 @@ func renderLockLine(e collector.LockEntry, w int) string {
 // heapSiteLabel:
 //
 //	func (file:line)  — contention site resolved with a line table (Go)
-//	func              — resolved by symbol name only (C; no DWARF line info)
+//	func              — resolved by symbol name only (no line info in the module)
 //	module+0xoffset   — stripped module, located by load offset
 //	futex@0xADDR      — no site: stack walk failed, /proc mode, or cgroup mode
 //
