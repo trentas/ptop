@@ -14,6 +14,10 @@
 // a stripped module degrades gracefully to "module+0xoffset". Modules are
 // parsed once and cached.
 //
+// An address in no file-backed mapping is JIT'd code rather than junk, and is
+// resolved from the runtime's perf map (perfmap.go) — the /tmp/perf-<pid>.map
+// side file Node and the JVM already write for perf(1).
+//
 // Name → address lookup (lookup.go) is the inverse direction, used to place a
 // uprobe on a named function such as runtime.mallocgc.
 //

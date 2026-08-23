@@ -1,0 +1,52 @@
+18a1000 318 Builtin:DeoptimizationEntry_Eager
+18a1320 318 Builtin:DeoptimizationEntry_Lazy
+18a1640 7f4 Builtin:RecordWriteSaveFP
+18a1e40 554 Builtin:RecordWriteIgnoreFP
+18a23a0 10c Builtin:EphemeronKeyBarrierSaveFP
+18a24c0 ac Builtin:EphemeronKeyBarrierIgnoreFP
+18a2580 8 Builtin:DummyBuiltin
+18a25a0 2c Builtin:IndirectPointerBarrierSaveFP
+18a25e0 2c Builtin:IndirectPointerBarrierIgnoreFP
+18a2620 2c Builtin:AdaptorWithBuiltinExitFrame0
+18a2660 40 Builtin:AdaptorWithBuiltinExitFrame1
+18a26c0 40 Builtin:AdaptorWithBuiltinExitFrame2
+18a2720 40 Builtin:AdaptorWithBuiltinExitFrame3
+18a2780 40 Builtin:AdaptorWithBuiltinExitFrame4
+18a27e0 40 Builtin:AdaptorWithBuiltinExitFrame5
+18a2840 168 Builtin:CallFunction_ReceiverIsNullOrUndefined
+18a29c0 1b4 Builtin:CallFunction_ReceiverIsNotNullOrUndefined
+18a2b80 1dc Builtin:CallFunction_ReceiverIsAny
+18a2d60 e8 Builtin:CallBoundFunction
+18a2e60 3d0 Builtin:CallWrappedFunction
+18a3240 c0 Builtin:Call_ReceiverIsNullOrUndefined
+18a3320 c0 Builtin:Call_ReceiverIsNotNullOrUndefined
+18a3400 c0 Builtin:Call_ReceiverIsAny
+18a34e0 320 Builtin:Call_ReceiverIsNullOrUndefined_Baseline_Compact
+18a3820 320 Builtin:Call_ReceiverIsNullOrUndefined_Baseline
+18a3b60 3b0 Builtin:Call_ReceiverIsNotNullOrUndefined_Baseline_Compact
+18a3f20 3b0 Builtin:Call_ReceiverIsNotNullOrUndefined_Baseline
+18a42e0 3b0 Builtin:Call_ReceiverIsAny_Baseline_Compact
+18a46a0 3b0 Builtin:Call_ReceiverIsAny_Baseline
+18a4a60 310 Builtin:Call_ReceiverIsNullOrUndefined_WithFeedback
+18a4d80 310 Builtin:Call_ReceiverIsNotNullOrUndefined_WithFeedback
+18a50a0 310 Builtin:Call_ReceiverIsAny_WithFeedback
+18a53c0 2fc Builtin:CallProxy
+18a56c0 ac Builtin:CallVarargs
+18a5780 488 Builtin:CallWithSpread
+18a5c20 758 Builtin:CallWithSpread_Baseline
+18a6380 7a0 Builtin:CallWithSpread_WithFeedback
+18a6b40 4dc Builtin:CallWithArrayLike
+18a7020 7d4 Builtin:CallWithArrayLike_WithFeedback
+18a7800 c4 Builtin:CallForwardVarargs
+2ed7f41848 5 Eval:~ /app/jittarget.js:1:1
+2ed7f41978 61 JS:~ /app/jittarget.js:1:1
+2ed7f4c5c8 2e JS:~ /app/jittarget.js:6:23
+2ed7f4c660 23 JS:~hotSmall /app/jittarget.js:2:18
+edfc50005260 488 JS:+hotSmall /app/jittarget.js:2:18
+edfc50005ea0 198 JS:^hotSmall /app/jittarget.js:2:18
+2ed7f4c738 43 JS:~hotBig /app/jittarget.js:3:16
+edfc50006060 650 JS:+hotBig /app/jittarget.js:3:16
+edfc50006760 288 JS:^hotBig /app/jittarget.js:3:16
+edfc50006a20 574 JS:*hotBig /app/jittarget.js:3:16
+edfc50007000 2f8 JS:*hotSmall /app/jittarget.js:2:18
+edfc500080e0 4b0 JS:+hotSmall /app/jittarget.js:2:18

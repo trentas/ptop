@@ -271,8 +271,26 @@ sources the module carries, in that order:
 | `.gopclntab` | func + file:line | every Go binary, stripped ones included |
 | `.symtab` / `.dynsym` | func | C/C++ not built with `-s` |
 | DWARF line program | file:line | anything built with `-g` |
+| `/tmp/perf-<pid>.map` | func + file:line | JIT runtimes (Node, JVM) |
 
 A module with none of them degrades to `module+0xoffset` rather than guessing.
+
+JIT'd code has no ELF behind it — V8 and the JVM compile into anonymous
+executable memory — so an address in no file-backed mapping is resolved from
+the runtime's perf map instead. Node writes one under `--perf-basic-prof`, the
+JVM under perf-map-agent; it is the same side file `perf(1)` consumes. The
+frame's module is reported as `[jit]`, because there is no file to name.
+
+V8 emits the same function once per optimization tier, distinguished only by a
+marker: `JS:~hotSmall`, `JS:+hotSmall`, `JS:^hotSmall`. Those are one function
+at three addresses. The marker is stripped so they normalize to one identity —
+without that, a deploy diff keyed on call-site name would show functions
+appearing and vanishing purely because V8 re-tiered them during warm-up.
+
+The map is located through the target's own namespaces: the runtime names the
+file with the pid it can see (`perf-1.map` inside a container), and puts it in
+its own `/tmp`, so ptop reads `NSpid` from `/proc/<pid>/status` and crosses
+into the target's mount namespace via `/proc/<pid>/root`.
 DWARF sections are copied in while the file is open and parsed on demand, so a
 `Module` still holds no file handle; past a size budget the copy is skipped and
 the frame keeps its function name without a line, which is what a
