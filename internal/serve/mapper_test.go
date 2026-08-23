@@ -173,3 +173,66 @@ func TestToEventTimestamp(t *testing.T) {
 		t.Errorf("ts = %d, expected >= %d (now)", ev.GetTsUnixNano(), before)
 	}
 }
+
+// The lane and live_measured flags are the wire contract that stops a consumer
+// from reading an unmeasured 0 as a measurement. A Witness diffing two deploys
+// would otherwise report the live heap collapsing to nothing the moment a
+// target switched lanes — so assert they survive the mapping, in both states.
+func TestMapHeapSnapshotCarriesLaneAndLiveMeasured(t *testing.T) {
+	cases := []struct {
+		name         string
+		in           collector.HeapStats
+		wantLane     string
+		wantMeasured bool
+		wantBytes    uint64
+	}{
+		{
+			name: "go lane reports live as unmeasured",
+			in: collector.HeapStats{
+				Lane: collector.HeapLaneGo, LiveMeasured: false,
+				AllocRate: 259943, AllocBytesRate: 2.08e8,
+				TopCallSites: []collector.HeapCallSite{{
+					CallSite: 0x82e50, Func: "main.allocBig",
+					File: "/build/main.go", Line: 22,
+					AllocBytes: 1 << 30, AllocCount: 15678,
+				}},
+				Timestamp: time.Unix(9, 0),
+			},
+			wantLane: "go", wantMeasured: false, wantBytes: 1 << 30,
+		},
+		{
+			name: "libc lane reports live as measured",
+			in: collector.HeapStats{
+				Lane: collector.HeapLaneLibc, LiveMeasured: true,
+				LiveHeapBytes: 4096, AllocRate: 12.5,
+				TopCallSites: []collector.HeapCallSite{{CallSite: 0xabc, LiveBytes: 4096}},
+				Timestamp:    time.Unix(9, 0),
+			},
+			wantLane: "libc", wantMeasured: true, wantBytes: 0,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ev := toEvent(1, "", c.in)
+			if ev == nil {
+				t.Fatal("mapEvent returned nil")
+			}
+			h := ev.GetHeap()
+			if h == nil {
+				t.Fatal("payload is not a HeapSnapshot")
+			}
+			if h.GetLane() != c.wantLane {
+				t.Errorf("lane = %q, want %q", h.GetLane(), c.wantLane)
+			}
+			if h.GetLiveMeasured() != c.wantMeasured {
+				t.Errorf("live_measured = %v, want %v", h.GetLiveMeasured(), c.wantMeasured)
+			}
+			if h.GetAllocBytesRate() != c.in.AllocBytesRate {
+				t.Errorf("alloc_bytes_rate = %v, want %v", h.GetAllocBytesRate(), c.in.AllocBytesRate)
+			}
+			if got := h.GetTopCallSites()[0].GetAllocBytes(); got != c.wantBytes {
+				t.Errorf("call site alloc_bytes = %d, want %d", got, c.wantBytes)
+			}
+		})
+	}
+}

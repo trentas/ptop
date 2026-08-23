@@ -102,3 +102,104 @@ func TestHeapOpName(t *testing.T) {
 		}
 	}
 }
+
+// On the Go lane every site has LiveBytes 0 (nothing observes a free), so the
+// ranking has to fall through to allocation volume. Without the AllocBytes
+// tier this degenerates into a sort by address and the "top call sites" list
+// stops meaning anything for an entire runtime family.
+func TestChooseTopCallSitesRanksByAllocBytesWhenLiveIsUnmeasured(t *testing.T) {
+	sites := []HeapCallSite{
+		{CallSite: 0x40, AllocBytes: 1_000, AllocCount: 50},
+		{CallSite: 0x10, AllocBytes: 9_000, AllocCount: 3},
+		{CallSite: 0x30, AllocBytes: 4_000, AllocCount: 7},
+		{CallSite: 0x20, AllocBytes: 4_000, AllocCount: 90}, // ties bytes, more allocs
+	}
+	got := chooseTopCallSites(sites, 3)
+	wantOrder := []uint64{0x10, 0x20, 0x30}
+	for i, cs := range wantOrder {
+		if got[i].CallSite != cs {
+			t.Errorf("position %d: CallSite = %#x, want %#x (order: %+v)", i, got[i].CallSite, cs, got)
+		}
+	}
+}
+
+// Live bytes still outrank allocation volume where both are measured — the new
+// tier must not reorder the libc lane.
+func TestChooseTopCallSitesPrefersLiveBytesOverAllocBytes(t *testing.T) {
+	sites := []HeapCallSite{
+		{CallSite: 1, LiveBytes: 10, AllocBytes: 1_000_000},
+		{CallSite: 2, LiveBytes: 20, AllocBytes: 1},
+	}
+	if got := chooseTopCallSites(sites, 1); got[0].CallSite != 2 {
+		t.Errorf("CallSite = %d, want 2 (live bytes rank first)", got[0].CallSite)
+	}
+}
+
+func TestPickGoAppFrame(t *testing.T) {
+	names := map[uint64]string{
+		0x10: "runtime.mallocgc",
+		0x20: "runtime.newobject",
+		0x30: "internal/runtime/maps.(*Map).Put",
+		0x40: "main.handleRequest",
+		0x50: "main.main",
+	}
+	nameAt := func(a uint64) string { return names[a] }
+
+	cases := []struct {
+		name   string
+		frames []uint64
+		want   uint64
+	}{
+		{"skips the allocator and its runtime callers",
+			[]uint64{0x10, 0x20, 0x40, 0x50}, 0x40},
+		{"skips internal/runtime packages too",
+			[]uint64{0x10, 0x30, 0x40}, 0x40},
+		{"ignores zero padding in the captured stack",
+			[]uint64{0, 0x10, 0, 0x40}, 0x40},
+		{"all-runtime stack falls back to the leaf",
+			[]uint64{0x10, 0x20}, 0x10},
+		{"empty stack yields 0",
+			nil, 0},
+		// A stripped module resolves to no name at all. Treating "" as runtime
+		// would skip every frame and hand back the leaf — reporting
+		// runtime.mallocgc as the call site of every allocation in the process.
+		{"unresolvable frames count as application code",
+			[]uint64{0x10, 0x99}, 0x99},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := pickGoAppFrame(c.frames, nameAt); got != c.want {
+				t.Errorf("pickGoAppFrame = %#x, want %#x", got, c.want)
+			}
+		})
+	}
+}
+
+func TestIsGoRuntimeFunc(t *testing.T) {
+	runtimeNames := []string{
+		"runtime.mallocgc",
+		"runtime.newobject",
+		"internal/runtime/maps.(*Map).Put",
+	}
+	for _, n := range runtimeNames {
+		if !isGoRuntimeFunc(n) {
+			t.Errorf("isGoRuntimeFunc(%q) = false, want true", n)
+		}
+	}
+	// Application and library frames are the answer we want, not noise to
+	// skip: the first non-runtime frame IS the call site, even when it is in a
+	// dependency rather than in main.
+	appNames := []string{
+		"main.handleRequest",
+		"fmt.Sprintf",
+		"github.com/x/y.(*Client).Do",
+		"", // unresolvable
+		// Not the runtime: a user package that merely starts with the letters.
+		"runtimecheck.Verify",
+	}
+	for _, n := range appNames {
+		if isGoRuntimeFunc(n) {
+			t.Errorf("isGoRuntimeFunc(%q) = true, want false", n)
+		}
+	}
+}

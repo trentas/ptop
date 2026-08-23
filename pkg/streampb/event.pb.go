@@ -162,7 +162,7 @@ func (x *StackRef) GetBuildId() string {
 // StackFrame is one symbolized frame of a captured stack (#54), leaf-first.
 // func is "" when the address couldn't be resolved to a function (stripped
 // non-Go module — module+offset still locate it); file/line are populated only
-// for Go modules in this cut (C/C++ file:line needs DWARF). offset is
+// from the Go line table, or from DWARF for C/C++ built with debug info. offset is
 // module-relative, so it is comparable across runs/ASLR.
 type StackFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1325,7 +1325,8 @@ func (x *HeapEvent) GetLarge() bool {
 // call_site is the raw instruction pointer; func/file/line/module/offset are its
 // symbolization (#54). func is "" when the address can't be resolved to a
 // function (stripped non-Go module — module+offset still locate it); file/line
-// are set only for Go modules in this cut (C/C++ file:line needs DWARF). addr_hex
+// come from the Go line table, or from DWARF for C/C++ built with debug info; they
+// stay empty for a module with neither. addr_hex
 // is the raw-address fallback ("0x…", or "unknown" when the stack walk failed).
 type HeapCallSite struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -1336,14 +1337,19 @@ type HeapCallSite struct {
 	AvgLifetimeMs float64                `protobuf:"fixed64,5,opt,name=avg_lifetime_ms,json=avgLifetimeMs,proto3" json:"avg_lifetime_ms,omitempty"`
 	Suspected     bool                   `protobuf:"varint,6,opt,name=suspected,proto3" json:"suspected,omitempty"` // has live allocations older than the leak threshold
 	Func          string                 `protobuf:"bytes,7,opt,name=func,proto3" json:"func,omitempty"`            // resolved function name ("" if unresolved)
-	File          string                 `protobuf:"bytes,8,opt,name=file,proto3" json:"file,omitempty"`            // source file (Go only in this cut; "" otherwise)
+	File          string                 `protobuf:"bytes,8,opt,name=file,proto3" json:"file,omitempty"`            // source file ("" when the module carries no line info)
 	Line          int32                  `protobuf:"varint,9,opt,name=line,proto3" json:"line,omitempty"`           // source line (0 if unknown)
 	Module        string                 `protobuf:"bytes,10,opt,name=module,proto3" json:"module,omitempty"`       // backing module basename ("" if unresolved)
 	Offset        uint64                 `protobuf:"varint,11,opt,name=offset,proto3" json:"offset,omitempty"`      // module-relative offset of the call site
 	// Kernel stack-map id of the alloc site, for EventStreamService.ResolveStack
 	// (the full leaf-first stack). A sentinel (resolves to not-found) when the
 	// stack walk failed.
-	StackId       uint64 `protobuf:"varint,12,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
+	StackId uint64 `protobuf:"varint,12,opt,name=stack_id,json=stackId,proto3" json:"stack_id,omitempty"`
+	// Total bytes ever allocated from this site. Unlike live_bytes this only
+	// grows, so it is comparable across a capture window regardless of what the
+	// GC or free() did in between — and it is the ranking signal on the Go lane,
+	// where live_bytes is not measured at all.
+	AllocBytes    uint64 `protobuf:"varint,13,opt,name=alloc_bytes,json=allocBytes,proto3" json:"alloc_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1462,6 +1468,13 @@ func (x *HeapCallSite) GetStackId() uint64 {
 	return 0
 }
 
+func (x *HeapCallSite) GetAllocBytes() uint64 {
+	if x != nil {
+		return x.AllocBytes
+	}
+	return 0
+}
+
 // HeapSnapshot is the periodic heap aggregate. live_heap_bytes and
 // suspected_leak_bytes derive from the kernel's LRU-bounded live set, so they
 // undercount on alloc-heavy targets — never exact. alloc_rate is allocations
@@ -1472,8 +1485,27 @@ type HeapSnapshot struct {
 	AllocRate          float64                `protobuf:"fixed64,2,opt,name=alloc_rate,json=allocRate,proto3" json:"alloc_rate,omitempty"`
 	SuspectedLeakBytes uint64                 `protobuf:"varint,3,opt,name=suspected_leak_bytes,json=suspectedLeakBytes,proto3" json:"suspected_leak_bytes,omitempty"`
 	TopCallSites       []*HeapCallSite        `protobuf:"bytes,4,rep,name=top_call_sites,json=topCallSites,proto3" json:"top_call_sites,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// Bytes allocated per second over the last window. Measured on every lane.
+	AllocBytesRate float64 `protobuf:"fixed64,5,opt,name=alloc_bytes_rate,json=allocBytesRate,proto3" json:"alloc_bytes_rate,omitempty"`
+	// Which mechanism produced this snapshot: "libc" (uprobes on
+	// malloc/calloc/realloc/free) or "go" (a uprobe on runtime.mallocgc). A Go
+	// process allocates through neither malloc nor free, so on the libc lane its
+	// call-site axis comes back empty; the go lane is what makes func/file/line
+	// — and therefore attribution to a commit — reachable for a Go target.
+	// Diagnostic: branch on live_measured, not on this.
+	Lane string `protobuf:"bytes,6,opt,name=lane,proto3" json:"lane,omitempty"`
+	// Whether live_heap_bytes, suspected_leak_bytes, HeapCallSite.live_bytes and
+	// HeapCallSite.avg_lifetime_ms mean anything in this snapshot.
+	//
+	// False on the "go" lane: nothing frees a Go allocation at a point a probe
+	// can observe (the GC sweeper reclaims spans in bulk, asynchronously, naming
+	// no object), so those fields carry 0 as "NOT MEASURED", not as "measured,
+	// and zero". A consumer diffing two deploys must check this before comparing
+	// them — an unmeasured 0 read against a libc-lane baseline reports the live
+	// heap collapsing to nothing when in fact nothing changed.
+	LiveMeasured  bool `protobuf:"varint,7,opt,name=live_measured,json=liveMeasured,proto3" json:"live_measured,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeapSnapshot) Reset() {
@@ -1532,6 +1564,27 @@ func (x *HeapSnapshot) GetTopCallSites() []*HeapCallSite {
 		return x.TopCallSites
 	}
 	return nil
+}
+
+func (x *HeapSnapshot) GetAllocBytesRate() float64 {
+	if x != nil {
+		return x.AllocBytesRate
+	}
+	return 0
+}
+
+func (x *HeapSnapshot) GetLane() string {
+	if x != nil {
+		return x.Lane
+	}
+	return ""
+}
+
+func (x *HeapSnapshot) GetLiveMeasured() bool {
+	if x != nil {
+		return x.LiveMeasured
+	}
+	return false
 }
 
 // ─── Threads ────────────────────────────────────────────────────────────────
@@ -3076,7 +3129,7 @@ const file_event_proto_rawDesc = "" +
 	"\vlifetime_ms\x18\x04 \x01(\x01R\n" +
 	"lifetimeMs\x12\x1b\n" +
 	"\tcall_site\x18\x05 \x01(\x04R\bcallSite\x12\x14\n" +
-	"\x05large\x18\x06 \x01(\bR\x05large\"\xd3\x02\n" +
+	"\x05large\x18\x06 \x01(\bR\x05large\"\xf4\x02\n" +
 	"\fHeapCallSite\x12\x1b\n" +
 	"\tcall_site\x18\x01 \x01(\x04R\bcallSite\x12\x19\n" +
 	"\baddr_hex\x18\x02 \x01(\tR\aaddrHex\x12\x1d\n" +
@@ -3092,13 +3145,18 @@ const file_event_proto_rawDesc = "" +
 	"\x06module\x18\n" +
 	" \x01(\tR\x06module\x12\x16\n" +
 	"\x06offset\x18\v \x01(\x04R\x06offset\x12\x19\n" +
-	"\bstack_id\x18\f \x01(\x04R\astackId\"\xc4\x01\n" +
+	"\bstack_id\x18\f \x01(\x04R\astackId\x12\x1f\n" +
+	"\valloc_bytes\x18\r \x01(\x04R\n" +
+	"allocBytes\"\xa7\x02\n" +
 	"\fHeapSnapshot\x12&\n" +
 	"\x0flive_heap_bytes\x18\x01 \x01(\x04R\rliveHeapBytes\x12\x1d\n" +
 	"\n" +
 	"alloc_rate\x18\x02 \x01(\x01R\tallocRate\x120\n" +
 	"\x14suspected_leak_bytes\x18\x03 \x01(\x04R\x12suspectedLeakBytes\x12;\n" +
-	"\x0etop_call_sites\x18\x04 \x03(\v2\x15.ptop.v1.HeapCallSiteR\ftopCallSites\"\xbe\x01\n" +
+	"\x0etop_call_sites\x18\x04 \x03(\v2\x15.ptop.v1.HeapCallSiteR\ftopCallSites\x12(\n" +
+	"\x10alloc_bytes_rate\x18\x05 \x01(\x01R\x0eallocBytesRate\x12\x12\n" +
+	"\x04lane\x18\x06 \x01(\tR\x04lane\x12#\n" +
+	"\rlive_measured\x18\a \x01(\bR\fliveMeasured\"\xbe\x01\n" +
 	"\n" +
 	"ThreadInfo\x12\x10\n" +
 	"\x03tid\x18\x01 \x01(\x05R\x03tid\x12\x12\n" +

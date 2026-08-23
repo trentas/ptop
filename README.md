@@ -56,7 +56,7 @@ what the live binary renders against a real PID.
 │· gc          ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -- ⏳ nanosleep  ││18:06:31.367 I/O  write /var/log/app/api.log 512B     │
 │■ http-pool   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -- ⏳ epoll_wait ││18:06:31.367  FD  openat → fd=15 /tmp/tmpXXXX         │
 └──────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
- F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                          eBPF kernel 6.8 · sampling 100Hz · overhead <0.5%
+ F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                                       eBPF kernel 6.8 · sampling 100Hz
 ```
 
 A live recording (vhs script in [`assets/demo.tape`](assets/demo.tape)) will
@@ -222,10 +222,123 @@ eBPF programs in `internal/bpf/programs/`:
 - `futex.bpf.c` — wait/wake → lock graph
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
+- `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume)
+
+Any subsystem can be switched off with `--disable <name,...>` — see
+[what it costs](#what-it-costs-the-process-it-watches) for why you might.
 - `signal.bpf.c` — `signal:signal_generate` → signals delivered, with sender
 - `proc.bpf.c` — `sched_process_{fork,exec,exit}` → exec-lineage subtree
 - `security.bpf.c` — PROT_EXEC `mmap`/`mprotect` + SELinux AVC denials
 - `tls.bpf.c` — libssl `SSL_write`/`SSL_read` uprobes → plaintext (opt-in `--tls`)
+
+### What it costs the process it watches
+
+Measured, not asserted — the harness, methodology and raw data are in
+[`bench/`](bench/). ptop used to claim `overhead <0.5%` with nothing behind it;
+that claim is gone, and this is what replaced it.
+
+The cost is **not a constant**. ptop's expensive probe fires once per
+allocation, so what it costs depends on how often the target allocates:
+
+| target allocation rate | all probes | without the heap probe | heap probe alone |
+|---|---|---|---|
+| 0 (no allocations) | −4.9% | −4.9% | −4.6% |
+| 11k/s | +14.8% | +0.1% | +15.9% |
+| 114k/s | +109.9% | +0.2% | +98.1% |
+| 1.2M/s | +404.4% | −0.9% | +358.1% |
+| 14.4M/s | +3213.9% | +2.3% | +3159.1% |
+
+Target CPU time per unit of work, median of 3 runs, on a 2-core aarch64 host
+(kernel 7.0). The noise floor there is **±4.9%**, measured from the row that
+allocates nothing — where every cell should read 0% and does not. Nothing
+below that magnitude is resolved, which is why the "without the heap probe"
+column reads as zero rather than as its literal sign.
+
+Two things follow, and both are actionable:
+
+**Everything except the heap probe is free**, at every rate tested — syscalls,
+CPU, threads, I/O, network, locks, signals, security and lifecycle together sit
+inside the noise floor. The old `<0.5%` was, by accident, about right for them.
+
+**The heap probe is the entire cost**, and on an allocation-heavy target it is
+not a tax, it is a different program. `--disable heap` removes it and keeps
+everything else:
+
+```
+ptop --pid <PID> --disable heap
+```
+
+ptop's own CPU is a separate question with a separate answer: 37–53% of one
+core with the heap probe attached, ~1% without.
+
+### Heap: two lanes, picked from the target
+
+`heap.bpf.c` probes the libc allocator. The Go runtime never calls it —
+`runtime.mallocgc` carves out of per-P caches backed by mmap'd spans — so a Go
+process observed on that lane produces an **empty** call-site axis. Since the
+call-site axis is the only part of the heap surface carrying `func`/`file:line`,
+that means no link from allocation behaviour back to source for an entire
+runtime family.
+
+`goalloc.bpf.c` attaches one uprobe to `runtime.mallocgc`, the single funnel
+every Go heap allocation passes through (`newobject`, `makeslice`, `growslice`
+and `reflect.unsafe_New` all call it; the size-specialised fast paths are
+dispatched from inside it). ptop picks the lane from the target's own
+executable — a Go image gets the Go lane, including a cgo build with libc
+mapped, since that is where a Go program's allocations actually are.
+
+The lanes measure different things, and the snapshot says which:
+
+| | `lane="libc"` | `lane="go"` |
+|---|---|---|
+| allocation rate + volume per site | yes | yes |
+| `func` / `file:line` per site | via `.symtab` + DWARF | via `.gopclntab` |
+| live bytes, lifetime, leak suspects | yes | **no** — `live_measured=false` |
+
+Nothing frees a Go allocation at a point a probe can observe: the GC sweeper
+reclaims spans in bulk, asynchronously, naming no object. So the Go lane sets
+`live_measured=false` and leaves those fields at 0 to mean *not measured*,
+never *measured, and zero* — a consumer diffing two deploys must check the flag
+before comparing them.
+
+Symbolization works on stripped release builds (`-ldflags="-s -w"`): `.symtab`
+is gone but `.gopclntab` survives, because the runtime needs it for tracebacks.
+
+### Symbolization
+
+A captured stack address becomes `func (file:line)` through whichever of three
+sources the module carries, in that order:
+
+| Source | Gives | Present in |
+|---|---|---|
+| `.gopclntab` | func + file:line | every Go binary, stripped ones included |
+| `.symtab` / `.dynsym` | func | C/C++ not built with `-s` |
+| DWARF line program | file:line | anything built with `-g` |
+| `/tmp/perf-<pid>.map` | func + file:line | JIT runtimes (Node, JVM) |
+
+A module with none of them degrades to `module+0xoffset` rather than guessing.
+
+JIT'd code has no ELF behind it — V8 and the JVM compile into anonymous
+executable memory — so an address in no file-backed mapping is resolved from
+the runtime's perf map instead. Node writes one under `--perf-basic-prof`, the
+JVM under perf-map-agent; it is the same side file `perf(1)` consumes. The
+frame's module is reported as `[jit]`, because there is no file to name.
+
+V8 emits the same function once per optimization tier, distinguished only by a
+marker: `JS:~hotSmall`, `JS:+hotSmall`, `JS:^hotSmall`. Those are one function
+at three addresses. The marker is stripped so they normalize to one identity —
+without that, a deploy diff keyed on call-site name would show functions
+appearing and vanishing purely because V8 re-tiered them during warm-up.
+
+The map is located through the target's own namespaces: the runtime names the
+file with the pid it can see (`perf-1.map` inside a container), and puts it in
+its own `/tmp`, so ptop reads `NSpid` from `/proc/<pid>/status` and crosses
+into the target's mount namespace via `/proc/<pid>/root`.
+DWARF sections are copied in while the file is open and parsed on demand, so a
+`Module` still holds no file handle; past a size budget the copy is skipped and
+the frame keeps its function name without a line, which is what a
+debug-info-heavy C++ image gets instead of hundreds of pinned megabytes.
+
 
 ## Event stream (`--serve`)
 
@@ -320,7 +433,7 @@ envelope):
 
 | Category | Event | What it captures |
 |---|---|---|
-| `MEMORY` | `HeapEvent` / `HeapSnapshot` | libc malloc/free paired → live-heap, lifetime, leak suspects, top call sites (symbolized) |
+| `MEMORY` | `HeapEvent` / `HeapSnapshot` | allocations by call site (symbolized). libc lane: malloc/free paired → live-heap, lifetime, leak suspects. Go lane: rate + volume, `live_measured=false` |
 | `NETWORK` | `NetErrorEvent` | TCP failures: connection refused, reset, retransmits |
 | `NETWORK` | `TLSPayloadEvent` | pre-encryption / post-decryption plaintext (opt-in `--tls`) |
 | `IO` | `FSEvent` | filesystem semantics: permission denials, deletes, renames (real paths) |

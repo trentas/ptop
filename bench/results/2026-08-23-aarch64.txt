@@ -1,0 +1,129 @@
+Host
+----
+arch          aarch64 (ARM), 2 cores
+kernel        7.0.0-29-generic
+memory        5 GB
+container     ubuntu:26.04, --privileged, debugfs+tracefs mounted
+go            go1.26.5
+ptop          feat/go-alloc-axis, eBPF build (CGO_ENABLED=0, -tags=ebpf)
+command       ./runner -repeats 3 -target-sec 3 -warmup 1s -compute-sweep 64,640,6400,64000
+
+A two-core shared host is a small machine for a benchmark, which is why the
+noise floor is measured and published rather than assumed. It is also why the
+sweep was run twice: the two independent runs agreed to within a few percent
+at every point (+3254%/+3214%, +415%/+404%, +113%/+110%, +15.2%/+14.8%), which
+is the only evidence here that the numbers are reproducible rather than a
+property of one afternoon.
+
+compute=64 allocs/iter=0
+  no ptop                   70638931 iters      50.1 ns/iter (spread 4%)  0k allocs/s
+  ptop, all probes          71290675 iters      47.7 ns/iter (spread 1%)  0k allocs/s
+  ptop, no heap probe       72221351 iters      47.7 ns/iter (spread 1%)  0k allocs/s
+  ptop, heap probe only     70966512 iters      47.8 ns/iter (spread 17%)  0k allocs/s
+compute=64 allocs/iter=1
+  no ptop                   45799644 iters      71.0 ns/iter (spread 5%)  14371k allocs/s
+  ptop, all probes           1508040 iters    2351.2 ns/iter (spread 9%)  388k allocs/s
+  ptop, no heap probe       52973629 iters      72.6 ns/iter (spread 7%)  14206k allocs/s
+  ptop, heap probe only      1413702 iters    2312.3 ns/iter (spread 3%)  399k allocs/s
+compute=640 allocs/iter=1
+  no ptop                    4097058 iters     852.5 ns/iter (spread 1%)  1161k allocs/s
+  ptop, all probes            841745 iters    4299.4 ns/iter (spread 3%)  217k allocs/s
+  ptop, no heap probe        4046934 iters     844.9 ns/iter (spread 0%)  1171k allocs/s
+  ptop, heap probe only       979430 iters    3905.3 ns/iter (spread 4%)  238k allocs/s
+compute=6400 allocs/iter=1
+  no ptop                     396950 iters    8732.7 ns/iter (spread 0%)  114k allocs/s
+  ptop, all probes            189512 iters   18332.3 ns/iter (spread 2%)  53k allocs/s
+  ptop, no heap probe         395051 iters    8747.4 ns/iter (spread 1%)  113k allocs/s
+  ptop, heap probe only       231929 iters   17297.5 ns/iter (spread 2%)  56k allocs/s
+compute=64000 allocs/iter=1
+  no ptop                      50000 iters   87464.3 ns/iter (spread 1%)  11k allocs/s
+  ptop, all probes             50000 iters  100385.8 ns/iter (spread 1%)  10k allocs/s
+  ptop, no heap probe          50000 iters   87533.5 ns/iter (spread 0%)  11k allocs/s
+  ptop, heap probe only        50000 iters  101384.2 ns/iter (spread 3%)  10k allocs/s
+# ptop overhead
+
+Metric: the TARGET's CPU time per unit of work (user+system, nanoseconds
+per iteration), median of 3 runs, 128-byte allocations. Overhead is the
+increase against the identical workload with no ptop attached.
+
+`spread` is (slowest - fastest) / median across the repetitions of that
+cell. Where spread is comparable to the overhead, the cell is noise and
+should be read as such.
+
+| target allocation rate | ptop, all probes | ptop, no heap probe | ptop, heap probe only | 
+|---|---|---|---|
+| 0 (no allocations) | -4.9% <sub>±4%</sub> | -4.9% <sub>±4%</sub> | -4.6% <sub>±17%</sub> | 
+| 14.4M/s | +3213.9% <sub>±9%</sub> | +2.3% <sub>±7%</sub> | +3159.1% <sub>±5%</sub> | 
+| 1.2M/s | +404.4% <sub>±3%</sub> | -0.9% <sub>±1%</sub> | +358.1% <sub>±4%</sub> | 
+| 114k/s | +109.9% <sub>±2%</sub> | +0.2% <sub>±1%</sub> | +98.1% <sub>±2%</sub> | 
+| 11k/s | +14.8% <sub>±1%</sub> | +0.1% <sub>±1%</sub> | +15.9% <sub>±3%</sub> | 
+
+## Cost per allocation observed
+
+The percentages above are this cost divided by how much other work the
+target does between allocations. It would be convenient if it were a
+constant of the probe that could simply be multiplied by anyone's
+allocation rate. It is not: it RISES as allocations get sparser.
+
+The likely reason is cache and branch state. At a high allocation rate
+the trap path, the BPF program and its maps stay hot, and each firing
+reuses them; at a low one every firing is a cold path through the same
+code. That is a hypothesis this harness does not test — it is stated so
+the numbers are not mistaken for a linear model.
+
+| target allocation rate | ptop, all probes | ptop, no heap probe | ptop, heap probe only | 
+|---|---|---|---|
+| 14.4M/s | +2280 ns | +2 ns | +2241 ns | 
+| 1.2M/s | +3447 ns | -8 ns | +3053 ns | 
+| 114k/s | +9600 ns | +15 ns | +8565 ns | 
+| 11k/s | +12921 ns | +69 ns | +13920 ns | 
+
+The control row allocates nothing, so the per-allocation probe has
+nothing to fire on and every cell in it SHOULD read 0%. What it reads
+instead is this host's floor: **±4.9%**. Attaching a probe cannot make a
+process faster, so a negative or small positive figure there is the
+measurement apparatus, not the probe — and no overhead below that
+magnitude is resolved by this run.
+
+## ptop's own CPU, as a share of one core
+
+A separate question from the one above: this is what ptop costs the MACHINE,
+not what it costs the observed process.
+
+| target allocation rate | ptop, all probes | ptop, no heap probe | ptop, heap probe only | 
+|---|---|---|---|
+| 0 (no allocations) | 1% | 1% | 0% | 
+| 14.4M/s | 55% | 1% | 53% | 
+| 1.2M/s | 48% | 0% | 44% | 
+| 114k/s | 40% | 1% | 37% | 
+| 11k/s | 12% | 1% | 11% | 
+
+## Raw
+
+```
+compute=64 allocs/iter=0
+  no ptop                   70638931 iters       50.1 ns/iter  cpu_median=3.541s  ns/iter runs=[50.1223 50.1866 48.1648]
+  ptop, all probes          71290675 iters       47.7 ns/iter  cpu_median=3.398s  ns/iter runs=[47.5007 47.9116 47.6642]
+  ptop, no heap probe       72221351 iters       47.7 ns/iter  cpu_median=3.443s  ns/iter runs=[47.6771 47.4837 47.8836]
+  ptop, heap probe only     70966512 iters       47.8 ns/iter  cpu_median=3.395s  ns/iter runs=[47.8359 47.6809 55.9143]
+compute=64 allocs/iter=1
+  no ptop                   45799644 iters       71.0 ns/iter  cpu_median=3.250s  ns/iter runs=[72.4564 68.8798 70.9506]
+  ptop, all probes           1508040 iters     2351.2 ns/iter  cpu_median=3.546s  ns/iter runs=[2351.2451 2541.0773 2334.9358]
+  ptop, no heap probe       52973629 iters       72.6 ns/iter  cpu_median=3.845s  ns/iter runs=[72.5825 74.0571 69.1234]
+  ptop, heap probe only      1413702 iters     2312.3 ns/iter  cpu_median=3.269s  ns/iter runs=[2348.8732 2269.7160 2312.3217]
+compute=640 allocs/iter=1
+  no ptop                    4097058 iters      852.5 ns/iter  cpu_median=3.493s  ns/iter runs=[855.2870 852.4572 850.6569]
+  ptop, all probes            841745 iters     4299.4 ns/iter  cpu_median=3.619s  ns/iter runs=[4267.9428 4299.4172 4386.0748]
+  ptop, no heap probe        4046934 iters      844.9 ns/iter  cpu_median=3.419s  ns/iter runs=[844.8688 846.6306 844.8765]
+  ptop, heap probe only       979430 iters     3905.3 ns/iter  cpu_median=3.825s  ns/iter runs=[3879.2757 3905.2818 4035.4014]
+compute=6400 allocs/iter=1
+  no ptop                     396950 iters     8732.7 ns/iter  cpu_median=3.466s  ns/iter runs=[8734.2105 8732.6686 8724.3867]
+  ptop, all probes            189512 iters    18332.3 ns/iter  cpu_median=3.474s  ns/iter runs=[18593.6641 18332.2562 18307.9838]
+  ptop, no heap probe         395051 iters     8747.4 ns/iter  cpu_median=3.456s  ns/iter runs=[8726.1633 8772.9280 8747.4108]
+  ptop, heap probe only       231929 iters    17297.5 ns/iter  cpu_median=4.012s  ns/iter runs=[17297.5238 17556.3150 17258.4657]
+compute=64000 allocs/iter=1
+  no ptop                      50000 iters    87464.3 ns/iter  cpu_median=4.373s  ns/iter runs=[87936.9682 87427.8194 87464.3170]
+  ptop, all probes             50000 iters   100385.8 ns/iter  cpu_median=5.019s  ns/iter runs=[100320.6971 100385.8116 101597.4112]
+  ptop, no heap probe          50000 iters    87533.5 ns/iter  cpu_median=4.377s  ns/iter runs=[87533.5264 87516.8851 87550.5366]
+  ptop, heap probe only        50000 iters   101384.2 ns/iter  cpu_median=5.069s  ns/iter runs=[100712.3815 101384.2354 103874.2792]
+```

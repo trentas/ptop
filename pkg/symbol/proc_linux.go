@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // segment is one executable, file-backed mapping from /proc/<pid>/maps.
@@ -31,6 +32,12 @@ type Symbolizer struct {
 
 	buildOnce   sync.Once
 	execBuildID string
+
+	// JIT side file (perf map), for frames in anonymous executable memory.
+	// Reloaded on demand because a JIT map grows for the life of the process.
+	jitMu        sync.Mutex
+	jitMap       *perfMap
+	jitCheckedAt time.Time
 }
 
 // NewSymbolizer snapshots pid's executable mappings. The set of mapped modules
@@ -45,10 +52,18 @@ func NewSymbolizer(pid int) (*Symbolizer, error) {
 }
 
 // Symbolize resolves a runtime address. It never errors: an address in an
-// unmapped / anonymous / unreadable region degrades to a bare Frame{Offset}.
+// unmapped / unreadable region degrades to a bare Frame{Offset}.
+//
+// An address in no file-backed segment is not necessarily junk — it is where
+// JIT'd code lives, since V8 and the JVM compile into anonymous executable
+// memory. Those are resolved from the runtime's perf map (perfmap.go) before
+// giving up.
 func (s *Symbolizer) Symbolize(addr uint64) Frame {
 	seg, ok := s.segFor(addr)
 	if !ok {
+		if sym, hit := s.perfMapFor().lookup(addr); hit {
+			return sym.frame(addr)
+		}
 		return Frame{Offset: addr}
 	}
 	m := s.module(seg.path)

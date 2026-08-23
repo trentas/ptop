@@ -44,6 +44,7 @@ func main() {
 	cgroupSpec := flag.String("cgroup", "", "Target a cgroup subtree instead of one PID — a cgroup path or a container id (requires --serve and eBPF)")
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
+	disableSpec := flag.String("disable", "", "Comma-separated subsystems NOT to collect, e.g. --disable heap. Known: "+collector.KnownSubsystems())
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
@@ -51,6 +52,14 @@ func main() {
 	if *showVer {
 		fmt.Printf("ptop %s (commit %s, built %s)\n", version, commit, buildDate)
 		os.Exit(0)
+	}
+
+	// Rejected here, before anything attaches: a typo in --disable must not
+	// leave the subsystem running while the operator believes it is off.
+	disable, err := collector.ParseDisable(*disableSpec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: --disable: %v\n", err)
+		os.Exit(1)
 	}
 
 	// One target, named one of two ways (#94). Everything that cannot hold for a
@@ -185,15 +194,15 @@ func main() {
 				fmt.Fprintln(os.Stderr, "error: --export needs a fixed target (--pid): an event export names one target in its header")
 				os.Exit(1)
 			}
-			runServeOnDemand(*serveAddr, *noEBPF, tlsEnabled, tlsCap, opts)
+			runServeOnDemand(*serveAddr, *noEBPF, tlsEnabled, tlsCap, disable, opts)
 			return
 		}
 
 		var tuiCfg *tui.Config
 		if *withTUI {
-			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap}
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable}
 		}
-		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, opts, tuiCfg)
+		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, disable, opts, tuiCfg)
 		return
 	}
 
@@ -204,6 +213,7 @@ func main() {
 		Export:      *export,
 		TLS:         tlsEnabled,
 		TLSMaxBytes: tlsCap,
+		Disable:     disable,
 	})
 }
 
@@ -211,13 +221,14 @@ func main() {
 // until someone subscribes to a pid, and a target's collectors are released
 // when its last subscriber disconnects. Everything about a single target is
 // built exactly as runServe builds its one — same Set config, same resolver.
-func runServeOnDemand(addr string, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options) {
+func runServeOnDemand(addr string, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, opts serve.Options) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	factory := func(ctx context.Context, pid int) (*collector.Feed, serve.StackResolver, error) {
 		feed := collector.StartFeed(ctx, collector.SetConfig{
 			PID: pid, NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
+			Disable: disable,
 		})
 		return feed, stackResolverFor(feed.Set), nil
 	}
@@ -348,7 +359,7 @@ func checkPIDExists(pid int) error {
 // of collectors, watched live and streamed at once. The TUI then runs in the
 // foreground and quitting it shuts the server down; without it this is headless
 // as before.
-func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, opts serve.Options, tuiCfg *tui.Config) {
+func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, opts serve.Options, tuiCfg *tui.Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -358,6 +369,7 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	feed := collector.StartFeed(ctx, collector.SetConfig{
 		PID: target.PID, Cgroup: target.CgroupPath,
 		NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
+		Disable: disable,
 	})
 	defer feed.Stop()
 	set := feed.Set
