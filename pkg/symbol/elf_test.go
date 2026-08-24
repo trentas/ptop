@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -154,8 +153,10 @@ func TestModuleResolveGo(t *testing.T) {
 	if fr.Func != "main.leakyAlloc" {
 		t.Errorf("Func = %q, want main.leakyAlloc", fr.Func)
 	}
-	if !strings.HasSuffix(fr.File, "gofixture/main.go") {
-		t.Errorf("File = %q, want …/gofixture/main.go", fr.File)
+	// Canonicalized to the import path (#107) — the fixture is package main,
+	// which nothing anchors, so the basename is what survives.
+	if fr.File != "main.go" {
+		t.Errorf("File = %q, want main.go", fr.File)
 	}
 	if fr.Line <= 0 {
 		t.Errorf("Line = %d, want > 0", fr.Line)
@@ -186,7 +187,7 @@ func TestModuleResolveStrippedGo(t *testing.T) {
 		t.Fatal("LookupFunc(main.leakyAlloc) = nil")
 	}
 	fr := m.Resolve(fn.Entry)
-	if fr.Func != "main.leakyAlloc" || !strings.HasSuffix(fr.File, "gofixture/main.go") {
+	if fr.Func != "main.leakyAlloc" || fr.File != "main.go" {
 		t.Errorf("stripped resolve = %+v", fr)
 	}
 }

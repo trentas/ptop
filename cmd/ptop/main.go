@@ -45,9 +45,19 @@ func main() {
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
 	disableSpec := flag.String("disable", "", "Comma-separated subsystems NOT to collect, e.g. --disable heap. Known: "+collector.KnownSubsystems())
+	heapSample := flag.Uint64("heap-sample-bytes", bpf.GoAllocDefaultSampleBytes, "Go allocation lane: bytes allocated between recorded call-site samples. 0 records every allocation — exact per site, and a large multiple of the target's own CPU time")
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
+
+	// 0 on the command line reads as "off" — off meaning no sampling, i.e.
+	// every allocation recorded. SetConfig cannot spell it that way (there its
+	// zero value has to mean the safe default, see collector.SetConfig), so the
+	// translation happens once, here.
+	heapSampleBytes := *heapSample
+	if heapSampleBytes == 0 {
+		heapSampleBytes = collector.HeapSampleEveryAllocation
+	}
 
 	if *showVer {
 		fmt.Printf("ptop %s (commit %s, built %s)\n", version, commit, buildDate)
@@ -194,26 +204,27 @@ func main() {
 				fmt.Fprintln(os.Stderr, "error: --export needs a fixed target (--pid): an event export names one target in its header")
 				os.Exit(1)
 			}
-			runServeOnDemand(*serveAddr, *noEBPF, tlsEnabled, tlsCap, disable, opts)
+			runServeOnDemand(*serveAddr, *noEBPF, tlsEnabled, tlsCap, disable, heapSampleBytes, opts)
 			return
 		}
 
 		var tuiCfg *tui.Config
 		if *withTUI {
-			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable}
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes}
 		}
-		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, disable, opts, tuiCfg)
+		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, disable, heapSampleBytes, opts, tuiCfg)
 		return
 	}
 
 	runTUI(tui.Config{
-		PID:         *pid,
-		FPS:         *fps,
-		NoEBPF:      *noEBPF,
-		Export:      *export,
-		TLS:         tlsEnabled,
-		TLSMaxBytes: tlsCap,
-		Disable:     disable,
+		PID:             *pid,
+		FPS:             *fps,
+		NoEBPF:          *noEBPF,
+		Export:          *export,
+		TLS:             tlsEnabled,
+		TLSMaxBytes:     tlsCap,
+		Disable:         disable,
+		HeapSampleBytes: heapSampleBytes,
 	})
 }
 
@@ -221,14 +232,14 @@ func main() {
 // until someone subscribes to a pid, and a target's collectors are released
 // when its last subscriber disconnects. Everything about a single target is
 // built exactly as runServe builds its one — same Set config, same resolver.
-func runServeOnDemand(addr string, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, opts serve.Options) {
+func runServeOnDemand(addr string, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, heapSampleBytes uint64, opts serve.Options) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	factory := func(ctx context.Context, pid int) (*collector.Feed, serve.StackResolver, error) {
 		feed := collector.StartFeed(ctx, collector.SetConfig{
 			PID: pid, NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
-			Disable: disable,
+			Disable: disable, HeapSampleBytes: heapSampleBytes,
 		})
 		return feed, stackResolverFor(feed.Set), nil
 	}
@@ -359,7 +370,7 @@ func checkPIDExists(pid int) error {
 // of collectors, watched live and streamed at once. The TUI then runs in the
 // foreground and quitting it shuts the server down; without it this is headless
 // as before.
-func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, opts serve.Options, tuiCfg *tui.Config) {
+func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, heapSampleBytes uint64, opts serve.Options, tuiCfg *tui.Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -369,7 +380,7 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	feed := collector.StartFeed(ctx, collector.SetConfig{
 		PID: target.PID, Cgroup: target.CgroupPath,
 		NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
-		Disable: disable,
+		Disable: disable, HeapSampleBytes: heapSampleBytes,
 	})
 	defer feed.Stop()
 	set := feed.Set

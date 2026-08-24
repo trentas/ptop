@@ -141,6 +141,10 @@ sudo ./bin/ptop --cgroup <container-id> --serve unix:///run/ptop.sock
 
 # Capture TLS plaintext around libssl (OFF by default; sensitive — see below)
 sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --export
+
+# Heap probe: drop it entirely, or make it exact instead of sampled (see below)
+sudo ./bin/ptop --pid <PID> --disable heap
+sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
 ```
 
 > **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
@@ -222,7 +226,8 @@ eBPF programs in `internal/bpf/programs/`:
 - `futex.bpf.c` — wait/wake → lock graph
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
-- `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume)
+- `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume),
+  stack sampled by bytes allocated
 
 Any subsystem can be switched off with `--disable <name,...>` — see
 [what it costs](#what-it-costs-the-process-it-watches) for why you might.
@@ -237,39 +242,47 @@ Measured, not asserted — the harness, methodology and raw data are in
 [`bench/`](bench/). ptop used to claim `overhead <0.5%` with nothing behind it;
 that claim is gone, and this is what replaced it.
 
-The cost is **not a constant**. ptop's expensive probe fires once per
-allocation, so what it costs depends on how often the target allocates:
+The cost is **not a constant**. ptop's expensive probe hangs off the
+allocator, so what it costs depends on how often the target allocates:
 
-| target allocation rate | all probes | without the heap probe | heap probe alone |
-|---|---|---|---|
-| 0 (no allocations) | −4.9% | −4.9% | −4.6% |
-| 11k/s | +14.8% | +0.1% | +15.9% |
-| 114k/s | +109.9% | +0.2% | +98.1% |
-| 1.2M/s | +404.4% | −0.9% | +358.1% |
-| 14.4M/s | +3213.9% | +2.3% | +3159.1% |
+| target allocation rate | all probes | without the heap probe | heap probe alone | heap probe unsampled |
+|---|---|---|---|---|
+| 0 (no allocations) | +0.8% | +0.0% | +1.8% | +0.3% |
+| 11k/s | −0.3% | −0.9% | −2.2% | +14.1% |
+| 97k/s | +4.8% | −3.7% | +2.3% | +78.6% |
+| 1.2M/s | +65.1% | +0.8% | +65.6% | +289.3% |
+| 9.6M/s | +824.4% | +31.8% | +739.7% | +1968.8% |
 
-Target CPU time per unit of work, median of 3 runs, on a 2-core aarch64 host
-(kernel 7.0). The noise floor there is **±4.9%**, measured from the row that
-allocates nothing — where every cell should read 0% and does not. Nothing
-below that magnitude is resolved, which is why the "without the heap probe"
-column reads as zero rather than as its literal sign.
+Target CPU time per unit of work, median of 3 runs, on a 10-core aarch64 host
+(kernel 7.0). The noise floor there is **±1.8%**, measured from the row that
+allocates nothing — where every cell should read 0% and does not. Nothing below
+that magnitude is resolved, which is why several cells read as zero rather than
+as their literal sign. The 97k/s row carries a ±50% spread of its own and
+resolves only its last column; the per-cell spreads are in
+[`bench/results/`](bench/results/).
 
-Two things follow, and both are actionable:
+Three things follow, all actionable:
 
 **Everything except the heap probe is free**, at every rate tested — syscalls,
 CPU, threads, I/O, network, locks, signals, security and lifecycle together sit
 inside the noise floor. The old `<0.5%` was, by accident, about right for them.
 
-**The heap probe is the entire cost**, and on an allocation-heavy target it is
-not a tax, it is a different program. `--disable heap` removes it and keeps
+**The heap probe samples**, and the last two columns are why. A uprobe runs on
+the thread that tripped it, so a stack walk per allocation lands in the
+*target's* CPU accounting — and ptop's CPU axis samples the target on-CPU, so
+ptop then reported its own probe as the target's CPU (#108). Taking one stack
+per 512KB allocated instead of one per allocation turns +14.1% into nothing at
+11k/s and +289.3% into +65.6% at 1.2M/s, and drops ptop's own CPU from 22–72%
+of a core to under 1%. `--heap-sample-bytes 0` is the unsampled column.
+
+**The heap probe is still the entire cost above a million allocations a
+second**, and sampling does not remove the uprobe trap — only the walk. On a
+target allocating that hard, `--disable heap` is the answer, and it keeps
 everything else:
 
 ```
 ptop --pid <PID> --disable heap
 ```
-
-ptop's own CPU is a separate question with a separate answer: 37–53% of one
-core with the heap probe attached, ~1% without.
 
 ### Heap: two lanes, picked from the target
 
@@ -291,7 +304,8 @@ The lanes measure different things, and the snapshot says which:
 
 | | `lane="libc"` | `lane="go"` |
 |---|---|---|
-| allocation rate + volume per site | yes | yes |
+| allocation rate + volume, total | exact | exact |
+| per-site split | exact | **sampled** — `sample_bytes > 0` |
 | `func` / `file:line` per site | via `.symtab` + DWARF | via `.gopclntab` |
 | live bytes, lifetime, leak suspects | yes | **no** — `live_measured=false` |
 
@@ -300,6 +314,19 @@ reclaims spans in bulk, asynchronously, naming no object. So the Go lane sets
 `live_measured=false` and leaves those fields at 0 to mean *not measured*,
 never *measured, and zero* — a consumer diffing two deploys must check the flag
 before comparing them.
+
+The Go lane takes a stack every `--heap-sample-bytes` of allocation on average
+(512KB by default, the rate Go's own heap profiler uses) rather than on every
+allocation, because that stack walk is charged to the target — see
+[what it costs](#what-it-costs-the-process-it-watches). A sampled allocation is
+credited with everything allocated since the previous one, so the **totals and
+rates stay exact**; what becomes an estimate is the split BETWEEN sites, and
+`sample_bytes` on the snapshot says so. Allocations at or above Go's 32KB
+large-object boundary always take a sample, so they are never estimated away.
+The interval is randomized around that average, because allocation patterns are
+periodic and a fixed one would cross at the same point of every cycle and hand
+one call site all the samples. `--heap-sample-bytes 0` records every allocation,
+which is exact and costs what the table below says.
 
 Symbolization works on stripped release builds (`-ldflags="-s -w"`): `.symtab`
 is gone but `.gopclntab` survives, because the runtime needs it for tracebacks.

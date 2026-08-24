@@ -639,11 +639,7 @@ func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []fl
 	// Top allocating call sites — fill whatever vertical room is left (one line
 	// reserved for the header).
 	if avail := h - len(lines) - 1; avail >= 1 {
-		header := "─ top alloc sites (live) ────────────────────────"
-		if !heapLiveShown(heap) {
-			header = "─ top alloc sites (cumulative) ──────────────────"
-		}
-		lines = append(lines, DimStyle.Render(truncate(header, w)))
+		lines = append(lines, DimStyle.Render(truncate(heapSitesHeader(heap), w)))
 		sites := heap.TopCallSites
 		if len(sites) > avail {
 			sites = sites[:avail]
@@ -653,6 +649,22 @@ func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []fl
 		}
 	}
 	return strings.Join(lines, "\n")
+}
+
+// heapSitesHeader labels the call-site list with what its numbers are: the live
+// set, cumulative allocation, or — when the Go lane is sampling its stack walks
+// (#108) — cumulative allocation SPLIT BY ESTIMATE. The totals are still exact;
+// the share each site gets is sampled, and a panel that did not say so would be
+// presenting an estimate as a census.
+func heapSitesHeader(heap collector.HeapStats) string {
+	label := "top alloc sites (live)"
+	if !heapLiveShown(heap) {
+		label = "top alloc sites (cumulative)"
+		if heap.SampleBytes > 0 {
+			label = "top alloc sites (cumulative, sampled)"
+		}
+	}
+	return "─ " + label + " " + strings.Repeat("─", 48)
 }
 
 // renderHeapSiteRow lays out one call site: leak marker, symbolized site label

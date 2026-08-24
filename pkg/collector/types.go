@@ -86,6 +86,15 @@ type HeapEvent struct {
 	CallSite   uint64
 	StackID    int32
 	Large      bool
+
+	// WeightCount/WeightBytes are how many allocations, and how many bytes,
+	// this event stands for. On the libc lane, and on the Go lane with
+	// sampling off, they are always 1 and Size. With Go-lane sampling on
+	// (#108) an event is one SAMPLED allocation carrying everything allocated
+	// since the previous sample, so summing Size over events undercounts and
+	// counting events undercounts — sum these instead.
+	WeightCount uint64
+	WeightBytes uint64
 }
 
 // HeapCallSite aggregates the currently-live allocations attributed to one
@@ -141,6 +150,17 @@ type HeapStats struct {
 	// against a libc-lane baseline would report a total collapse of the live
 	// heap where nothing changed at all.
 	LiveMeasured bool
+
+	// SampleBytes is the Go lane's stack-sampling rate: bytes of allocation
+	// between recorded samples. 0 means every allocation was recorded, which
+	// is always the case on the libc lane.
+	//
+	// Non-zero says the PER-SITE split in TopCallSites is an estimate
+	// proportional to bytes, not a census. AllocRate/AllocBytesRate and the
+	// totals stay exact either way — a sampled allocation is credited with
+	// everything allocated since the previous sample, so nothing is discarded.
+	// See goalloc.bpf.c for why the probe cannot afford to run in full (#108).
+	SampleBytes uint64
 }
 
 // Heap collection lanes — see HeapStats.Lane.
@@ -197,6 +217,13 @@ type LockEntry struct {
 	// several places this is the DOMINANT site of the window (most waits).
 	// eBPF-only, and only in pid mode — a cgroup subtree spans processes with
 	// no single memory map to symbolize against, so these stay zero there.
+	//
+	// Func/File/Line/Module/Offset are also zero when the contention stack held
+	// no application frame at all (#107) — notably in a Go target, where
+	// sync.Mutex parks a goroutine and only the scheduler reaches a futex, so
+	// every stack is runtime-internal. UAddr is then the only thing telling two
+	// locks apart, and reporting the syscall wrapper's name instead would give
+	// every lock in the process the same one.
 	CallSite uint64 // raw instruction pointer (0 when the stack walk failed)
 	Func     string // resolved function name ("" if unresolved)
 	File     string // source file ("" when the module carries no line info)

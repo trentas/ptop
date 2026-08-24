@@ -41,14 +41,33 @@ const GoAllocFlagLarge uint32 = 1
 const goMallocSymbol = "runtime.mallocgc"
 
 // GoAllocEvent is the 1:1 layout of struct go_alloc_event in
-// programs/goalloc.bpf.c. Fixed 32 bytes.
+// programs/goalloc.bpf.c. Fixed 48 bytes.
+//
+// Size is the sampled allocation's own size; WeightBytes/WeightCount are what
+// it stands for — everything accumulated since the previous sample on that CPU.
+// With sampling off they are Size and 1.
 type GoAllocEvent struct {
-	TsNs    uint64
-	Size    uint64
-	StackID int32
-	Flags   uint32
-	TGID    uint32
-	_       uint32
+	TsNs        uint64
+	Size        uint64
+	WeightBytes uint64
+	WeightCount uint64
+	StackID     int32
+	Flags       uint32
+	TGID        uint32
+	_           uint32
+}
+
+// goAllocEventSize is sizeof(struct go_alloc_event).
+const goAllocEventSize = 48
+
+// goAllocAccum mirrors struct goalloc_accum. Only the running totals are read
+// from userspace; bytes/count belong to the kernel's sampling decision.
+type goAllocAccum struct {
+	Bytes      uint64
+	Count      uint64
+	Next       uint64
+	TotalBytes uint64
+	TotalCount uint64
 }
 
 // GoAllocCallSiteRaw mirrors struct go_callsite_stat — the kernel-maintained
@@ -73,18 +92,54 @@ type GoAllocTracer struct {
 	rb          *ringbuf.Reader
 	callsiteMap *ebpf.Map
 	stacksMap   *ebpf.Map
+	accumMap    *ebpf.Map
+	sampleBytes uint64
+}
+
+// Totals returns how many allocations the target has made and how many bytes
+// they came to, since the tracer attached. Counted in the kernel on EVERY
+// allocation, sampled or not, so the allocation rate derived from these is
+// exact and smooth whatever the sampling rate is — unlike one derived from the
+// event stream, which would go lumpy below one sample per publish interval and
+// would also miss whatever the ring buffer dropped.
+func (t *GoAllocTracer) Totals() (count, bytes uint64, err error) {
+	if t == nil || t.accumMap == nil {
+		return 0, 0, errors.New("tracer not initialized")
+	}
+	var key uint32
+	vals := make([]goAllocAccum, ebpf.MustPossibleCPU())
+	if err := t.accumMap.Lookup(&key, &vals); err != nil {
+		return 0, 0, err
+	}
+	for _, v := range vals {
+		count += v.TotalCount
+		bytes += v.TotalBytes
+	}
+	return count, bytes, nil
+}
+
+// SampleBytes is the rate the probe was opened with: bytes of allocation
+// between recorded samples, 0 when every allocation is recorded. Reported so a
+// consumer can tell an exact per-site figure from an estimated one.
+func (t *GoAllocTracer) SampleBytes() uint64 {
+	if t == nil {
+		return 0
+	}
+	return t.sampleBytes
 }
 
 // ErrNotGo reports that the target's executable is not a Go image, so the Go
 // allocation lane does not apply. Callers fall back to the libc lane.
 var ErrNotGo = errors.New("target is not a Go binary")
 
-// OpenGoAllocTracer attaches the Go allocation probe to pid.
+// OpenGoAllocTracer attaches the Go allocation probe to pid, recording one
+// stack per sampleBytes of allocation (0 = every allocation; see
+// GoAllocDefaultSampleBytes).
 //
 // Returns ErrNotGo when the target's executable carries no Go line table, so
 // the caller can fall back to the libc heap lane without treating it as a
 // failure.
-func OpenGoAllocTracer(pid int) (*GoAllocTracer, error) {
+func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	if pid <= 0 {
 		return nil, errors.New("invalid pid")
 	}
@@ -129,10 +184,25 @@ func OpenGoAllocTracer(pid int) (*GoAllocTracer, error) {
 
 	t.callsiteMap = coll.Maps["goalloc_callsite"]
 	t.stacksMap = coll.Maps["goalloc_stacks"]
-	if t.callsiteMap == nil || t.stacksMap == nil {
+	t.accumMap = coll.Maps["goalloc_accum"]
+	if t.callsiteMap == nil || t.stacksMap == nil || t.accumMap == nil {
 		t.Close()
 		return nil, errors.New("goalloc maps missing")
 	}
+
+	// The sampling rate goes in before the probe is attached, so no allocation
+	// is ever observed under a rate the caller did not ask for.
+	cfgMap := coll.Maps["goalloc_config"]
+	if cfgMap == nil {
+		t.Close()
+		return nil, errors.New("goalloc_config map missing")
+	}
+	var zero uint32
+	if err := cfgMap.Put(zero, sampleBytes); err != nil {
+		t.Close()
+		return nil, fmt.Errorf("set goalloc_config: %w", err)
+	}
+	t.sampleBytes = sampleBytes
 
 	prog := coll.Programs["uprobe_go_mallocgc"]
 	if prog == nil {
@@ -220,7 +290,7 @@ func (t *GoAllocTracer) Next() (GoAllocEvent, error) {
 		}
 		return ev, err
 	}
-	if len(rec.RawSample) < 32 {
+	if len(rec.RawSample) < goAllocEventSize {
 		return ev, fmt.Errorf("short event: %d bytes", len(rec.RawSample))
 	}
 	if err := binary.Read(bytes.NewReader(rec.RawSample), binary.LittleEndian, &ev); err != nil {

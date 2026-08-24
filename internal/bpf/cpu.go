@@ -7,6 +7,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"unsafe"
 
@@ -81,8 +82,20 @@ func OpenCPUTracer(target Target) (*CPUTracer, error) {
 	// perf_event_open + ioctl(PERF_EVENT_IOC_SET_BPF) per CPU.
 	// PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK fires samples at
 	// SAMPLE_FREQ Hz per CPU (kernel guarantees uniformity).
-	ncpu := runtime.NumCPU()
-	for cpu := 0; cpu < ncpu; cpu++ {
+	//
+	// Every ONLINE cpu, by id — not runtime.NumCPU() (#108). NumCPU reports
+	// the size of PTOP's own affinity mask, so a ptop confined to a cpuset
+	// (systemd CPUAffinity=, taskset, a container's cpuset) opened events on
+	// only part of the machine and never saw the target's time on the rest.
+	// The counter still read as a rate, so the shortfall came out as a plain
+	// undercount — a busy target reported as idle, with nothing saying why.
+	// Ids matter too, not just how many: hot-unplug leaves gaps.
+	cpus, err := onlineCPUs()
+	if err != nil {
+		t.Close()
+		return nil, err
+	}
+	for _, cpu := range cpus {
 		attr := unix.PerfEventAttr{
 			Type:        unix.PERF_TYPE_SOFTWARE,
 			Config:      unix.PERF_COUNT_SW_CPU_CLOCK,
@@ -113,6 +126,38 @@ func OpenCPUTracer(target Target) (*CPUTracer, error) {
 	}
 
 	return t, nil
+}
+
+// onlineCPUs lists the ids of the CPUs the kernel currently has online — the
+// set a task can be scheduled on, and therefore the set that has to be sampled
+// for the count to mean "the target's share of a core".
+//
+// Falls back to 0..runtime.NumCPU()-1 only when sysfs cannot be read at all
+// (an unusual /proc-less or restricted mount namespace); that is the old
+// behaviour, kept as a floor rather than as the answer.
+func onlineCPUs() ([]int, error) {
+	b, err := os.ReadFile("/sys/devices/system/cpu/online")
+	if err == nil {
+		ids, perr := parseCPUList(string(b))
+		if perr != nil {
+			return nil, fmt.Errorf("parse /sys/devices/system/cpu/online: %w", perr)
+		}
+		if len(ids) > 0 {
+			return ids, nil
+		}
+	}
+	n := runtime.NumCPU()
+	if n < 1 {
+		return nil, errors.New("no online CPUs to sample")
+	}
+	fmt.Fprintf(os.Stderr,
+		"cpu: /sys/devices/system/cpu/online unreadable (%v); sampling %d CPUs from this process's affinity mask, which undercounts if the target runs outside it\n",
+		err, n)
+	ids := make([]int, n)
+	for i := range ids {
+		ids[i] = i
+	}
+	return ids, nil
 }
 
 // SampleCount returns the current accumulated count of on-CPU samples.

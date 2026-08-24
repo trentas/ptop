@@ -178,6 +178,13 @@ message HeapEvent {
   double lifetime_ms = 4;
   uint64 call_site = 5;
   bool large = 6; // allocation ≥ 128KB
+  // How many allocations, and how many bytes, this event stands for. 1 and
+  // size on the libc lane, and on the go lane with sampling off. With go-lane
+  // sampling on (#108) an event is one SAMPLED allocation carrying everything
+  // allocated since the previous sample: counting events then undercounts the
+  // allocations and summing size undercounts the bytes — sum these instead.
+  uint64 weight_count = 7;
+  uint64 weight_bytes = 8;
 }
 
 // HeapCallSite aggregates the live allocations attributed to one application
@@ -240,6 +247,18 @@ message HeapSnapshot {
   // them — an unmeasured 0 read against a libc-lane baseline reports the live
   // heap collapsing to nothing when in fact nothing changed.
   bool live_measured = 7;
+  // Bytes of allocation between recorded stack samples on the "go" lane; 0
+  // when every allocation was recorded (always so on the "libc" lane).
+  //
+  // Non-zero says the PER-SITE split in top_call_sites is an estimate
+  // proportional to bytes, not a census: a site holding a large share of the
+  // bytes is sampled proportionally often, and a rarely-allocating site can be
+  // missed in a short window. The totals and the rates stay exact either way —
+  // a sampled allocation is credited with everything allocated since the
+  // previous one, so no byte goes unattributed. Sampling exists because a stack
+  // walk per allocation costs a large multiple of the TARGET's own CPU time,
+  // which ptop's CPU axis then reported as the target's (#108).
+  uint64 sample_bytes = 8;
 }
 
 // ─── Threads ────────────────────────────────────────────────────────────────
@@ -438,7 +457,14 @@ message LockEntry {
   // contention site of the window when the lock is taken from several places
   // (the one with the most waits). eBPF-only, and only in pid mode: a cgroup
   // subtree spans processes with no single memory map to symbolize against.
-  // Unset when the stack walk failed (no frame pointers).
+  //
+  // Unset when the stack walk failed (no frame pointers), and unset when the
+  // stack held nothing but the locking machinery every lock goes through
+  // (#107). A Go target is normally the latter: sync.Mutex parks a goroutine,
+  // so only the scheduler ever reaches a futex and every stack is
+  // runtime-internal. Fall back to uaddr when this is unset — within one run it
+  // still tells two locks apart, which naming them all after the syscall
+  // wrapper would not.
   StackFrame call_site = 8;
   // Kernel stack id of that contention site, for
   // EventStreamService.ResolveStack (the full leaf-first stack). Namespaced per

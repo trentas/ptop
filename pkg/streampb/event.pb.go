@@ -1236,13 +1236,20 @@ func (x *MemStats) GetAllocsPerS() uint64 {
 // "malloc"|"calloc"|"realloc"|"free"; lifetime_ms is set on free; call_site is
 // the application call-site address (resolved to a symbol out-of-band by #54).
 type HeapEvent struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Op            string                 `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
-	Size          uint64                 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
-	Addr          uint64                 `protobuf:"varint,3,opt,name=addr,proto3" json:"addr,omitempty"`
-	LifetimeMs    float64                `protobuf:"fixed64,4,opt,name=lifetime_ms,json=lifetimeMs,proto3" json:"lifetime_ms,omitempty"`
-	CallSite      uint64                 `protobuf:"varint,5,opt,name=call_site,json=callSite,proto3" json:"call_site,omitempty"`
-	Large         bool                   `protobuf:"varint,6,opt,name=large,proto3" json:"large,omitempty"` // allocation ≥ 128KB
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Op         string                 `protobuf:"bytes,1,opt,name=op,proto3" json:"op,omitempty"`
+	Size       uint64                 `protobuf:"varint,2,opt,name=size,proto3" json:"size,omitempty"`
+	Addr       uint64                 `protobuf:"varint,3,opt,name=addr,proto3" json:"addr,omitempty"`
+	LifetimeMs float64                `protobuf:"fixed64,4,opt,name=lifetime_ms,json=lifetimeMs,proto3" json:"lifetime_ms,omitempty"`
+	CallSite   uint64                 `protobuf:"varint,5,opt,name=call_site,json=callSite,proto3" json:"call_site,omitempty"`
+	Large      bool                   `protobuf:"varint,6,opt,name=large,proto3" json:"large,omitempty"` // allocation ≥ 128KB
+	// How many allocations, and how many bytes, this event stands for. 1 and
+	// size on the libc lane, and on the go lane with sampling off. With go-lane
+	// sampling on (#108) an event is one SAMPLED allocation carrying everything
+	// allocated since the previous sample: counting events then undercounts the
+	// allocations and summing size undercounts the bytes — sum these instead.
+	WeightCount   uint64 `protobuf:"varint,7,opt,name=weight_count,json=weightCount,proto3" json:"weight_count,omitempty"`
+	WeightBytes   uint64 `protobuf:"varint,8,opt,name=weight_bytes,json=weightBytes,proto3" json:"weight_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1317,6 +1324,20 @@ func (x *HeapEvent) GetLarge() bool {
 		return x.Large
 	}
 	return false
+}
+
+func (x *HeapEvent) GetWeightCount() uint64 {
+	if x != nil {
+		return x.WeightCount
+	}
+	return 0
+}
+
+func (x *HeapEvent) GetWeightBytes() uint64 {
+	if x != nil {
+		return x.WeightBytes
+	}
+	return 0
 }
 
 // HeapCallSite aggregates the live allocations attributed to one application
@@ -1503,7 +1524,19 @@ type HeapSnapshot struct {
 	// and zero". A consumer diffing two deploys must check this before comparing
 	// them — an unmeasured 0 read against a libc-lane baseline reports the live
 	// heap collapsing to nothing when in fact nothing changed.
-	LiveMeasured  bool `protobuf:"varint,7,opt,name=live_measured,json=liveMeasured,proto3" json:"live_measured,omitempty"`
+	LiveMeasured bool `protobuf:"varint,7,opt,name=live_measured,json=liveMeasured,proto3" json:"live_measured,omitempty"`
+	// Bytes of allocation between recorded stack samples on the "go" lane; 0
+	// when every allocation was recorded (always so on the "libc" lane).
+	//
+	// Non-zero says the PER-SITE split in top_call_sites is an estimate
+	// proportional to bytes, not a census: a site holding a large share of the
+	// bytes is sampled proportionally often, and a rarely-allocating site can be
+	// missed in a short window. The totals and the rates stay exact either way —
+	// a sampled allocation is credited with everything allocated since the
+	// previous one, so no byte goes unattributed. Sampling exists because a stack
+	// walk per allocation costs a large multiple of the TARGET's own CPU time,
+	// which ptop's CPU axis then reported as the target's (#108).
+	SampleBytes   uint64 `protobuf:"varint,8,opt,name=sample_bytes,json=sampleBytes,proto3" json:"sample_bytes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1585,6 +1618,13 @@ func (x *HeapSnapshot) GetLiveMeasured() bool {
 		return x.LiveMeasured
 	}
 	return false
+}
+
+func (x *HeapSnapshot) GetSampleBytes() uint64 {
+	if x != nil {
+		return x.SampleBytes
+	}
+	return 0
 }
 
 // ─── Threads ────────────────────────────────────────────────────────────────
@@ -2838,7 +2878,14 @@ type LockEntry struct {
 	// contention site of the window when the lock is taken from several places
 	// (the one with the most waits). eBPF-only, and only in pid mode: a cgroup
 	// subtree spans processes with no single memory map to symbolize against.
-	// Unset when the stack walk failed (no frame pointers).
+	//
+	// Unset when the stack walk failed (no frame pointers), and unset when the
+	// stack held nothing but the locking machinery every lock goes through
+	// (#107). A Go target is normally the latter: sync.Mutex parks a goroutine,
+	// so only the scheduler ever reaches a futex and every stack is
+	// runtime-internal. Fall back to uaddr when this is unset — within one run it
+	// still tells two locks apart, which naming them all after the syscall
+	// wrapper would not.
 	CallSite *StackFrame `protobuf:"bytes,8,opt,name=call_site,json=callSite,proto3" json:"call_site,omitempty"`
 	// Kernel stack id of that contention site, for
 	// EventStreamService.ResolveStack (the full leaf-first stack). Namespaced per
@@ -3121,7 +3168,7 @@ const file_event_proto_rawDesc = "" +
 	"\vpage_faults\x18\x03 \x01(\x04R\n" +
 	"pageFaults\x12 \n" +
 	"\fallocs_per_s\x18\x04 \x01(\x04R\n" +
-	"allocsPerS\"\x97\x01\n" +
+	"allocsPerS\"\xdd\x01\n" +
 	"\tHeapEvent\x12\x0e\n" +
 	"\x02op\x18\x01 \x01(\tR\x02op\x12\x12\n" +
 	"\x04size\x18\x02 \x01(\x04R\x04size\x12\x12\n" +
@@ -3129,7 +3176,9 @@ const file_event_proto_rawDesc = "" +
 	"\vlifetime_ms\x18\x04 \x01(\x01R\n" +
 	"lifetimeMs\x12\x1b\n" +
 	"\tcall_site\x18\x05 \x01(\x04R\bcallSite\x12\x14\n" +
-	"\x05large\x18\x06 \x01(\bR\x05large\"\xf4\x02\n" +
+	"\x05large\x18\x06 \x01(\bR\x05large\x12!\n" +
+	"\fweight_count\x18\a \x01(\x04R\vweightCount\x12!\n" +
+	"\fweight_bytes\x18\b \x01(\x04R\vweightBytes\"\xf4\x02\n" +
 	"\fHeapCallSite\x12\x1b\n" +
 	"\tcall_site\x18\x01 \x01(\x04R\bcallSite\x12\x19\n" +
 	"\baddr_hex\x18\x02 \x01(\tR\aaddrHex\x12\x1d\n" +
@@ -3147,7 +3196,7 @@ const file_event_proto_rawDesc = "" +
 	"\x06offset\x18\v \x01(\x04R\x06offset\x12\x19\n" +
 	"\bstack_id\x18\f \x01(\x04R\astackId\x12\x1f\n" +
 	"\valloc_bytes\x18\r \x01(\x04R\n" +
-	"allocBytes\"\xa7\x02\n" +
+	"allocBytes\"\xca\x02\n" +
 	"\fHeapSnapshot\x12&\n" +
 	"\x0flive_heap_bytes\x18\x01 \x01(\x04R\rliveHeapBytes\x12\x1d\n" +
 	"\n" +
@@ -3156,7 +3205,8 @@ const file_event_proto_rawDesc = "" +
 	"\x0etop_call_sites\x18\x04 \x03(\v2\x15.ptop.v1.HeapCallSiteR\ftopCallSites\x12(\n" +
 	"\x10alloc_bytes_rate\x18\x05 \x01(\x01R\x0eallocBytesRate\x12\x12\n" +
 	"\x04lane\x18\x06 \x01(\tR\x04lane\x12#\n" +
-	"\rlive_measured\x18\a \x01(\bR\fliveMeasured\"\xbe\x01\n" +
+	"\rlive_measured\x18\a \x01(\bR\fliveMeasured\x12!\n" +
+	"\fsample_bytes\x18\b \x01(\x04R\vsampleBytes\"\xbe\x01\n" +
 	"\n" +
 	"ThreadInfo\x12\x10\n" +
 	"\x03tid\x18\x01 \x01(\x05R\x03tid\x12\x12\n" +

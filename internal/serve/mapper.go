@@ -81,6 +81,7 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			TopCallSites:       heapCallSites(x.TopCallSites),
 			Lane:               x.Lane,
 			LiveMeasured:       x.LiveMeasured,
+			SampleBytes:        x.SampleBytes,
 		}}
 
 	case collector.HeapEvent:
@@ -90,6 +91,7 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		ev.Payload = &pb.Event_HeapEvent{HeapEvent: &pb.HeapEvent{
 			Op: x.Op, Size: x.Size, Addr: x.Addr,
 			LifetimeMs: x.LifetimeMs, CallSite: x.CallSite, Large: x.Large,
+			WeightCount: x.WeightCount, WeightBytes: x.WeightBytes,
 		}}
 
 	case []collector.ThreadInfo:

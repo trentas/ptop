@@ -141,8 +141,11 @@ func TestGoModuleStillPrefersLineTable(t *testing.T) {
 	if fr.Func != "main.leakyAlloc" {
 		t.Errorf("Func = %q, want main.leakyAlloc", fr.Func)
 	}
-	if !strings.HasSuffix(fr.File, "gofixture/main.go") {
-		t.Errorf("File = %q, want …/gofixture/main.go", fr.File)
+	// gosym's answer, canonicalized to the import path (#107). DWARF's would
+	// still be the build machine's absolute path, so this also says which
+	// source answered.
+	if fr.File != "main.go" {
+		t.Errorf("File = %q, want main.go (gosym, canonicalized)", fr.File)
 	}
 }
 

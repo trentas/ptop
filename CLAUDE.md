@@ -77,6 +77,7 @@ ptop/
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
+│   │   │   ├── goalloc.bpf.c      runtime.mallocgc uprobe → Go alloc sites, byte-sampled (#108)
 │   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
 │   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
@@ -85,6 +86,9 @@ ptop/
 │   │   ├── available.go           runtime feature flag (build-tag based)
 │   │   ├── target.go              target resolver: pid-namespace + cgroup (shared)
 │   │   ├── target_spec.go         bpf.Target + cgroup path/level/id helpers (#94)
+│   │   ├── cpulist.go             /sys CPU-list parser (build-tag-free, #108)
+│   │   ├── goalloc.go             runtime.mallocgc uprobe loader + sampling rate
+│   │   ├── goalloc_spec.go        GoAllocDefaultSampleBytes (build-tag-free)
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
 │   │   ├── caps_stub.go           non-Linux stub
 │   │   ├── caps_test.go
@@ -106,6 +110,7 @@ ptop/
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
+│   │   ├── shed.go                which event a full sink queue gives up (#108)
 │   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
 │   │   ├── stackid.go             wire stack-id namespace + combined resolver (#89)
 │   │   ├── service.go             EventStream gRPC service impl
@@ -141,6 +146,7 @@ ptop/
 │       ├── types.go               public type contracts (see below)
 │       ├── set.go                 source-priority selection + lifecycle (Set)
 │       ├── bus.go                 single fan-out: Set → N consumers (Feed, #71)
+│       ├── shed.go                snapshot vs per-occurrence rate class (#108)
 │       ├── source_{linux,darwin}.go  platform source labels (Source*)
 │       ├── cpu_proc.go            /proc/<pid>/stat utime+stime
 │       ├── cpu_ebpf.go            eBPF perf_event sampling
@@ -148,7 +154,9 @@ ptop/
 │       ├── threads_ebpf.go        sched_switch → CPU% real-time
 │       ├── mem_proc.go            /proc/<pid>/statm + faults
 │       ├── mem_ebpf.go            kprobe + syscall tracepoints
-│       ├── heap_ebpf.go           libc malloc/free pairing → live-heap + leak (#53)
+│       ├── heap_ebpf.go           libc malloc/free pairing, or the Go lane (#53)
+│       ├── heap_agg.go            call-site ranking + app-frame picking (build-tag-free)
+│       ├── futex_agg.go           lock folding + contention-site picking (#89/#107)
 │       ├── tls_ebpf.go            libssl uprobe → TLS payload (#55, opt-in --tls)
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
@@ -168,6 +176,10 @@ ptop/
 │       └── *_test.go, *_stub.go
 │   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)
 │       ├── elf.go                 OS-agnostic ELF/gosym core (Module, build-id)
+│       ├── dwarf.go               C/C++ file:line from .debug_line
+│       ├── lookup.go              name → address (uprobe attach), gosym fallback
+│       ├── gopath.go              build-machine source path → import path (#107)
+│       ├── perfmap.go             JIT /tmp/perf-<pid>.map frames
 │       ├── proc_linux.go          live-pid Symbolizer via /proc/<pid>/maps
 │       └── proc_other.go          non-Linux stub
 └── assets/
@@ -283,6 +295,63 @@ The `?` help overlay surfaces the active source per subsystem (`real via eBPF`,
 `real via /proc`, or `mock`). Never lie about the source — users debug with
 this.
 
+### Rate classes, and why a full queue is not first-come-first-served
+
+Collector values fall into two shapes, and every bounded queue in the pipeline
+has to know which it is holding (`pkg/collector/shed.go`,
+`internal/serve/shed.go`):
+
+- **Periodic snapshots** — `CpuSample`, `MemStats`, `HeapStats`, `[]ThreadInfo`,
+  `[]LockEntry`, … One per collector tick. A handful per second, all told.
+- **Per-occurrence events** — `HeapEvent`, `TimelineEvent`, `SignalEvent`,
+  `FSEvent`, … One per thing the target did. Unbounded: the Go allocation lane
+  can emit hundreds of thousands a second.
+
+Plain drop-when-full lets the second class own the whole queue, and then the
+once-a-second `CpuSample` never fits. What comes out the far end is a stream
+with **no CPU axis at all**, which reads as an idle process rather than as a
+gap — the reported failure in #108, where a 17-second window over a busy Go
+service had a CPU distribution of zero at every percentile.
+
+So the last quarter of every queue is reserved for the snapshots: a flood fills
+three quarters and stops. Shed values are still counted and still surfaced
+(`Subscription.Dropped`, `StreamMeta.dropped`) — a gap is reported, never
+hidden. **A new collector value type defaults to the snapshot class**, so
+adding one cannot silently starve it; add it to `isPerOccurrenceValue` /
+`isPerOccurrence` only if it really is emitted per occurrence.
+
+### The observer's cost is charged to the target
+
+A uprobe runs on the thread that tripped it, so its cost lands in the TARGET's
+own CPU accounting — and ptop's CPU axis samples the target on-CPU, so ptop
+then reports it as the target's CPU. That is not a rounding error: measured at
+1.1M allocations/s, one stack walk per allocation made the target take **+252%**
+longer per unit of work, and the alloc-heavy arm of an A/B pair came out hotter
+than the compute-heavy one — inverting the comparison the axis exists for.
+
+Hence `goalloc.bpf.c` samples its stack walk by bytes allocated
+(`--heap-sample-bytes`, default 512KB — the same rate Go's own heap profiler
+uses). Totals stay exact (a sampled allocation is credited with everything
+allocated since the previous one) while per-site attribution becomes an
+estimate, and `HeapSnapshot.sample_bytes` says so on the wire. What remains is
+the uprobe trap itself, which no amount of sampling removes; `--disable heap`
+is the only way to stop paying it.
+
+**The sampling threshold is random, and that is load-bearing.** Allocation
+patterns are periodic — a handler allocates the same objects in the same order
+every request — and a fixed threshold crossed by a periodic byte stream always
+crosses at the same phase of the cycle, so one call site takes every sample and
+the rest take none. On a workload alternating a 152-byte allocation with a
+1048-byte one, a fixed threshold split the bytes 1.1:1 where the truth is
+6.9:1; drawing the threshold uniformly from `[1, 2·rate]` put it at 8:1 (an 89%
+share against a true 87%). Any future sampler in this codebase inherits the
+same trap.
+
+The rule for any new probe: measure what it costs the target
+(`make bench`, `bench/README.md`), and if the cost scales with something the
+target does often, sample it rather than shipping a probe that replaces the
+program it observes.
+
 ---
 
 ## TUI conventions
@@ -396,6 +465,8 @@ ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key
 ptop --pid <PID> ... --serve-tls-client-ca <ca>   also require a client certificate (mTLS)
 ptop --pid <PID> --tls       TLS payload metadata (libssl uprobes) — OFF by default (#55)
 ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (implies --tls)
+ptop --pid <PID> --heap-sample-bytes 0   record EVERY Go allocation (exact per site, very expensive)
+ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
 ptop --version              print version + commit + build date
 ```
@@ -498,6 +569,29 @@ cross-run/deploy lock comparison possible: key on `module+offset` or
 `(uaddr, stack_id)` and the collector names the lock by the **dominant** site
 of the window, so a mutex taken from many places reports the one actually
 serializing it.
+
+Which frame of that stack names the lock is the whole question, and getting it
+wrong is worse than not symbolizing at all (#107). The leaf of a futex wait is
+the primitive's syscall wrapper — libc's `__lll_lock_wait`, or in a Go binary
+`runtime.futex` at one fixed line of `sys_linux_$GOARCH.s`. Every lock in the
+process passes through it, so naming locks by that frame gives them all the
+same name and folds them into ONE entry, where the bare address at least told
+them apart. `pickLockSite` (`futex_agg.go`) therefore walks past the machinery
+— loader/libc modules by module, `runtime.`/`internal/runtime/`/`sync.` by name,
+since the Go runtime and the application are one module — and stops at the
+first application frame. **Finding none, it reports the address and leaves the
+symbol fields empty**, so `call_site` is absent on the wire and a consumer
+falls back to `uaddr`. That is the normal outcome for a Go target: `sync.Mutex`
+parks a goroutine, only the scheduler ever reaches a futex, and `mcall` has
+already switched to the g0 stack by then — so there is no application frame to
+find.
+
+Source paths get the same treatment (`pkg/symbol/gopath.go`). `.gopclntab`
+records the path a file had on the BUILD machine, so `file:line` carried
+someone's `$GOROOT` and never matched between two hosts. `Module.Resolve`
+rewrites it to the file's import path (`runtime/sys_linux_arm64.s`,
+`github.com/x/y/pool.go`), anchored on the directory corroborating the symbol's
+package so an inlined frame is not filed under a package it never belonged to.
 
 **Wire stack ids are namespaced by source** (`internal/serve/stackid.go`): each
 tracer captures into its own `STACK_TRACE` map, and their ids are independent

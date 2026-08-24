@@ -38,6 +38,46 @@
 // zero would read as "nothing is live", which is false, and would diff against
 // a libc-lane baseline as a collapse to zero.
 //
+// ─── Sampling, and why the probe cannot afford to run in full ────────────────
+//
+// The expensive part of this probe is not the counting, it is bpf_get_stackid:
+// a user stack walk, up to GOALLOC_STACK_DEPTH frames, on every allocation. It
+// runs on the thread that allocated, so its cost lands in the TARGET's own CPU
+// accounting — measured at +110% of the target's CPU time at 114k
+// allocations/s and +404% at 1.2M/s (bench/results/). Two things follow.
+//
+// The obvious one: ptop was multiplying the cost of the program it was
+// watching. The subtle one, and the reason this is not merely a tax: ptop's own
+// CPU axis samples the target on-CPU, so it reported that inflated figure AS
+// THE TARGET'S CPU — a Go service came out at ten times what /proc said, and
+// the alloc-heavy arm of an A/B pair came out hotter than the compute-heavy
+// one, inverting the very comparison the axis exists for (#108).
+//
+// So the stack walk is sampled, by BYTES ALLOCATED, the way Go's own heap
+// profiler samples (runtime.MemProfileRate, 512KB). A per-CPU accumulator adds
+// up size and count; only when it crosses a RANDOM threshold averaging the
+// configured rate does an allocation take a stack, and it is then credited with
+// everything accumulated since the last one. The threshold is random for the
+// reason Go's is — see goalloc_next_threshold. Consequences worth being precise about:
+//
+//   - TOTALS STAY EXACT. Every byte and every allocation is attributed to some
+//     site; none is discarded. alloc_bytes and alloc_count summed over all
+//     sites equal what the target really did.
+//   - PER-SITE ATTRIBUTION BECOMES AN ESTIMATE, proportional to bytes. A site
+//     allocating a large share of the bytes is sampled proportionally often; a
+//     site that allocates rarely may be missed in a short window.
+//   - LARGE ALLOCATIONS ARE NEVER SAMPLED AWAY. An allocation at or above the
+//     large threshold always takes the sample point, so large_count stays exact
+//     and the object that actually moved the heap is always attributed.
+//
+// A rate of 0 skips the sampler entirely and a rate of 1 byte passes every
+// allocation through it: both record everything, which is the only way to get
+// exact per-site numbers and what the overhead benchmark measures against. It
+// is not a reasonable default on an allocation-heavy target. Userspace asks for
+// it with 1 rather than 0, so that an unset field means the safe default rather
+// than the exhaustive one; 0 remains the map's pre-write value and behaves the
+// same way.
+//
 // Register ABI: Go uses ABIInternal (register-based) since Go 1.17, NOT the
 // SysV C ABI that BPF_KPROBE/PT_REGS_PARM1 assume. mallocgc's first argument
 // (size uintptr) arrives in RAX on x86-64 and in X0 on arm64. libbpf's
@@ -55,9 +95,15 @@
 //                                    side resolves a stack_id to the
 //                                    application frame and symbolizes it
 //                                    through .gopclntab (func + file:line).
-//   goalloc_events      RINGBUF      per-allocation stream to userspace
+//   goalloc_events      RINGBUF      sampled allocation stream to userspace
 //                                    (struct go_alloc_event, fixed layout,
 //                                    LittleEndian).
+//   goalloc_config      ARRAY[1]     sample_bytes: bytes of allocation between
+//                                    recorded samples (0 = record every one).
+//   goalloc_accum       PERCPU_ARRAY per-CPU counters: bytes/count since this
+//                                    CPU's last recorded sample and the random
+//                                    threshold for the next one, plus running
+//                                    totals over EVERY allocation (the rate).
 
 #include <linux/bpf.h>
 #include <linux/ptrace.h>
@@ -96,17 +142,67 @@ struct go_callsite_stat {
     __u64 large_count;
 };
 
-// Event published to userspace via ring buffer. Fixed 32-byte layout, read
+// Event published to userspace via ring buffer. Fixed 48-byte layout, read
 // with binary.LittleEndian on the Go side — keep in sync with GoAllocEvent in
 // internal/bpf/goalloc.go.
+//
+// size is the sampled allocation's own size; weight_bytes/weight_count are what
+// it stands for — everything accumulated since the previous sample on this CPU,
+// itself included. With sampling off they are size and 1.
 struct go_alloc_event {
     __u64 ts_ns;
     __u64 size;
+    __u64 weight_bytes;
+    __u64 weight_count;
     __s32 stack_id; // alloc-site stack (<0 → unknown)
     __u32 flags;    // bit0 = large (size ≥ GOALLOC_LARGE_THRESHOLD)
     __u32 tgid;
     __u32 _pad;
 };
+
+// Per-CPU counters. Per-CPU rather than global because a BPF program runs with
+// preemption disabled, which makes the update contention-free and lock-free — a
+// global counter here would put an atomic on the hottest path in the program.
+//
+// bytes/count reset at every recorded sample; next is the threshold bytes has
+// to reach for the next one. total_bytes/total_count never reset and count
+// EVERY allocation, sampled or not: they are what the allocation RATE is
+// computed from. Deriving the rate from the sampled events instead would make
+// it lumpy — a target allocating less than one sample's worth per publish
+// interval would report zero, then a spike — and would also lose whatever the
+// ring buffer dropped. Two adds on a cache line the program has already touched
+// is the whole cost of avoiding that.
+struct goalloc_accum {
+    __u64 bytes;
+    __u64 count;
+    __u64 next;
+    __u64 total_bytes;
+    __u64 total_count;
+};
+
+// goalloc_next_threshold draws the next sampling threshold: uniform over
+// [1, 2*rate], so the mean stays at rate.
+//
+// RANDOM, not fixed, and this is the load-bearing part. Allocation patterns are
+// periodic — a request handler allocates the same objects in the same order
+// every time round — and a FIXED threshold crossed by a periodic byte stream
+// always crosses at the same phase of the cycle, so the same call site takes
+// every sample and the others take none. Measured on a workload alternating a
+// 152-byte allocation with a 1048-byte one, a fixed threshold attributed the
+// bytes 1.1:1 where the truth is 6.9:1. With a random threshold the crossing
+// lands at a uniformly distributed byte offset, which is what makes a site's
+// share of the samples equal its share of the bytes.
+//
+// bpf_get_prandom_u32 caps the span at 2^32, so a rate above 2GB samples more
+// often than asked rather than not at all. Nobody is setting that, but silently
+// sampling nothing would be the worse failure.
+static __always_inline __u64 goalloc_next_threshold(__u64 rate)
+{
+    __u64 span = rate << 1;
+    if (span < rate || span > 0xffffffffULL) // overflow, or past prandom's range
+        span = 0xffffffffULL;
+    return 1 + (__u64)bpf_get_prandom_u32() % span;
+}
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);
@@ -133,6 +229,21 @@ struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 20); // 1MB
 } goalloc_events SEC(".maps");
+
+// sample_bytes, written by the Go loader. 0 records every allocation.
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __type(key, __u32);
+    __type(value, __u64);
+    __uint(max_entries, 1);
+} goalloc_config SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct goalloc_accum);
+    __uint(max_entries, 1);
+} goalloc_accum SEC(".maps");
 
 static __always_inline int is_goalloc_target(void)
 {
@@ -167,13 +278,45 @@ int uprobe_go_mallocgc(struct pt_regs *ctx)
     if (size == 0)
         return 0;
 
-    __s32 sid = (__s32)bpf_get_stackid(ctx, &goalloc_stacks, BPF_F_USER_STACK);
+    __u32 key = 0;
     __u32 flags = (size >= GOALLOC_LARGE_THRESHOLD) ? GOALLOC_FLAG_LARGE : 0;
+    __u64 weight_bytes = size, weight_count = 1;
+
+    struct goalloc_accum *acc = bpf_map_lookup_elem(&goalloc_accum, &key);
+    if (!acc)
+        return 0;
+    acc->total_bytes += size;
+    acc->total_count += 1;
+
+    // Everything above the stack walk is cheap; everything below it is not.
+    // The accumulate-and-return path is the one nearly every allocation takes.
+    //
+    // A rate of 0 or 1 means record everything, and skips the sampler outright
+    // rather than running it with a threshold every allocation crosses.
+    __u64 *rate = bpf_map_lookup_elem(&goalloc_config, &key);
+    if (rate && *rate > 1) {
+        acc->bytes += size;
+        acc->count += 1;
+        if (acc->next == 0)
+            acc->next = goalloc_next_threshold(*rate);
+        // A large allocation always takes the sample point, so large_count and
+        // the attribution of the objects that actually move the heap stay
+        // exact however coarse the rate is.
+        if (!(flags & GOALLOC_FLAG_LARGE) && acc->bytes < acc->next)
+            return 0;
+        weight_bytes = acc->bytes;
+        weight_count = acc->count;
+        acc->bytes = 0;
+        acc->count = 0;
+        acc->next = goalloc_next_threshold(*rate);
+    }
+
+    __s32 sid = (__s32)bpf_get_stackid(ctx, &goalloc_stacks, BPF_F_USER_STACK);
 
     struct go_callsite_stat *cs = get_or_init_site(sid);
     if (cs) {
-        __sync_fetch_and_add(&cs->alloc_count, 1);
-        __sync_fetch_and_add(&cs->alloc_bytes, size);
+        __sync_fetch_and_add(&cs->alloc_count, weight_count);
+        __sync_fetch_and_add(&cs->alloc_bytes, weight_bytes);
         if (flags & GOALLOC_FLAG_LARGE)
             __sync_fetch_and_add(&cs->large_count, 1);
     }
@@ -182,12 +325,14 @@ int uprobe_go_mallocgc(struct pt_regs *ctx)
         bpf_ringbuf_reserve(&goalloc_events, sizeof(*e), 0);
     if (!e)
         return 0;
-    e->ts_ns    = bpf_ktime_get_ns();
-    e->size     = size;
-    e->stack_id = sid;
-    e->flags    = flags;
-    e->tgid     = (__u32)(bpf_get_current_pid_tgid() >> 32);
-    e->_pad     = 0;
+    e->ts_ns        = bpf_ktime_get_ns();
+    e->size         = size;
+    e->weight_bytes = weight_bytes;
+    e->weight_count = weight_count;
+    e->stack_id     = sid;
+    e->flags        = flags;
+    e->tgid         = (__u32)(bpf_get_current_pid_tgid() >> 32);
+    e->_pad         = 0;
     bpf_ringbuf_submit(e, 0);
     return 0;
 }
