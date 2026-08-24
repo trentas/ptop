@@ -28,6 +28,32 @@ type SetConfig struct {
 	// for why this exists — chiefly that probe costs differ by orders of
 	// magnitude, and the expensive one is nameable.
 	Disable map[string]bool
+
+	// HeapSampleBytes is the Go allocation lane's stack-sampling rate: bytes
+	// allocated between recorded samples (#108).
+	//
+	// 0 takes bpf.GoAllocDefaultSampleBytes. The zero value has to be the
+	// cheap configuration, not the exhaustive one: recording every allocation
+	// costs a large multiple of the TARGET's own CPU time, and a caller that
+	// simply did not fill this field must not get that by omission. Ask for it
+	// explicitly with HeapSampleEveryAllocation.
+	HeapSampleBytes uint64
+}
+
+// HeapSampleEveryAllocation is the HeapSampleBytes value that records every
+// allocation rather than sampling: a rate of one byte, which any allocation
+// crosses immediately (mallocgc calls of size 0 are dropped before this). Exact
+// per call site, and on an allocation-heavy target a different program from the
+// one being observed — see bench/ for what it costs.
+const HeapSampleEveryAllocation uint64 = 1
+
+// heapSampleBytes resolves the configured rate, filling in the default for the
+// zero value.
+func heapSampleBytes(cfg SetConfig) uint64 {
+	if cfg.HeapSampleBytes == 0 {
+		return bpf.GoAllocDefaultSampleBytes
+	}
+	return cfg.HeapSampleBytes
 }
 
 // Sources records where each subsystem's real data came from. The value is
@@ -218,7 +244,7 @@ func NewSet(cfg SetConfig) *Set {
 		// This is also the expensive one, by a wide margin: its probe fires
 		// once per allocation, where the others fire on comparatively rare
 		// kernel events. It is the subsystem --disable exists for.
-		c5 := NewHeapEBPFCollector()
+		c5 := NewHeapEBPFCollector(heapSampleBytes(cfg))
 		startEBPF(SubsystemHeap, c5, func() {
 			s.HeapEBPF = c5
 			s.Sources.Heap = "eBPF"

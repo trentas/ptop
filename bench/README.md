@@ -82,12 +82,27 @@ what separates *"ptop costs something"* from *"ptop costs something here"*.
 |---|---|
 | no ptop | the baseline |
 | ptop, all probes | what an operator actually pays |
-| ptop, no heap probe | everything except the per-allocation uprobe (`--disable heap`) |
-| ptop, heap probe only | the per-allocation uprobe alone |
+| ptop, no heap probe | everything except the allocator uprobe (`--disable heap`) |
+| ptop, heap probe only | the allocator uprobe alone, sampled (the default) |
+| ptop, heap probe unsampled | the same probe walking a stack on EVERY allocation (`--heap-sample-bytes 0`) |
 
 The decomposition is the actionable part. *"ptop costs N%"* leaves an operator
 with nothing to do; *"the heap probe is N% of it and you can turn it off with
 `--disable heap`"* is a decision they can make.
+
+The last two rows are a pair, and the gap between them is why the Go allocation
+lane samples (#108). The expensive half of that probe is the user stack walk,
+not the counting, so the default takes one stack per 512KB allocated
+(`--heap-sample-bytes`) instead of one per allocation. Keeping both columns
+means the choice stays measured rather than argued: the unsampled column is
+what every row of the first published table measured, so the two are directly
+comparable.
+
+It also stops the cost being invisible. A uprobe runs on the thread that
+tripped it, so what it costs lands in the target's own CPU accounting — and
+ptop's CPU axis samples the target on-CPU, so ptop then reports that cost AS
+THE TARGET'S CPU. An unsampled heap probe did not merely tax the target; it
+changed the number ptop published about it.
 
 ## Reading the result
 

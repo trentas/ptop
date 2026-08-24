@@ -81,15 +81,27 @@ import (
 type config struct {
 	name    string
 	ptop    bool
-	disable string // --disable value; "" means everything on
+	disable string   // --disable value; "" means everything on
+	extra   []string // additional ptop flags
 }
+
+// heapOnly disables everything except the heap probe, so its column measures
+// that probe alone.
+const heapOnly = "cpu,threads,memory,syscalls,io,network,futex,signals,lifecycle,security,fd"
 
 var configs = []config{
 	{name: "no ptop", ptop: false},
 	{name: "ptop, all probes", ptop: true},
 	{name: "ptop, no heap probe", ptop: true, disable: "heap"},
-	{name: "ptop, heap probe only", ptop: true,
-		disable: "cpu,threads,memory,syscalls,io,network,futex,signals,lifecycle,security,fd"},
+	{name: "ptop, heap probe only", ptop: true, disable: heapOnly},
+	// The same probe with sampling off — one stack walk per allocation, which
+	// is what every row of the first published table measured. Kept as its own
+	// column because it is the term the sampled default has to be read
+	// against: the difference between these two IS what sampling bought, and
+	// on this axis it is the difference between observing a program and
+	// replacing it (#108).
+	{name: "ptop, heap probe unsampled", ptop: true, disable: heapOnly,
+		extra: []string{"--heap-sample-bytes", "0"}},
 }
 
 // sweepPoint is one row of the table: a workload shape. compute sets how much
@@ -313,6 +325,7 @@ func runOnce(c config, workloadBin, ptopBin string, iterations int, pt sweepPoin
 		if c.disable != "" {
 			args = append(args, "--disable", c.disable)
 		}
+		args = append(args, c.extra...)
 		ptop = exec.Command(ptopBin, args...)
 		ptop.Stderr = &ptopErr
 		if err := ptop.Start(); err != nil {

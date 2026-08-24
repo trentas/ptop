@@ -178,6 +178,13 @@ message HeapEvent {
   double lifetime_ms = 4;
   uint64 call_site = 5;
   bool large = 6; // allocation ≥ 128KB
+  // How many allocations, and how many bytes, this event stands for. 1 and
+  // size on the libc lane, and on the go lane with sampling off. With go-lane
+  // sampling on (#108) an event is one SAMPLED allocation carrying everything
+  // allocated since the previous sample: counting events then undercounts the
+  // allocations and summing size undercounts the bytes — sum these instead.
+  uint64 weight_count = 7;
+  uint64 weight_bytes = 8;
 }
 
 // HeapCallSite aggregates the live allocations attributed to one application
@@ -240,6 +247,18 @@ message HeapSnapshot {
   // them — an unmeasured 0 read against a libc-lane baseline reports the live
   // heap collapsing to nothing when in fact nothing changed.
   bool live_measured = 7;
+  // Bytes of allocation between recorded stack samples on the "go" lane; 0
+  // when every allocation was recorded (always so on the "libc" lane).
+  //
+  // Non-zero says the PER-SITE split in top_call_sites is an estimate
+  // proportional to bytes, not a census: a site holding a large share of the
+  // bytes is sampled proportionally often, and a rarely-allocating site can be
+  // missed in a short window. The totals and the rates stay exact either way —
+  // a sampled allocation is credited with everything allocated since the
+  // previous one, so no byte goes unattributed. Sampling exists because a stack
+  // walk per allocation costs a large multiple of the TARGET's own CPU time,
+  // which ptop's CPU axis then reported as the target's (#108).
+  uint64 sample_bytes = 8;
 }
 
 // ─── Threads ────────────────────────────────────────────────────────────────

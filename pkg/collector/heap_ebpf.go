@@ -19,7 +19,9 @@ import (
 //
 //   - readLoop drains the per-event ring buffer, forwarding each event as a
 //     HeapEvent (best-effort, dropped under backpressure like every other
-//     collector) and counting allocations for the rate.
+//     collector). On the libc lane it also counts allocations for the rate; on
+//     the Go lane the rate comes from the kernel's own totals, because the
+//     events there are sampled (see ratesGo).
 //   - publishLoop, every 500ms, reads the kernel's per-call-site aggregate and
 //     publishes a HeapStats snapshot.
 //
@@ -51,15 +53,29 @@ type HeapEBPFCollector struct {
 	stop     chan struct{}
 	pid      int
 
+	// sampleBytes is the Go lane's stack-sampling rate: bytes of allocation
+	// between recorded samples (#108). A rate of 1 records every allocation
+	// (HeapSampleEveryAllocation). The libc lane ignores it — it pairs alloc
+	// with free to track a live set, and sampling would leave frees with no
+	// allocation to pair against.
+	sampleBytes uint64
+
 	leakThreshold time.Duration
 
-	allocCount uint64 // atomic; allocations since the last publish (rate)
-	allocBytes uint64 // atomic; bytes allocated since the last publish (rate)
+	// libc lane only: allocations/bytes since the last publish, fed by
+	// readLoop. The Go lane reads its totals from the kernel instead — see
+	// ratesGo.
+	allocCount uint64 // atomic
+	allocBytes uint64 // atomic
 
 	mu         sync.Mutex
 	siteCache  map[int32]heapSite       // stack_id → resolved app call-site (cache)
 	stackCache map[int32][]symbol.Frame // stack_id → full leaf-first frames (cache)
 	lastAt     time.Time                // publishLoop-only; rate baseline
+	// Go lane only: the kernel's cumulative allocation totals as of the last
+	// publish. publishLoop-only, like lastAt.
+	lastTotalCount uint64
+	lastTotalBytes uint64
 }
 
 // heapSite is the resolved application call site for a stack_id: the raw frame
@@ -76,10 +92,16 @@ const (
 	heapPublishInterval      = 500 * time.Millisecond
 )
 
-func NewHeapEBPFCollector() *HeapEBPFCollector {
+// NewHeapEBPFCollector builds the collector with sampleBytes as the Go lane's
+// stack-sampling rate — bpf.GoAllocDefaultSampleBytes is the usual value, and
+// HeapSampleEveryAllocation records every allocation, exact and expensive (see
+// goalloc.bpf.c). Callers holding a SetConfig should go through
+// heapSampleBytes, which fills in the default.
+func NewHeapEBPFCollector(sampleBytes uint64) *HeapEBPFCollector {
 	return &HeapEBPFCollector{
 		ch:            make(chan interface{}, 64),
 		stop:          make(chan struct{}),
+		sampleBytes:   sampleBytes,
 		leakThreshold: heapDefaultLeakThreshold,
 		siteCache:     make(map[int32]heapSite),
 		stackCache:    make(map[int32][]symbol.Frame),
@@ -91,7 +113,7 @@ func (c *HeapEBPFCollector) Start(pid int) error {
 	// not work: a Go binary built with cgo HAS a libc mapped, so the libc
 	// tracer attaches happily and then reports an empty axis forever — a
 	// silent wrong answer, which is worse than a loud missing one.
-	goTracer, err := bpf.OpenGoAllocTracer(pid)
+	goTracer, err := bpf.OpenGoAllocTracer(pid, c.sampleBytes)
 	switch {
 	case err == nil:
 		c.goTracer, c.lane = goTracer, HeapLaneGo
@@ -164,6 +186,9 @@ func (c *HeapEBPFCollector) readLoopLibc() {
 			CallSite:   c.resolveSite(ev.StackID).addr,
 			StackID:    ev.StackID,
 			Large:      ev.Flags&bpf.HeapFlagLarge != 0,
+			// The libc lane observes every call, so an event stands for itself.
+			WeightCount: 1,
+			WeightBytes: ev.Size,
 		}
 		select {
 		case c.ch <- he:
@@ -185,14 +210,17 @@ func (c *HeapEBPFCollector) readLoopGo() {
 			}
 			continue // transient; keep reading
 		}
-		atomic.AddUint64(&c.allocCount, 1)
-		atomic.AddUint64(&c.allocBytes, ev.Size)
+		// No rate counting here: the Go lane's rate comes from the kernel's
+		// per-CPU totals, which count every allocation whether or not it was
+		// sampled and whatever the ring buffer dropped (see ratesGo).
 		he := HeapEvent{
-			Op:       "alloc",
-			Size:     ev.Size,
-			CallSite: c.resolveSite(ev.StackID).addr,
-			StackID:  ev.StackID,
-			Large:    ev.Flags&bpf.GoAllocFlagLarge != 0,
+			Op:          "alloc",
+			Size:        ev.Size,
+			CallSite:    c.resolveSite(ev.StackID).addr,
+			StackID:     ev.StackID,
+			Large:       ev.Flags&bpf.GoAllocFlagLarge != 0,
+			WeightCount: ev.WeightCount,
+			WeightBytes: ev.WeightBytes,
 		}
 		select {
 		case c.ch <- he:
@@ -360,7 +388,7 @@ func (c *HeapEBPFCollector) snapshotGo() (HeapStats, error) {
 	}
 
 	now := time.Now()
-	allocRate, byteRate := c.rates(now)
+	allocRate, byteRate := c.ratesGo(now)
 	return HeapStats{
 		Timestamp:      now,
 		AllocRate:      allocRate,
@@ -368,6 +396,7 @@ func (c *HeapEBPFCollector) snapshotGo() (HeapStats, error) {
 		TopCallSites:   chooseTopCallSites(sites, heapTopCallSites),
 		Lane:           HeapLaneGo,
 		LiveMeasured:   false,
+		SampleBytes:    sampledRate(c.goTracer.SampleBytes()),
 	}, nil
 }
 
@@ -436,10 +465,11 @@ func (c *HeapEBPFCollector) snapshotLibc() (HeapStats, error) {
 }
 
 // rates converts the counters readLoop has been accumulating into per-second
-// figures and resets them. The first interval is discarded rather than
-// reported: it spans process attach, so it would divide a partial count by a
-// full interval and understate the rate at exactly the moment someone is
-// watching the tool start up.
+// figures and resets them. Libc lane only — the Go lane uses ratesGo.
+//
+// The first interval is discarded rather than reported: it spans process
+// attach, so it would divide a partial count by a full interval and understate
+// the rate at exactly the moment someone is watching the tool start up.
 //
 // publishLoop-only (c.lastAt is not guarded), matching the libc lane's
 // original contract.
@@ -453,6 +483,42 @@ func (c *HeapEBPFCollector) rates(now time.Time) (allocRate, byteRate float64) {
 	if elapsed := now.Sub(c.lastAt).Seconds(); elapsed > 0 {
 		allocRate = float64(atomic.SwapUint64(&c.allocCount, 0)) / elapsed
 		byteRate = float64(atomic.SwapUint64(&c.allocBytes, 0)) / elapsed
+	}
+	c.lastAt = now
+	return allocRate, byteRate
+}
+
+// ratesGo is the Go lane's rate, read from the kernel's running totals rather
+// than from the events readLoop saw. Two reasons it cannot come from the
+// events: with sampling on, a target allocating less than one sample's worth
+// per interval would report 0 and then a spike, and a ring buffer that
+// overflowed would silently understate the rate for as long as it was full.
+// The kernel counts every allocation on the way past, so neither shows up here.
+//
+// Like rates(), the first interval is discarded: it spans attach, and dividing
+// a partial count by a full interval understates the rate exactly when someone
+// is watching the tool start.
+//
+// publishLoop-only, same contract as rates().
+func (c *HeapEBPFCollector) ratesGo(now time.Time) (allocRate, byteRate float64) {
+	count, bytes, err := c.goTracer.Totals()
+	if err != nil {
+		return 0, 0
+	}
+	prevCount, prevBytes := c.lastTotalCount, c.lastTotalBytes
+	c.lastTotalCount, c.lastTotalBytes = count, bytes
+
+	if c.lastAt.IsZero() {
+		c.lastAt = now
+		return 0, 0
+	}
+	if elapsed := now.Sub(c.lastAt).Seconds(); elapsed > 0 {
+		if count > prevCount {
+			allocRate = float64(count-prevCount) / elapsed
+		}
+		if bytes > prevBytes {
+			byteRate = float64(bytes-prevBytes) / elapsed
+		}
 	}
 	c.lastAt = now
 	return allocRate, byteRate

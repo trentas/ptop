@@ -73,6 +73,9 @@ type Config struct {
 	TLSMaxBytes int
 	// Disable names subsystems not to collect; see collector.SetConfig.
 	Disable map[string]bool
+	// HeapSampleBytes is the Go allocation lane's sampling rate; see
+	// collector.SetConfig.
+	HeapSampleBytes uint64
 
 	// Feed, when set, is an already-running Set plus the Bus fanning it out
 	// (#71) — how `--serve --tui` drives the TUI and the gRPC stream from ONE
@@ -291,7 +294,7 @@ func NewModel(cfg Config) Model {
 		m.ownsFeed = true
 		m.feed = collector.StartFeed(ctx, collector.SetConfig{
 			PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
-			Disable: cfg.Disable,
+			Disable: cfg.Disable, HeapSampleBytes: cfg.HeapSampleBytes,
 		})
 	}
 	m.collectors = m.feed.Set

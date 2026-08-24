@@ -77,6 +77,7 @@ ptop/
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
+│   │   │   ├── goalloc.bpf.c      runtime.mallocgc uprobe → Go alloc sites, byte-sampled (#108)
 │   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
 │   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
@@ -85,6 +86,9 @@ ptop/
 │   │   ├── available.go           runtime feature flag (build-tag based)
 │   │   ├── target.go              target resolver: pid-namespace + cgroup (shared)
 │   │   ├── target_spec.go         bpf.Target + cgroup path/level/id helpers (#94)
+│   │   ├── cpulist.go             /sys CPU-list parser (build-tag-free, #108)
+│   │   ├── goalloc.go             runtime.mallocgc uprobe loader + sampling rate
+│   │   ├── goalloc_spec.go        GoAllocDefaultSampleBytes (build-tag-free)
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
 │   │   ├── caps_stub.go           non-Linux stub
 │   │   ├── caps_test.go
@@ -106,6 +110,7 @@ ptop/
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
+│   │   ├── shed.go                which event a full sink queue gives up (#108)
 │   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
 │   │   ├── stackid.go             wire stack-id namespace + combined resolver (#89)
 │   │   ├── service.go             EventStream gRPC service impl
@@ -141,6 +146,7 @@ ptop/
 │       ├── types.go               public type contracts (see below)
 │       ├── set.go                 source-priority selection + lifecycle (Set)
 │       ├── bus.go                 single fan-out: Set → N consumers (Feed, #71)
+│       ├── shed.go                snapshot vs per-occurrence rate class (#108)
 │       ├── source_{linux,darwin}.go  platform source labels (Source*)
 │       ├── cpu_proc.go            /proc/<pid>/stat utime+stime
 │       ├── cpu_ebpf.go            eBPF perf_event sampling
@@ -289,6 +295,63 @@ The `?` help overlay surfaces the active source per subsystem (`real via eBPF`,
 `real via /proc`, or `mock`). Never lie about the source — users debug with
 this.
 
+### Rate classes, and why a full queue is not first-come-first-served
+
+Collector values fall into two shapes, and every bounded queue in the pipeline
+has to know which it is holding (`pkg/collector/shed.go`,
+`internal/serve/shed.go`):
+
+- **Periodic snapshots** — `CpuSample`, `MemStats`, `HeapStats`, `[]ThreadInfo`,
+  `[]LockEntry`, … One per collector tick. A handful per second, all told.
+- **Per-occurrence events** — `HeapEvent`, `TimelineEvent`, `SignalEvent`,
+  `FSEvent`, … One per thing the target did. Unbounded: the Go allocation lane
+  can emit hundreds of thousands a second.
+
+Plain drop-when-full lets the second class own the whole queue, and then the
+once-a-second `CpuSample` never fits. What comes out the far end is a stream
+with **no CPU axis at all**, which reads as an idle process rather than as a
+gap — the reported failure in #108, where a 17-second window over a busy Go
+service had a CPU distribution of zero at every percentile.
+
+So the last quarter of every queue is reserved for the snapshots: a flood fills
+three quarters and stops. Shed values are still counted and still surfaced
+(`Subscription.Dropped`, `StreamMeta.dropped`) — a gap is reported, never
+hidden. **A new collector value type defaults to the snapshot class**, so
+adding one cannot silently starve it; add it to `isPerOccurrenceValue` /
+`isPerOccurrence` only if it really is emitted per occurrence.
+
+### The observer's cost is charged to the target
+
+A uprobe runs on the thread that tripped it, so its cost lands in the TARGET's
+own CPU accounting — and ptop's CPU axis samples the target on-CPU, so ptop
+then reports it as the target's CPU. That is not a rounding error: measured at
+1.1M allocations/s, one stack walk per allocation made the target take **+252%**
+longer per unit of work, and the alloc-heavy arm of an A/B pair came out hotter
+than the compute-heavy one — inverting the comparison the axis exists for.
+
+Hence `goalloc.bpf.c` samples its stack walk by bytes allocated
+(`--heap-sample-bytes`, default 512KB — the same rate Go's own heap profiler
+uses). Totals stay exact (a sampled allocation is credited with everything
+allocated since the previous one) while per-site attribution becomes an
+estimate, and `HeapSnapshot.sample_bytes` says so on the wire. What remains is
+the uprobe trap itself, which no amount of sampling removes; `--disable heap`
+is the only way to stop paying it.
+
+**The sampling threshold is random, and that is load-bearing.** Allocation
+patterns are periodic — a handler allocates the same objects in the same order
+every request — and a fixed threshold crossed by a periodic byte stream always
+crosses at the same phase of the cycle, so one call site takes every sample and
+the rest take none. On a workload alternating a 152-byte allocation with a
+1048-byte one, a fixed threshold split the bytes 1.1:1 where the truth is
+6.9:1; drawing the threshold uniformly from `[1, 2·rate]` put it at 8:1 (an 89%
+share against a true 87%). Any future sampler in this codebase inherits the
+same trap.
+
+The rule for any new probe: measure what it costs the target
+(`make bench`, `bench/README.md`), and if the cost scales with something the
+target does often, sample it rather than shipping a probe that replaces the
+program it observes.
+
 ---
 
 ## TUI conventions
@@ -402,6 +465,8 @@ ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key
 ptop --pid <PID> ... --serve-tls-client-ca <ca>   also require a client certificate (mTLS)
 ptop --pid <PID> --tls       TLS payload metadata (libssl uprobes) — OFF by default (#55)
 ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (implies --tls)
+ptop --pid <PID> --heap-sample-bytes 0   record EVERY Go allocation (exact per site, very expensive)
+ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
 ptop --version              print version + commit + build date
 ```

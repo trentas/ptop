@@ -131,12 +131,21 @@ type Subscription struct {
 
 // Subscribe registers a channel consumer with a queue of the given size
 // (buffer < 1 is raised to 1).
+//
+// The tail of the queue is reserved for the periodic snapshots, so a
+// per-occurrence flood cannot starve them out of a slow consumer's view
+// (#108 — see shed.go).
 func (b *Bus) Subscribe(buffer int) *Subscription {
 	if buffer < 1 {
 		buffer = 1
 	}
 	s := &Subscription{bus: b, ch: make(chan interface{}, buffer)}
+	limit := perOccurrenceLimitOf(buffer)
 	s.h = b.AddHandler(func(v interface{}) {
+		if isPerOccurrenceValue(v) && len(s.ch) >= limit {
+			s.dropped.Add(1)
+			return
+		}
 		select {
 		case s.ch <- v:
 		default:

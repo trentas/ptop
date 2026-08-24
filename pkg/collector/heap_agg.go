@@ -113,6 +113,22 @@ func isGoRuntimeFunc(name string) bool {
 		strings.HasPrefix(name, "internal/runtime/")
 }
 
+// sampledRate is the Go lane's sampling rate as the wire reports it: 0 when
+// nothing was estimated.
+//
+// A rate of ONE BYTE records every allocation — any allocation crosses it
+// immediately — so it is exact, and publishing it as a sampling rate would be
+// wrong in the one direction that matters: sample_bytes > 0 is precisely what a
+// consumer branches on to know the per-site split is an estimate rather than a
+// census. Userspace spells "every allocation" as 1 rather than 0 so that the
+// zero value of SetConfig can mean the safe default instead (#108).
+func sampledRate(rate uint64) uint64 {
+	if rate <= 1 {
+		return 0
+	}
+	return rate
+}
+
 // heapAddrHex formats a call-site address for display; 0 means the stack walk
 // failed (no frame pointers) and renders as "unknown".
 func heapAddrHex(addr uint64) string {

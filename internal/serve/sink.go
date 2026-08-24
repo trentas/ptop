@@ -13,7 +13,9 @@ import (
 
 // subBuffer bounds each sink's queue. A sink that can't keep up has events
 // dropped (counted), never blocking the collector drain path or growing
-// unbounded.
+// unbounded. WHICH events it drops is not first-come-first-served — see
+// shed.go, which reserves the tail of the queue for the periodic snapshots so
+// an unbounded-rate axis cannot starve them out of the stream.
 const subBuffer = 256
 
 // Sink is an interchangeable consumer of the event stream. The gRPC subscriber
@@ -51,6 +53,12 @@ func (s *grpcSink) wants(c pb.Category) bool {
 
 func (s *grpcSink) Emit(ev *pb.Event) {
 	if !s.wants(ev.GetCategory()) {
+		return
+	}
+	// admits keeps a flood of per-occurrence events out of the tail of the
+	// queue, so the once-a-second snapshots still get through (#108).
+	if !admits(len(s.ch), ev) {
+		atomic.AddUint64(&s.dropped, 1)
 		return
 	}
 	resp := &pb.SubscribeResponse{Kind: &pb.SubscribeResponse_Event{Event: ev}}
@@ -138,6 +146,10 @@ func writeJSONLLine(w io.Writer, resp *pb.SubscribeResponse) error {
 }
 
 func (s *jsonlSink) Emit(ev *pb.Event) {
+	if !admits(len(s.ch), ev) { // see shed.go
+		atomic.AddUint64(&s.dropped, 1)
+		return
+	}
 	select {
 	case s.ch <- ev:
 	default:
