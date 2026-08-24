@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"unsafe"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
@@ -19,19 +19,20 @@ import (
 //go:embed programs/cpu.bpf.o
 var cpuBPFObj []byte
 
-// CPUTracer samples the target PID via perf_event PERF_COUNT_SW_CPU_CLOCK
-// at SAMPLE_FREQ Hz per CPU. When the kernel fires a sample and the current
-// tgid is the target, the BPF program increments a counter. The collector
-// reads the counter every N seconds and computes CPU %.
+// CPUTracer accumulates how many nanoseconds the target spent on-CPU, by
+// bracketing its scheduler slices at sched:sched_switch (see programs/cpu.bpf.c
+// for the mechanism and for why this is not a sampler any more, #108).
+//
+// The collector reads OnCPUNanos every second and divides by the elapsed wall
+// time; the result is the same quantity /proc reports as utime+stime, so the
+// two agree by construction instead of by luck.
 type CPUTracer struct {
-	coll       *ebpf.Collection
-	samplesMap *ebpf.Map
-	perfFDs    []int // 1 fd per online CPU
+	coll  *ebpf.Collection
+	link  link.Link
+	acc   *ebpf.Map // cpu_oncpu_ns, per-CPU
+	since *ebpf.Map // cpu_on_since, per-CPU
+	ncpu  int
 }
-
-// SampleFreq is the sampling frequency in Hz per CPU. 100Hz is what
-// `perf record` uses by default — granular enough to detect CPU spikes >10ms.
-const SampleFreq = 100
 
 func OpenCPUTracer(target Target) (*CPUTracer, error) {
 	if err := target.validate(); err != nil {
@@ -50,7 +51,12 @@ func OpenCPUTracer(target Target) (*CPUTracer, error) {
 		return nil, fmt.Errorf("load cpu BPF collection: %w", err)
 	}
 
-	t := &CPUTracer{coll: coll}
+	cpus, err := onlineCPUs()
+	if err != nil {
+		coll.Close()
+		return nil, err
+	}
+	t := &CPUTracer{coll: coll, ncpu: len(cpus)}
 
 	targetMap := coll.Maps["cpu_target_pid"]
 	if targetMap == nil {
@@ -67,74 +73,35 @@ func OpenCPUTracer(target Target) (*CPUTracer, error) {
 		return nil, fmt.Errorf("set cpu_target_pid: %w", err)
 	}
 
-	t.samplesMap = coll.Maps["cpu_target_samples"]
-	if t.samplesMap == nil {
+	t.acc = coll.Maps["cpu_oncpu_ns"]
+	t.since = coll.Maps["cpu_on_since"]
+	if t.acc == nil || t.since == nil {
 		t.Close()
-		return nil, errors.New("cpu_target_samples map not found")
+		return nil, errors.New("cpu_oncpu_ns / cpu_on_since map not found")
 	}
 
-	prog := coll.Programs["handle_perf_event"]
+	prog := coll.Programs["handle_sched_switch"]
 	if prog == nil {
 		t.Close()
-		return nil, errors.New("handle_perf_event program not found")
+		return nil, errors.New("handle_sched_switch program not found")
 	}
-
-	// perf_event_open + ioctl(PERF_EVENT_IOC_SET_BPF) per CPU.
-	// PERF_TYPE_SOFTWARE/PERF_COUNT_SW_CPU_CLOCK fires samples at
-	// SAMPLE_FREQ Hz per CPU (kernel guarantees uniformity).
-	//
-	// Every ONLINE cpu, by id — not runtime.NumCPU() (#108). NumCPU reports
-	// the size of PTOP's own affinity mask, so a ptop confined to a cpuset
-	// (systemd CPUAffinity=, taskset, a container's cpuset) opened events on
-	// only part of the machine and never saw the target's time on the rest.
-	// The counter still read as a rate, so the shortfall came out as a plain
-	// undercount — a busy target reported as idle, with nothing saying why.
-	// Ids matter too, not just how many: hot-unplug leaves gaps.
-	cpus, err := onlineCPUs()
+	l, err := link.Tracepoint("sched", "sched_switch", prog, nil)
 	if err != nil {
 		t.Close()
-		return nil, err
+		return nil, fmt.Errorf("attach sched/sched_switch: %w", err)
 	}
-	for _, cpu := range cpus {
-		attr := unix.PerfEventAttr{
-			Type:        unix.PERF_TYPE_SOFTWARE,
-			Config:      unix.PERF_COUNT_SW_CPU_CLOCK,
-			Sample:      SampleFreq,
-			Sample_type: unix.PERF_SAMPLE_RAW,
-			Bits:        unix.PerfBitFreq, // Sample is a rate (Hz), not a period in ns
-		}
-		attr.Size = uint32(unsafe.Sizeof(attr))
-		// pid=-1 (any task), cpu=cpu, group_fd=-1
-		fd, err := unix.PerfEventOpen(&attr, -1, cpu, -1, 0)
-		if err != nil {
-			t.Close()
-			return nil, fmt.Errorf("perf_event_open cpu=%d: %w", cpu, err)
-		}
-		// Attach BPF program to this fd
-		if err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_SET_BPF, prog.FD()); err != nil {
-			unix.Close(fd)
-			t.Close()
-			return nil, fmt.Errorf("ioctl SET_BPF cpu=%d: %w", cpu, err)
-		}
-		// Enable sampling
-		if err := unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_ENABLE, 0); err != nil {
-			unix.Close(fd)
-			t.Close()
-			return nil, fmt.Errorf("ioctl ENABLE cpu=%d: %w", cpu, err)
-		}
-		t.perfFDs = append(t.perfFDs, fd)
-	}
+	t.link = l
 
 	return t, nil
 }
 
-// onlineCPUs lists the ids of the CPUs the kernel currently has online — the
-// set a task can be scheduled on, and therefore the set that has to be sampled
-// for the count to mean "the target's share of a core".
+// onlineCPUs lists the ids of the CPUs the kernel currently has online.
 //
-// Falls back to 0..runtime.NumCPU()-1 only when sysfs cannot be read at all
-// (an unusual /proc-less or restricted mount namespace); that is the old
-// behaviour, kept as a floor rather than as the answer.
+// It is only the ceiling for the saturation clamp now that nothing is opened
+// per CPU — but it stays a sysfs read rather than runtime.NumCPU(), which
+// reports the size of PTOP's own affinity mask and would shrink the ceiling
+// below what the target can actually use whenever ptop is confined to a cpuset
+// (systemd CPUAffinity=, taskset, a container's cpuset).
 func onlineCPUs() ([]int, error) {
 	b, err := os.ReadFile("/sys/devices/system/cpu/online")
 	if err == nil {
@@ -148,11 +115,8 @@ func onlineCPUs() ([]int, error) {
 	}
 	n := runtime.NumCPU()
 	if n < 1 {
-		return nil, errors.New("no online CPUs to sample")
+		return nil, errors.New("no online CPUs")
 	}
-	fmt.Fprintf(os.Stderr,
-		"cpu: /sys/devices/system/cpu/online unreadable (%v); sampling %d CPUs from this process's affinity mask, which undercounts if the target runs outside it\n",
-		err, n)
 	ids := make([]int, n)
 	for i := range ids {
 		ids[i] = i
@@ -160,40 +124,84 @@ func onlineCPUs() ([]int, error) {
 	return ids, nil
 }
 
-// SampleCount returns the current accumulated count of on-CPU samples.
-// The collector uses the delta between calls to compute %.
-func (t *CPUTracer) SampleCount() (uint64, error) {
-	if t == nil || t.samplesMap == nil {
+// OnCPUNanos returns the target's total on-CPU time since the tracer attached.
+//
+// It is the sum of the finished slices the BPF program has accumulated plus
+// the slice in flight on every CPU currently running a target thread —
+// without that second term, a thread that runs for a whole window without
+// being switched out would report zero for that window and a spike for the
+// next one, which is the failure this axis is trying to stop reporting.
+//
+// The two maps are read in this order — accumulator, then clock, then the
+// in-flight timestamps — so that a slice ending mid-read is either counted
+// once in the accumulator or dropped from this reading and picked up by the
+// next one. The reverse order can count the same nanoseconds twice and make
+// the total go backwards.
+func (t *CPUTracer) OnCPUNanos() (uint64, error) {
+	if t == nil || t.acc == nil || t.since == nil {
 		return 0, errors.New("tracer not initialized")
 	}
-	var key uint32 = 0
-	var val uint64
-	if err := t.samplesMap.Lookup(&key, &val); err != nil {
+	var key uint32
+
+	var accPerCPU []uint64
+	if err := t.acc.Lookup(&key, &accPerCPU); err != nil {
 		return 0, err
 	}
-	return val, nil
+	now, err := monotonicNanos()
+	if err != nil {
+		return 0, err
+	}
+	var sincePerCPU []uint64
+	if err := t.since.Lookup(&key, &sincePerCPU); err != nil {
+		return 0, err
+	}
+
+	var total uint64
+	for _, v := range accPerCPU {
+		total += v
+	}
+	for _, s := range sincePerCPU {
+		if s != 0 && now > s {
+			total += now - s
+		}
+	}
+	return total, nil
 }
 
-// NumCPU returns the number of CPUs the tracer is sampling on.
-// Used by the collector for the % computation.
+// monotonicNanos reads the clock bpf_ktime_get_ns() is based on
+// (CLOCK_MONOTONIC — not CLOCK_BOOTTIME, which counts time spent suspended),
+// so the in-flight slice above is measured in the same domain the BPF program
+// timestamped it in.
+func monotonicNanos() (uint64, error) {
+	var ts unix.Timespec
+	if err := unix.ClockGettime(unix.CLOCK_MONOTONIC, &ts); err != nil {
+		return 0, fmt.Errorf("clock_gettime(CLOCK_MONOTONIC): %w", err)
+	}
+	return uint64(ts.Sec)*1e9 + uint64(ts.Nsec), nil
+}
+
+// NumCPU returns how many CPUs are online — the ceiling the collector clamps
+// its percentage to.
 func (t *CPUTracer) NumCPU() int {
-	return len(t.perfFDs)
+	if t == nil {
+		return 0
+	}
+	return t.ncpu
 }
 
 func (t *CPUTracer) Close() error {
 	if t == nil {
 		return nil
 	}
-	for _, fd := range t.perfFDs {
-		// Disable then close
-		_ = unix.IoctlSetInt(fd, unix.PERF_EVENT_IOC_DISABLE, 0)
-		_ = unix.Close(fd)
+	if t.link != nil {
+		_ = t.link.Close()
+		t.link = nil
 	}
-	t.perfFDs = nil
 	if t.coll != nil {
 		t.coll.Close()
 		t.coll = nil
-		t.samplesMap = nil
+		t.acc = nil
+		t.since = nil
 	}
 	return nil
 }

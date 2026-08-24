@@ -127,7 +127,8 @@ func NewSet(cfg SetConfig) *Set {
 		fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
 	}
 
-	// CPU: eBPF perf_event @ 100Hz/CPU first, /proc polling as fallback.
+	// CPU: eBPF (the target's on-CPU time, from sched_switch) first, /proc
+	// polling of utime+stime as fallback.
 	if !cfg.NoEBPF && !cfg.off(SubsystemCPU) {
 		c := NewCPUEBPFCollector()
 		if err := c.Start(cfg.PID); err == nil {

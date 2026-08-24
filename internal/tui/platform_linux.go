@@ -30,10 +30,14 @@ const (
 // statusBarSourceLabel is the footer's data-source descriptor. It must
 // describe how this build actually collects, never claim a path it can't
 // take. The kernel release is read live (it used to be hardcoded "6.8"), and
-// the old unmeasured "overhead <0.5%" claim is gone. The 100Hz figure is real
-// — the eBPF cpu.bpf.c perf_event runs at sample_freq=100.
+// the old unmeasured "overhead <0.5%" claim is gone.
+//
+// It used to end "sampling 100Hz", which described the CPU axis when that axis
+// counted perf_event samples. It does not sample any more — it reads the
+// scheduler's own accounting of the target's slices (#108) — so the claim
+// went with the mechanism rather than being left to age into a lie.
 func statusBarSourceLabel() string {
-	return "eBPF kernel " + kernelRelease() + " · sampling 100Hz"
+	return "eBPF kernel " + kernelRelease() + " · cpu from sched_switch"
 }
 
 // kernelRelease returns the running kernel version (uname -r), or "?" if the

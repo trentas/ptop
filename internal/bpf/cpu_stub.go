@@ -4,13 +4,11 @@ package bpf
 
 import "errors"
 
-var errCPUStub = errors.New("eBPF cpu sampler not available in this build (requires Linux + -tags=ebpf)")
+var errCPUStub = errors.New("eBPF cpu tracer not available in this build (requires Linux + -tags=ebpf)")
 
 type CPUTracer struct{}
 
-const SampleFreq = 100
-
 func OpenCPUTracer(Target) (*CPUTracer, error) { return nil, errCPUStub }
-func (*CPUTracer) SampleCount() (uint64, error) { return 0, errCPUStub }
-func (*CPUTracer) NumCPU() int                  { return 0 }
-func (*CPUTracer) Close() error                 { return nil }
+func (*CPUTracer) OnCPUNanos() (uint64, error) { return 0, errCPUStub }
+func (*CPUTracer) NumCPU() int                 { return 0 }
+func (*CPUTracer) Close() error                { return nil }
