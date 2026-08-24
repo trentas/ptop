@@ -10,13 +10,17 @@ import (
 	"github.com/trentas/ptop/internal/bpf"
 )
 
-// CPUEBPFCollector consumes the on-CPU sample counter from the perf_event
-// tracer (internal/bpf/cpu.go) and publishes CpuSample{UsagePct} every 1s.
+// CPUEBPFCollector turns the on-CPU nanosecond counter kept by the scheduler
+// tracer (internal/bpf/cpu.go) into a CpuSample{UsagePct} every second:
 //
-// Calculation:
-//   delta_samples / (SampleFreq × NCPU × elapsed_seconds) × 100 × NCPU
-//   = delta_samples / (SampleFreq × elapsed_seconds) × 100
-//   = single-core % (top-style; can exceed 100% when multi-threaded)
+//	pct = Δ on-CPU ns / Δ wall ns × 100
+//
+// That is single-core % (top-style; a multi-threaded target can exceed 100%)
+// and it is the same quantity /proc reports as utime+stime, measured in
+// nanoseconds rather than 10ms ticks. Before #108 this divided a count of
+// 100Hz perf samples by an assumed sampling rate, which agreed with /proc only
+// on average and, over the one-second buckets this publishes, mostly did not:
+// see programs/cpu.bpf.c.
 //
 // In builds without -tags=ebpf or non-Linux OS, the parallel stub always
 // fails in Start, leading the model to use the /proc collector or simulation.
@@ -25,9 +29,9 @@ type CPUEBPFCollector struct {
 	ch     chan interface{}
 	stop   chan struct{}
 
-	mu       sync.Mutex
-	lastSamp uint64
-	lastAt   time.Time
+	mu     sync.Mutex
+	lastNs uint64
+	lastAt time.Time
 }
 
 func NewCPUEBPFCollector() *CPUEBPFCollector {
@@ -49,6 +53,12 @@ func (c *CPUEBPFCollector) start(t bpf.Target) error {
 		return fmt.Errorf("cpu eBPF: %w", err)
 	}
 	c.tracer = tracer
+	// Take the baseline now rather than on the first tick: with no baseline
+	// the first published sample is a structural zero, and a zero on this
+	// axis reads as an idle process rather than as "not measured yet".
+	if ns, err := tracer.OnCPUNanos(); err == nil {
+		c.lastNs, c.lastAt = ns, time.Now()
+	}
 	go c.loop()
 	return nil
 }
@@ -90,7 +100,7 @@ func (c *CPUEBPFCollector) sample() (CpuSample, error) {
 	if c.tracer == nil {
 		return CpuSample{}, fmt.Errorf("tracer not open")
 	}
-	count, err := c.tracer.SampleCount()
+	ns, err := c.tracer.OnCPUNanos()
 	if err != nil {
 		return CpuSample{}, err
 	}
@@ -98,21 +108,9 @@ func (c *CPUEBPFCollector) sample() (CpuSample, error) {
 	now := time.Now()
 	var pct float64
 	if !c.lastAt.IsZero() {
-		elapsed := now.Sub(c.lastAt).Seconds()
-		if elapsed > 0 && count >= c.lastSamp {
-			delta := float64(count - c.lastSamp)
-			// pct = single-core %. SampleFreq samples per second per CPU
-			// give NCPU × SampleFreq samples/s in total. delta in that
-			// interval represents fractions of CPU used by the target.
-			//
-			// pct = (delta / (SampleFreq × elapsed)) × 100
-			pct = (delta / (float64(bpf.SampleFreq) * elapsed)) * 100
-			if pct > float64(c.tracer.NumCPU()*100) {
-				pct = float64(c.tracer.NumCPU() * 100) // saturation
-			}
-		}
+		pct = cpuPercent(c.lastNs, ns, now.Sub(c.lastAt), c.tracer.NumCPU())
 	}
-	c.lastSamp = count
+	c.lastNs = ns
 	c.lastAt = now
 
 	return CpuSample{

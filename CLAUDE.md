@@ -71,7 +71,7 @@ ptop/
 │   │   ├── programs/              .bpf.c sources, compiled by `make gen`
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
-│   │   │   ├── cpu.bpf.c          perf_event @ 100Hz/CPU
+│   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── io.bpf.c           VFS read/write/fsync
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes
 │   │   │   ├── threads.bpf.c      sched_switch
@@ -92,7 +92,7 @@ ptop/
 │   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
 │   │   ├── caps_stub.go           non-Linux stub
 │   │   ├── caps_test.go
-│   │   ├── cpu.go                 perf_event tracer
+│   │   ├── cpu.go                 on-CPU time tracer (sched_switch)
 │   │   ├── syscalls.go            raw_syscalls tracepoint loader
 │   │   ├── network.go             sock tracepoints + connection seeding
 │   │   ├── io.go                  VFS syscall tracker loader
@@ -149,7 +149,8 @@ ptop/
 │       ├── shed.go                snapshot vs per-occurrence rate class (#108)
 │       ├── source_{linux,darwin}.go  platform source labels (Source*)
 │       ├── cpu_proc.go            /proc/<pid>/stat utime+stime
-│       ├── cpu_ebpf.go            eBPF perf_event sampling
+│       ├── cpu_ebpf.go            eBPF on-CPU time → CPU%
+│       ├── cpu_rate.go            on-CPU ns → single-core % (build-tag-free)
 │       ├── threads_proc.go        /proc/<pid>/task/*/stat + wchan
 │       ├── threads_ebpf.go        sched_switch → CPU% real-time
 │       ├── mem_proc.go            /proc/<pid>/statm + faults
@@ -320,6 +321,47 @@ hidden. **A new collector value type defaults to the snapshot class**, so
 adding one cannot silently starve it; add it to `isPerOccurrenceValue` /
 `isPerOccurrence` only if it really is emitted per occurrence.
 
+### A percentage of CPU is a time, so measure the time
+
+The CPU axis used to be a perf_event at 100Hz per CPU whose BPF program
+incremented a counter whenever the target happened to be on-CPU; the collector
+divided that count by the nominal rate to get a percentage. It disagreed with
+`/proc` in both directions, and #108 reported three runs of one binary
+measuring 0%, 1% and 19% where `/proc` said 2.5% every time. Two independent
+reasons, both structural:
+
+- **The signal was a handful of samples.** A process using 2.5% of a core draws
+  2.5 samples a second. A one-second bucket of that is shot noise, and a
+  perfectly busy second can legitimately draw ZERO — which reads as an idle
+  process, not as a gap. Taking a p95 over a short window then reports the
+  maximum of the noise, so the cheap arm of an A/B pair can measure hotter than
+  the expensive one and invert the comparison the axis exists for.
+- **The nominal rate was not the achieved rate.** In `freq` mode the kernel
+  re-derives the sampling period from the count it observes at scheduler ticks,
+  and ticks do not run on an idle CPU; after an idle stretch the period inflates
+  and the event fires well below the requested rate while the collector keeps
+  dividing by the requested rate. Measured on a lightly loaded 10-CPU host:
+  80–90Hz per CPU, drifting window to window — a standing undercount, worst on
+  exactly the quiet machines where a 2.5% process lives.
+
+`cpu.bpf.c` now brackets the target's slices at `sched_switch` and accumulates
+nanoseconds, which is the same quantity `/proc` reports as `utime+stime`, at
+nanosecond resolution and with no rate to assume. Measured against
+`sum_exec_runtime` over a duty-cycle sweep, it agrees to within about one
+percent of the reading at every point from 2.5% to 400% of a core, and where
+the truth moves the axis moves with it.
+
+`cmd/ebpfselftest` is the gate: it runs the same pair the report was about —
+one workload at a few percent of a core, one at ten times that — and fails if
+the axis and `/proc` disagree by more than 15%. The quiet point is the one that
+matters, because a full CPU burn is the single case the old sampler got right.
+
+The general rule: sampling estimates *where* time went (which stack, which call
+site) and is the only affordable way to get that. It is the wrong instrument
+for *how much*, whenever the kernel already accounts the quantity exactly.
+Before adding a counter that has to be divided by an assumed rate, check
+whether something already counts the thing itself.
+
 ### The observer's cost is charged to the target
 
 A uprobe runs on the thread that tripped it, so its cost lands in the TARGET's
@@ -435,6 +477,8 @@ Two caveats worth knowing before extending this:
 
 Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest`: it
 runs one workload and checks the pid filter and the cgroup filter against it
+(and then two quieter ones, to check the CPU axis against `/proc` — see the
+section on measuring time above)
 (the cgroup phase reports SKIP where there is no subtree to target — a cgroup
 v1 host, or a cgroup namespace that shows `/` as its own root).
 

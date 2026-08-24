@@ -56,7 +56,7 @@ what the live binary renders against a real PID.
 │· gc          ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -- ⏳ nanosleep  ││18:06:31.367 I/O  write /var/log/app/api.log 512B     │
 │■ http-pool   ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░    -- ⏳ epoll_wait ││18:06:31.367  FD  openat → fd=15 /tmp/tmpXXXX         │
 └──────────────────────────────────────────────────────────────────────────────────┘└──────────────────────────────────────────────────────┘
- F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                                       eBPF kernel 6.8 · sampling 100Hz
+ F1-F7 tabs  ·  q quit  ·  p pause  ·  / filter  ·  s snapshot  ·  e export                                       eBPF kernel 6.8 · cpu from sched_switch
 ```
 
 A live recording (vhs script in [`assets/demo.tape`](assets/demo.tape)) will
@@ -219,7 +219,7 @@ overlay shows which one is active per tab.
 eBPF programs in `internal/bpf/programs/`:
 
 - `syscalls.bpf.c` — raw_syscalls/sys_{enter,exit}
-- `cpu.bpf.c` — perf_event @ 100Hz/CPU
+- `cpu.bpf.c` — sched_switch → the target's on-CPU nanoseconds
 - `io.bpf.c` — VFS read/write/fsync + filesystem semantics (denials/deletes/renames)
 - `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit)
 - `threads.bpf.c` — sched_switch
