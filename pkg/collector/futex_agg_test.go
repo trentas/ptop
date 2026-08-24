@@ -1,6 +1,10 @@
 package collector
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/trentas/ptop/pkg/symbol"
+)
 
 // A lock taken from several places is named by the site doing most of the
 // blocking, and its totals still cover every site — including the wake rows,
@@ -143,4 +147,121 @@ func addrsOf(entries []LockEntry) []uint64 {
 		out[i] = e.UAddr
 	}
 	return out
+}
+
+// ─── contention site selection (#107) ────────────────────────────────────────
+
+// symbolTable turns a fixture map into the resolver pickLockSite takes.
+func symbolTable(frames map[uint64]symbol.Frame) func(uint64) symbol.Frame {
+	return func(a uint64) symbol.Frame { return frames[a] }
+}
+
+// The Go lane: the runtime and the application are one module, so the walk has
+// to step over frames by NAME. Everything above the syscall wrapper here is
+// runtime scheduler code, which is where a Go program's futex traffic really
+// lives — sync.Mutex parks a goroutine, and only the scheduler ever blocks on a
+// futex. Naming the lock after any of those frames names every lock in the
+// process the same thing.
+func TestPickLockSiteGoRuntimeOnlyReportsAddress(t *testing.T) {
+	frames := map[uint64]symbol.Frame{
+		0x1000: {Func: "runtime.futex", File: "runtime/sys_linux_arm64.s", Line: 666, Module: "ordersvc"},
+		0x1100: {Func: "runtime.futexsleep", File: "runtime/os_linux.go", Line: 69, Module: "ordersvc"},
+		0x1200: {Func: "runtime.notesleep", File: "runtime/lock_futex.go", Line: 159, Module: "ordersvc"},
+		0x1300: {Func: "runtime.stopm", File: "runtime/proc.go", Line: 2800, Module: "ordersvc"},
+	}
+	site := pickLockSite([]uint64{0x1000, 0x1100, 0x1200, 0x1300}, symbolTable(frames))
+	if site.addr != 0x1000 {
+		t.Errorf("addr = %#x, want the leaf %#x", site.addr, 0x1000)
+	}
+	if site.frame != (symbol.Frame{}) {
+		t.Errorf("frame = %+v, want unresolved: naming the runtime's futex wrapper collapses every lock into one", site.frame)
+	}
+}
+
+// The case #107 is really about: two mutexes contended from two different
+// functions must come out as two different sites, not one.
+func TestPickLockSiteDistinguishesTwoGoCallers(t *testing.T) {
+	base := map[uint64]symbol.Frame{
+		0x1000: {Func: "runtime.futex", File: "runtime/sys_linux_arm64.s", Line: 666, Module: "ordersvc"},
+		0x1100: {Func: "runtime.semasleep", File: "runtime/os_linux.go", Line: 100, Module: "ordersvc"},
+		0x1200: {Func: "sync.(*Mutex).lockSlow", File: "sync/mutex.go", Line: 138, Module: "ordersvc"},
+		0x2000: {Func: "github.com/o/svc/pool.(*Pool).acquire", File: "github.com/o/svc/pool/pool.go", Line: 42, Module: "ordersvc"},
+		0x2100: {Func: "github.com/o/svc/ledger.(*Book).post", File: "github.com/o/svc/ledger/book.go", Line: 17, Module: "ordersvc"},
+	}
+	resolve := symbolTable(base)
+	a := pickLockSite([]uint64{0x1000, 0x1100, 0x1200, 0x2000}, resolve)
+	b := pickLockSite([]uint64{0x1000, 0x1100, 0x1200, 0x2100}, resolve)
+
+	if a.frame.Func != "github.com/o/svc/pool.(*Pool).acquire" {
+		t.Errorf("first site = %q, want the application caller", a.frame.Func)
+	}
+	if b.frame.Func != "github.com/o/svc/ledger.(*Book).post" {
+		t.Errorf("second site = %q, want the application caller", b.frame.Func)
+	}
+	if a.frame.Func == b.frame.Func {
+		t.Fatal("two locks taken from different functions collapsed into one site")
+	}
+}
+
+// The libc lane keeps working the way it did: the pthread wrappers live in
+// their own module, so the module check is what steps over them.
+func TestPickLockSiteSkipsLibcFrames(t *testing.T) {
+	frames := map[uint64]symbol.Frame{
+		0x7f00: {Func: "__lll_lock_wait", Module: "libc.so.6", Offset: 0x9a1c0},
+		0x7f10: {Func: "pthread_mutex_lock", Module: "libpthread.so.0", Offset: 0x8e00},
+		0x4000: {Func: "worker_run", File: "worker.c", Line: 88, Module: "app"},
+	}
+	site := pickLockSite([]uint64{0x7f00, 0x7f10, 0x4000}, symbolTable(frames))
+	if site.addr != 0x4000 || site.frame.Func != "worker_run" {
+		t.Errorf("site = %#x %+v, want the application frame", site.addr, site.frame)
+	}
+}
+
+func TestPickLockSiteEdgeCases(t *testing.T) {
+	resolve := symbolTable(map[uint64]symbol.Frame{
+		0x7f00: {Func: "__lll_lock_wait", Module: "libc.so.6"},
+	})
+
+	if got := pickLockSite(nil, resolve); got != (lockSite{}) {
+		t.Errorf("no frames: %+v, want zero site", got)
+	}
+	// A libc-only stack has no application frame either — address, not a name
+	// every lock in the process shares.
+	if got := pickLockSite([]uint64{0x7f00}, resolve); got.addr != 0x7f00 || got.frame != (symbol.Frame{}) {
+		t.Errorf("libc-only stack: %+v, want address only", got)
+	}
+	// Leading zeros are stack-map padding, not frames.
+	if got := pickLockSite([]uint64{0, 0, 0x7f00}, resolve); got.addr != 0x7f00 {
+		t.Errorf("padded stack: addr = %#x, want %#x", got.addr, 0x7f00)
+	}
+	// No symbolizer (cgroup mode): the leaf address, as before #89.
+	if got := pickLockSite([]uint64{0x7f00, 0x4000}, nil); got.addr != 0x7f00 || got.frame != (symbol.Frame{}) {
+		t.Errorf("no symbolizer: %+v, want the leaf address only", got)
+	}
+	// An unresolved frame is application code, not machinery: on a stripped
+	// module every name is empty, and skipping them would walk to the end.
+	if got := pickLockSite([]uint64{0x7f00, 0x5000}, resolve); got.addr != 0x5000 {
+		t.Errorf("unresolved frame: addr = %#x, want %#x", got.addr, 0x5000)
+	}
+}
+
+func TestIsLockInfraFunc(t *testing.T) {
+	infra := []string{
+		"runtime.futex", "runtime.lock2", "internal/runtime/atomic.Xchg",
+		"sync.(*Mutex).Lock", "sync.runtime_SemacquireMutex", "internal/sync.(*HashTrieMap).Load",
+	}
+	for _, n := range infra {
+		if !isLockInfraFunc(n) {
+			t.Errorf("isLockInfraFunc(%q) = false, want true", n)
+		}
+	}
+	app := []string{
+		"", "main.worker", "github.com/o/svc/pool.(*Pool).acquire",
+		"syncpool.Get", "runtimex.Lock", "worker_run",
+	}
+	for _, n := range app {
+		if isLockInfraFunc(n) {
+			t.Errorf("isLockInfraFunc(%q) = true, want false", n)
+		}
+	}
 }

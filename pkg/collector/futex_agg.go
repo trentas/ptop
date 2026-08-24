@@ -3,12 +3,86 @@ package collector
 import (
 	"fmt"
 	"sort"
+	"strings"
+
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // Pure aggregation helpers for the futex collector (#89), kept free of any
 // kernel/eBPF dependency so they unit-test on every platform. The real
 // collector (futex_ebpf.go) feeds these from the BPF maps and symbolizes the
 // call site each lock ends up named by.
+
+// lockSite is the resolved contention site for a stack_id: the raw frame
+// address plus its symbolization. An empty frame means no application code was
+// found on the stack — see pickLockSite.
+type lockSite struct {
+	addr  uint64
+	frame symbol.Frame
+}
+
+// pickLockSite chooses the frame that names a lock, walking the leaf-first
+// contention stack past the machinery every lock goes through and stopping at
+// the first frame belonging to code someone wrote. resolve symbolizes a frame
+// address; nil means no symbolizer (cgroup mode), where only the leaf address
+// is available.
+//
+// Walking past the machinery is the whole point (#107). The leaf of a futex
+// wait is the primitive's syscall wrapper — libc's `__lll_lock_wait`, or in a
+// Go binary `runtime.futex` at one fixed line of sys_linux_$GOARCH.s. EVERY
+// lock in the process passes through it, so naming a lock by that frame gives
+// every lock in the process the same name and collapses them into one entry.
+// That is strictly worse than the bare futex word it replaced: the address at
+// least told two locks apart.
+//
+// When nothing but machinery is on the stack — contention genuinely internal to
+// the runtime, which is where a Go program's futex traffic actually lives,
+// since sync.Mutex parks a goroutine and only the scheduler reaches a futex —
+// the site is reported as the ADDRESS ALONE, with no symbol. A caller that
+// keys on the symbolized site then finds none and falls back to the futex word,
+// which distinguishes locks again. Reporting the wrapper's name here would be
+// reporting a name that means "some lock".
+func pickLockSite(frames []uint64, resolve func(uint64) symbol.Frame) lockSite {
+	leaf := uint64(0)
+	for _, f := range frames {
+		if f == 0 {
+			continue
+		}
+		if leaf == 0 {
+			leaf = f
+		}
+		if resolve == nil {
+			break
+		}
+		fr := resolve(f)
+		// isLoaderModule covers the libc lane, where the pthread/futex
+		// wrappers sit in their own module; isLockInfraFunc covers the Go lane,
+		// where they do not.
+		if isLoaderModule(fr.Module) || isLockInfraFunc(fr.Func) {
+			continue // still inside the locking machinery — keep walking
+		}
+		return lockSite{addr: f, frame: fr}
+	}
+	return lockSite{addr: leaf}
+}
+
+// isLockInfraFunc reports whether a symbolized function is part of the locking
+// machinery rather than the code that took the lock.
+//
+// The Go runtime and the application are ONE module, so unlike the libc lane
+// there is no address range to exclude — only the package a function belongs
+// to (the same reason heap_agg.go filters Go allocation frames by name). sync
+// and internal/sync are in here beside the runtime because they are the
+// primitive, not its caller: a lock named sync.(*Mutex).Lock says no more than
+// runtime.futex does.
+func isLockInfraFunc(name string) bool {
+	if name == "" {
+		return false // unresolved: treat as application code, not as machinery
+	}
+	return isGoRuntimeFunc(name) ||
+		strings.HasPrefix(name, "sync.") ||
+		strings.HasPrefix(name, "internal/sync.")
+}
 
 // lockSample is one row of the kernel's futex_stats map: everything a single
 // (futex word, contention site) pair accumulated since the tracer started.

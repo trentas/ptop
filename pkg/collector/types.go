@@ -197,6 +197,13 @@ type LockEntry struct {
 	// several places this is the DOMINANT site of the window (most waits).
 	// eBPF-only, and only in pid mode — a cgroup subtree spans processes with
 	// no single memory map to symbolize against, so these stay zero there.
+	//
+	// Func/File/Line/Module/Offset are also zero when the contention stack held
+	// no application frame at all (#107) — notably in a Go target, where
+	// sync.Mutex parks a goroutine and only the scheduler reaches a futex, so
+	// every stack is runtime-internal. UAddr is then the only thing telling two
+	// locks apart, and reporting the syscall wrapper's name instead would give
+	// every lock in the process the same one.
 	CallSite uint64 // raw instruction pointer (0 when the stack walk failed)
 	Func     string // resolved function name ("" if unresolved)
 	File     string // source file ("" when the module carries no line info)

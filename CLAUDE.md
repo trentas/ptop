@@ -148,7 +148,9 @@ ptop/
 │       ├── threads_ebpf.go        sched_switch → CPU% real-time
 │       ├── mem_proc.go            /proc/<pid>/statm + faults
 │       ├── mem_ebpf.go            kprobe + syscall tracepoints
-│       ├── heap_ebpf.go           libc malloc/free pairing → live-heap + leak (#53)
+│       ├── heap_ebpf.go           libc malloc/free pairing, or the Go lane (#53)
+│       ├── heap_agg.go            call-site ranking + app-frame picking (build-tag-free)
+│       ├── futex_agg.go           lock folding + contention-site picking (#89/#107)
 │       ├── tls_ebpf.go            libssl uprobe → TLS payload (#55, opt-in --tls)
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
@@ -168,6 +170,10 @@ ptop/
 │       └── *_test.go, *_stub.go
 │   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)
 │       ├── elf.go                 OS-agnostic ELF/gosym core (Module, build-id)
+│       ├── dwarf.go               C/C++ file:line from .debug_line
+│       ├── lookup.go              name → address (uprobe attach), gosym fallback
+│       ├── gopath.go              build-machine source path → import path (#107)
+│       ├── perfmap.go             JIT /tmp/perf-<pid>.map frames
 │       ├── proc_linux.go          live-pid Symbolizer via /proc/<pid>/maps
 │       └── proc_other.go          non-Linux stub
 └── assets/
@@ -498,6 +504,29 @@ cross-run/deploy lock comparison possible: key on `module+offset` or
 `(uaddr, stack_id)` and the collector names the lock by the **dominant** site
 of the window, so a mutex taken from many places reports the one actually
 serializing it.
+
+Which frame of that stack names the lock is the whole question, and getting it
+wrong is worse than not symbolizing at all (#107). The leaf of a futex wait is
+the primitive's syscall wrapper — libc's `__lll_lock_wait`, or in a Go binary
+`runtime.futex` at one fixed line of `sys_linux_$GOARCH.s`. Every lock in the
+process passes through it, so naming locks by that frame gives them all the
+same name and folds them into ONE entry, where the bare address at least told
+them apart. `pickLockSite` (`futex_agg.go`) therefore walks past the machinery
+— loader/libc modules by module, `runtime.`/`internal/runtime/`/`sync.` by name,
+since the Go runtime and the application are one module — and stops at the
+first application frame. **Finding none, it reports the address and leaves the
+symbol fields empty**, so `call_site` is absent on the wire and a consumer
+falls back to `uaddr`. That is the normal outcome for a Go target: `sync.Mutex`
+parks a goroutine, only the scheduler ever reaches a futex, and `mcall` has
+already switched to the g0 stack by then — so there is no application frame to
+find.
+
+Source paths get the same treatment (`pkg/symbol/gopath.go`). `.gopclntab`
+records the path a file had on the BUILD machine, so `file:line` carried
+someone's `$GOROOT` and never matched between two hosts. `Module.Resolve`
+rewrites it to the file's import path (`runtime/sys_linux_arm64.s`,
+`github.com/x/y/pool.go`), anchored on the directory corroborating the symbol's
+package so an inlined frame is not filed under a package it never belonged to.
 
 **Wire stack ids are namespaced by source** (`internal/serve/stackid.go`): each
 tracer captures into its own `STACK_TRACE` map, and their ids are independent

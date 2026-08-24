@@ -34,14 +34,6 @@ type FutexEBPFCollector struct {
 	stackCache map[int32][]symbol.Frame // stack_id → full leaf-first frames
 }
 
-// lockSite is the resolved contention site for a stack_id: the raw frame
-// address plus its symbolization. Cached because stacks are stable for the
-// process lifetime and symbolizing re-reads ELF modules.
-type lockSite struct {
-	addr  uint64
-	frame symbol.Frame
-}
-
 // contentionThreshold defines how many new waits in the interval (1s) are
 // enough to emit a TimelineEvent. Small enough to detect problematic
 // locks, large enough to ignore "ok" mutexes that occasionally block.
@@ -258,9 +250,11 @@ func (c *FutexEBPFCollector) attachSite(e *LockEntry) {
 }
 
 // resolveSite maps a stack_id to the application frame that blocked on the
-// futex — the first frame outside libc/ld, since the leaf is libc's
-// pthread/futex wrapper. Cached under c.mu; returns a zero site when the stack
-// walk failed or nothing could be read.
+// futex, via pickLockSite (which walks past the locking machinery and, finding
+// nothing else, reports the address alone rather than a name every lock in the
+// process shares — #107). Cached under c.mu, since stacks are stable for the
+// process lifetime and symbolizing re-reads ELF modules. Returns a zero site
+// when the stack walk failed or nothing could be read.
 func (c *FutexEBPFCollector) resolveSite(stackID int32) lockSite {
 	if stackID < 0 || c.tracer == nil {
 		return lockSite{}
@@ -276,25 +270,13 @@ func (c *FutexEBPFCollector) resolveSite(stackID int32) lockSite {
 	if err != nil || len(frames) == 0 {
 		return lockSite{}
 	}
-
-	var site lockSite
+	// nil resolver in cgroup mode: a subtree has no single memory map to
+	// resolve against, so its sites stay addresses.
+	var resolve func(uint64) symbol.Frame
 	if c.sym != nil {
-		for _, f := range frames {
-			if f == 0 {
-				continue
-			}
-			fr := c.sym.Symbolize(f)
-			if !isLoaderModule(fr.Module) {
-				site = lockSite{addr: f, frame: fr}
-				break
-			}
-		}
-		if site.addr == 0 { // every frame was loader/libc — fall back to the leaf
-			site = lockSite{addr: frames[0], frame: c.sym.Symbolize(frames[0])}
-		}
-	} else {
-		site = lockSite{addr: frames[0]}
+		resolve = c.sym.Symbolize
 	}
+	site := pickLockSite(frames, resolve)
 
 	c.mu.Lock()
 	c.siteCache[stackID] = site

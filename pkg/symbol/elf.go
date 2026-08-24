@@ -132,7 +132,9 @@ func (m *Module) Resolve(fileVaddr uint64) Frame {
 
 	if tab := m.gosym(); tab != nil {
 		if file, line, fn := tab.PCToLine(fileVaddr); fn != nil {
-			fr.Func, fr.File, fr.Line = fn.Name, file, line
+			// goSourcePath: the line table records the BUILD machine's path,
+			// which does not travel (#107) — key on the import path instead.
+			fr.Func, fr.File, fr.Line = fn.Name, goSourcePath(fn.Name, file), line
 			return fr
 		}
 	}
