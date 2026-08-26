@@ -236,3 +236,41 @@ func TestMapHeapSnapshotCarriesLaneAndLiveMeasured(t *testing.T) {
 		})
 	}
 }
+
+// TestMapHeapSnapshotCarriesCompleteness pins the completeness signal onto the
+// wire (#109).
+//
+// Without it a consumer holding a truncated list cannot tell a site that
+// stopped allocating from one that stopped being reported, and reading the
+// first where the second holds reports the largest regression such an engine
+// can express over no evidence at all (sunnysystems/witness#69). total_call_sites
+// equal to the list length is the one state in which absence means zero.
+func TestMapHeapSnapshotCarriesCompleteness(t *testing.T) {
+	in := collector.HeapStats{
+		Lane: collector.HeapLaneGo, Timestamp: time.Unix(9, 0),
+		TopCallSites: []collector.HeapCallSite{
+			{CallSite: 0x1000, Func: "main.(*cache).storeThumb", AllocCount: 12024},
+			{CallSite: 0x2000, Func: "main.decode", AllocCount: 6008},
+		},
+		TotalCallSites:    9,
+		OmittedAllocCount: 11973,
+		OmittedAllocBytes: 96 << 10,
+		OmittedLiveBytes:  0,
+	}
+	h := toEvent(1, "", in).GetHeap()
+	if h == nil {
+		t.Fatal("payload is not a HeapSnapshot")
+	}
+	if h.GetTotalCallSites() != 9 {
+		t.Errorf("total_call_sites = %d, want 9", h.GetTotalCallSites())
+	}
+	if got := len(h.GetTopCallSites()); uint32(got) == h.GetTotalCallSites() {
+		t.Errorf("a truncated list reported itself as a census (%d of %d)", got, h.GetTotalCallSites())
+	}
+	if h.GetOmittedAllocCount() != 11973 {
+		t.Errorf("omitted_alloc_count = %d, want 11973", h.GetOmittedAllocCount())
+	}
+	if h.GetOmittedAllocBytes() != 96<<10 {
+		t.Errorf("omitted_alloc_bytes = %d, want %d", h.GetOmittedAllocBytes(), 96<<10)
+	}
+}

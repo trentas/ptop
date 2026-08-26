@@ -1536,9 +1536,33 @@ type HeapSnapshot struct {
 	// previous one, so no byte goes unattributed. Sampling exists because a stack
 	// walk per allocation costs a large multiple of the TARGET's own CPU time,
 	// which ptop's CPU axis then reported as the target's (#108).
-	SampleBytes   uint64 `protobuf:"varint,8,opt,name=sample_bytes,json=sampleBytes,proto3" json:"sample_bytes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	SampleBytes uint64 `protobuf:"varint,8,opt,name=sample_bytes,json=sampleBytes,proto3" json:"sample_bytes,omitempty"`
+	// How many distinct application call sites this snapshot aggregated, before
+	// top_call_sites was cut to the largest few. Equal to len(top_call_sites)
+	// when nothing was dropped — which is the only state in which the list is a
+	// census, and therefore the only one in which a site's ABSENCE from it means
+	// the site allocated nothing.
+	//
+	// Counted after stacks reaching one call site are folded together, so it is
+	// in the same unit as the list: the kernel keys its aggregate by stack id,
+	// and a function reached through several stacks used to hold several of the
+	// slots (#109).
+	TotalCallSites uint32 `protobuf:"varint,9,opt,name=total_call_sites,json=totalCallSites,proto3" json:"total_call_sites,omitempty"`
+	// The volume carried by the call sites that did not fit in top_call_sites.
+	// Zero when total_call_sites == len(top_call_sites).
+	//
+	// These exist so absence can be read instead of guessed. A consumer diffing
+	// two deploys watches a site drop out of the list and cannot tell "it stopped
+	// allocating" from "it stopped being reported" — opposite situations, and
+	// reading the first where the second holds reports the largest regression
+	// such an engine can express over no evidence at all
+	// (sunnysystems/witness#69). A site absent from the list did strictly less
+	// than these totals, which is the bound that makes the inference safe.
+	OmittedAllocCount uint64 `protobuf:"varint,10,opt,name=omitted_alloc_count,json=omittedAllocCount,proto3" json:"omitted_alloc_count,omitempty"`
+	OmittedAllocBytes uint64 `protobuf:"varint,11,opt,name=omitted_alloc_bytes,json=omittedAllocBytes,proto3" json:"omitted_alloc_bytes,omitempty"`
+	OmittedLiveBytes  uint64 `protobuf:"varint,12,opt,name=omitted_live_bytes,json=omittedLiveBytes,proto3" json:"omitted_live_bytes,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *HeapSnapshot) Reset() {
@@ -1623,6 +1647,34 @@ func (x *HeapSnapshot) GetLiveMeasured() bool {
 func (x *HeapSnapshot) GetSampleBytes() uint64 {
 	if x != nil {
 		return x.SampleBytes
+	}
+	return 0
+}
+
+func (x *HeapSnapshot) GetTotalCallSites() uint32 {
+	if x != nil {
+		return x.TotalCallSites
+	}
+	return 0
+}
+
+func (x *HeapSnapshot) GetOmittedAllocCount() uint64 {
+	if x != nil {
+		return x.OmittedAllocCount
+	}
+	return 0
+}
+
+func (x *HeapSnapshot) GetOmittedAllocBytes() uint64 {
+	if x != nil {
+		return x.OmittedAllocBytes
+	}
+	return 0
+}
+
+func (x *HeapSnapshot) GetOmittedLiveBytes() uint64 {
+	if x != nil {
+		return x.OmittedLiveBytes
 	}
 	return 0
 }
@@ -3196,7 +3248,7 @@ const file_event_proto_rawDesc = "" +
 	"\x06offset\x18\v \x01(\x04R\x06offset\x12\x19\n" +
 	"\bstack_id\x18\f \x01(\x04R\astackId\x12\x1f\n" +
 	"\valloc_bytes\x18\r \x01(\x04R\n" +
-	"allocBytes\"\xca\x02\n" +
+	"allocBytes\"\x82\x04\n" +
 	"\fHeapSnapshot\x12&\n" +
 	"\x0flive_heap_bytes\x18\x01 \x01(\x04R\rliveHeapBytes\x12\x1d\n" +
 	"\n" +
@@ -3206,7 +3258,12 @@ const file_event_proto_rawDesc = "" +
 	"\x10alloc_bytes_rate\x18\x05 \x01(\x01R\x0eallocBytesRate\x12\x12\n" +
 	"\x04lane\x18\x06 \x01(\tR\x04lane\x12#\n" +
 	"\rlive_measured\x18\a \x01(\bR\fliveMeasured\x12!\n" +
-	"\fsample_bytes\x18\b \x01(\x04R\vsampleBytes\"\xbe\x01\n" +
+	"\fsample_bytes\x18\b \x01(\x04R\vsampleBytes\x12(\n" +
+	"\x10total_call_sites\x18\t \x01(\rR\x0etotalCallSites\x12.\n" +
+	"\x13omitted_alloc_count\x18\n" +
+	" \x01(\x04R\x11omittedAllocCount\x12.\n" +
+	"\x13omitted_alloc_bytes\x18\v \x01(\x04R\x11omittedAllocBytes\x12,\n" +
+	"\x12omitted_live_bytes\x18\f \x01(\x04R\x10omittedLiveBytes\"\xbe\x01\n" +
 	"\n" +
 	"ThreadInfo\x12\x10\n" +
 	"\x03tid\x18\x01 \x01(\x05R\x03tid\x12\x12\n" +

@@ -370,10 +370,14 @@ func (c *HeapEBPFCollector) snapshotGo() (HeapStats, error) {
 		return HeapStats{}, err
 	}
 
-	sites := make([]HeapCallSite, 0, len(agg))
+	// The kernel aggregate is keyed by stack id, so fold the stacks that reach
+	// one call site together BEFORE ranking — otherwise the cut is counted in
+	// stacks and a function reached many ways crowds out one reached often
+	// (#109). See foldCallSites.
+	raws := make([]rawCallSite, 0, len(agg))
 	for sid, raw := range agg {
 		site := c.resolveSite(sid)
-		sites = append(sites, HeapCallSite{
+		raws = append(raws, rawCallSite{HeapCallSite: HeapCallSite{
 			CallSite:   site.addr,
 			AddrHex:    heapAddrHex(site.addr),
 			Func:       site.frame.Func,
@@ -384,19 +388,25 @@ func (c *HeapEBPFCollector) snapshotGo() (HeapStats, error) {
 			StackID:    sid,
 			AllocBytes: raw.AllocBytes,
 			AllocCount: raw.AllocCount,
-		})
+		}})
 	}
+	sites := foldCallSites(raws)
+	top, omitted := topCallSites(sites, heapTopCallSites)
 
 	now := time.Now()
 	allocRate, byteRate := c.ratesGo(now)
 	return HeapStats{
-		Timestamp:      now,
-		AllocRate:      allocRate,
-		AllocBytesRate: byteRate,
-		TopCallSites:   chooseTopCallSites(sites, heapTopCallSites),
-		Lane:           HeapLaneGo,
-		LiveMeasured:   false,
-		SampleBytes:    sampledRate(c.goTracer.SampleBytes()),
+		Timestamp:         now,
+		AllocRate:         allocRate,
+		AllocBytesRate:    byteRate,
+		TopCallSites:      top,
+		Lane:              HeapLaneGo,
+		LiveMeasured:      false,
+		SampleBytes:       sampledRate(c.goTracer.SampleBytes()),
+		TotalCallSites:    uint32(len(sites)),
+		OmittedAllocCount: omitted.AllocCount,
+		OmittedAllocBytes: omitted.AllocBytes,
+		OmittedLiveBytes:  omitted.LiveBytes,
 	}, nil
 }
 
@@ -419,7 +429,10 @@ func (c *HeapEBPFCollector) snapshotLibc() (HeapStats, error) {
 		suspectedTotal += lk.Size
 	}
 
-	sites := make([]HeapCallSite, 0, len(live))
+	// Keyed by stack id here too, so the same fold applies (#109). The lifetime
+	// sum and count travel with each stack rather than the mean they make: a
+	// mean cannot be merged, only recomputed from the pooled parts.
+	raws := make([]rawCallSite, 0, len(live))
 	var liveTotal uint64
 	for sid, raw := range live {
 		lb := raw.LiveBytes
@@ -427,27 +440,28 @@ func (c *HeapEBPFCollector) snapshotLibc() (HeapStats, error) {
 			lb = 0 // defensive: never present negative live bytes
 		}
 		liveTotal += uint64(lb)
-		avgLifeMs := 0.0
-		if raw.LifetimeCount > 0 {
-			avgLifeMs = float64(raw.LifetimeSumNs) / float64(raw.LifetimeCount) / 1e6
-		}
 		site := c.resolveSite(sid)
-		sites = append(sites, HeapCallSite{
-			CallSite:      site.addr,
-			AddrHex:       heapAddrHex(site.addr),
-			Func:          site.frame.Func,
-			File:          site.frame.File,
-			Line:          site.frame.Line,
-			Module:        site.frame.Module,
-			Offset:        site.frame.Offset,
-			StackID:       sid,
-			LiveBytes:     uint64(lb),
-			AllocCount:    raw.AllocCount,
-			AllocBytes:    0, // the libc aggregate counts live bytes, not cumulative ones
-			AvgLifetimeMs: avgLifeMs,
-			Suspected:     leakBytes[sid] > 0,
+		raws = append(raws, rawCallSite{
+			HeapCallSite: HeapCallSite{
+				CallSite:   site.addr,
+				AddrHex:    heapAddrHex(site.addr),
+				Func:       site.frame.Func,
+				File:       site.frame.File,
+				Line:       site.frame.Line,
+				Module:     site.frame.Module,
+				Offset:     site.frame.Offset,
+				StackID:    sid,
+				LiveBytes:  uint64(lb),
+				AllocCount: raw.AllocCount,
+				AllocBytes: 0, // the libc aggregate counts live bytes, not cumulative ones
+				Suspected:  leakBytes[sid] > 0,
+			},
+			LifetimeSumNs: raw.LifetimeSumNs,
+			LifetimeCount: raw.LifetimeCount,
 		})
 	}
+	sites := foldCallSites(raws)
+	top, omitted := topCallSites(sites, heapTopCallSites)
 
 	now := time.Now()
 	rate, byteRate := c.rates(now)
@@ -457,10 +471,14 @@ func (c *HeapEBPFCollector) snapshotLibc() (HeapStats, error) {
 		LiveHeapBytes:      liveTotal,
 		AllocRate:          rate,
 		AllocBytesRate:     byteRate,
-		TopCallSites:       chooseTopCallSites(sites, heapTopCallSites),
+		TopCallSites:       top,
 		SuspectedLeakBytes: suspectedTotal,
 		Lane:               HeapLaneLibc,
 		LiveMeasured:       true,
+		TotalCallSites:     uint32(len(sites)),
+		OmittedAllocCount:  omitted.AllocCount,
+		OmittedAllocBytes:  omitted.AllocBytes,
+		OmittedLiveBytes:   omitted.LiveBytes,
 	}, nil
 }
 

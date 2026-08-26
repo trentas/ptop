@@ -161,6 +161,31 @@ type HeapStats struct {
 	// everything allocated since the previous sample, so nothing is discarded.
 	// See goalloc.bpf.c for why the probe cannot afford to run in full (#108).
 	SampleBytes uint64
+
+	// TotalCallSites is how many distinct application call sites this snapshot
+	// aggregated, before TopCallSites was cut to the largest few. Equal to
+	// len(TopCallSites) when nothing was dropped — which is the only state in
+	// which the list is a census and a site's absence from it means the site
+	// allocated nothing.
+	//
+	// Counted AFTER stacks reaching one call site are folded together, so it is
+	// in the same unit as the list a consumer receives (#109).
+	TotalCallSites uint32
+
+	// OmittedAllocCount, OmittedAllocBytes and OmittedLiveBytes are the volume
+	// carried by the call sites that did not fit in TopCallSites — zero when
+	// TotalCallSites == len(TopCallSites).
+	//
+	// They exist so absence can be read rather than guessed. A consumer diffing
+	// two deploys sees a site drop out of the list and cannot tell "it stopped
+	// allocating" from "it stopped being reported"; the two call for opposite
+	// responses, and reading the first where the second is true reports the
+	// largest regression such an engine can express, over nothing at all
+	// (sunnysystems/witness#69). These bound what any one missing site can
+	// account for: a site absent from the list did strictly less than this.
+	OmittedAllocCount uint64
+	OmittedAllocBytes uint64
+	OmittedLiveBytes  uint64
 }
 
 // Heap collection lanes — see HeapStats.Lane.
