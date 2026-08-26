@@ -152,3 +152,19 @@ func TestNoEBPFBuildIsUnsupportedNotFailed(t *testing.T) {
 		t.Errorf("detail = %q, want the attach error verbatim", st.Detail)
 	}
 }
+
+// io keeps a /proc lane — iowait% and throughput — that publishes under the same
+// category as the eBPF per-file view. Degraded mode therefore still produces io
+// events, and reporting io "disabled" there would be the same lie the probe set
+// exists to stop telling.
+func TestNoEBPFLeavesIOActiveOnItsProcLane(t *testing.T) {
+	s := NewSet(SetConfig{PID: os.Getpid(), NoEBPF: true})
+	defer s.Stop()
+	st, ok := statusMap(t, s.Probes())[SubsystemIO]
+	if !ok {
+		t.Fatalf("io absent from the probe set: %+v", s.Probes())
+	}
+	if st.State != ProbeActive || st.Source != SourceProc {
+		t.Errorf("io = %+v, want active on %s", st, SourceProc)
+	}
+}

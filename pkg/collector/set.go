@@ -220,6 +220,10 @@ func NewSet(cfg SetConfig) *Set {
 		}
 	}
 
+	// iowait% and throughput come from /proc and publish under CATEGORY_IO
+	// alongside the eBPF per-file view, so io is active on /proc whenever they
+	// start and the richer lane did not. Recorded after the eBPF block below,
+	// which gets first claim on the status.
 	if c := NewIOWaitCollector(); c.Start(cfg.PID) == nil {
 		s.IOWait = c
 	}
@@ -334,6 +338,10 @@ func NewSet(cfg SetConfig) *Set {
 		} else {
 			s.probes.disabled(SubsystemTLS, "not opted in (--tls); payload capture observes plaintext")
 		}
+	}
+
+	if s.IOWait != nil || s.IOThroughput != nil {
+		s.probes.active(SubsystemIO, SourceProc)
 	}
 
 	return s

@@ -110,11 +110,16 @@ func (l *probeLog) statuses() []ProbeStatus {
 	return out
 }
 
-// ebpfOnlySubsystems have no /proc fallback: --no-ebpf does not degrade them,
+// ebpfOnlySubsystems have no /proc lane at all: --no-ebpf does not degrade them,
 // it removes them. They are listed here rather than inferred so degraded mode
 // can report them as disabled without walking collectors it never constructs.
+//
+// io is deliberately absent. Its per-file view is eBPF-only, but iowait% and
+// throughput come from /proc and publish under the same category, so degraded
+// mode still produces io events — reporting it disabled would be the same lie
+// this file exists to stop telling.
 var ebpfOnlySubsystems = []string{
-	SubsystemSyscalls, SubsystemIO, SubsystemNetwork, SubsystemFutex,
+	SubsystemSyscalls, SubsystemNetwork, SubsystemFutex,
 	SubsystemHeap, SubsystemSignals, SubsystemLifecycle, SubsystemSecurity,
 	SubsystemTLS,
 }
