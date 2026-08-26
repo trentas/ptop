@@ -213,7 +213,7 @@ func startTCPServer(ctx context.Context, t *testing.T, opts TLSOptions) string {
 	target := lis.Addr().String()
 	done := make(chan error, 1)
 	go func() {
-		reg := fixedTargetRegistry(ctx, TargetPID(4242), collector.StartBus(ctx, []collector.Collector{f}), nil)
+		reg := fixedTargetRegistry(ctx, TargetPID(4242), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil)
 		done <- runServer(ctx, lis, creds, "test", reg, reg.hub, Options{})
 	}()
 	t.Cleanup(func() {

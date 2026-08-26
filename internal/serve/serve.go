@@ -79,19 +79,23 @@ type Options struct {
 }
 
 // Run starts the gRPC server bound to addr, streaming events for the given
-// target — a pid or a cgroup subtree — off bus, the shared fan-out over the
-// running collectors (#71). It blocks until ctx is cancelled, then stops the
-// server and returns. The caller owns the feed's lifecycle (typically
+// target — a pid or a cgroup subtree — off feed, the running collectors and the
+// shared fan-out over them (#71). It blocks until ctx is cancelled, then stops
+// the server and returns. The caller owns the feed's lifecycle (typically
 // collector.StartFeed here and feed.Stop() after Run returns), and may attach
 // other consumers to the same bus — the TUI does, under --serve --tui. addr is
 // "unix:///path" or "tcp://host:port"; a tcp:// endpoint must carry TLS
 // material or an explicit opt-in to cleartext (see serverCredentials).
 //
+// It takes the whole feed rather than feed.Bus alone because the handshake now
+// reports the probe set as well as the scope (#112), and that lives on
+// feed.Set — the pairing collector.Feed exists to keep together.
+//
 // resolver (optional, nil-safe) symbolizes captured stacks: it stamps the
 // per-process build-id onto every StackRef and backs the ResolveStack RPC.
 // Build it with CombineStackResolvers over the collectors that captured stacks
 // (heap, futex); nil leaves events without stack references.
-func Run(ctx context.Context, addr string, target Target, bus *collector.Bus, resolver StackResolver, opts Options) error {
+func Run(ctx context.Context, addr string, target Target, feed *collector.Feed, resolver StackResolver, opts Options) error {
 	// Resolve transport security first: a missing certificate or a refused
 	// cleartext endpoint should fail before anything is bound.
 	creds, mode, err := serverCredentials(addr, opts.TLS)
@@ -105,7 +109,7 @@ func Run(ctx context.Context, addr string, target Target, bus *collector.Bus, re
 	}
 	defer cleanup()
 
-	reg := fixedTargetRegistry(ctx, target, bus, resolver)
+	reg := fixedTargetRegistry(ctx, target, feed, resolver)
 	return runServer(ctx, lis, creds, mode, reg, reg.hub, opts)
 }
 
@@ -145,12 +149,19 @@ func RunOnDemand(ctx context.Context, addr string, factory FeedFactory, opts Opt
 
 // fixedTargetRegistry starts the hub for a server whose target was named on the
 // command line, and wraps it in the registry the service talks to.
-func fixedTargetRegistry(ctx context.Context, target Target, bus *collector.Bus, resolver StackResolver) *fixedRegistry {
+func fixedTargetRegistry(ctx context.Context, target Target, feed *collector.Feed, resolver StackResolver) *fixedRegistry {
 	buildID := ""
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
 	}
-	hub := NewHub(target, buildID)
+	var (
+		set *collector.Set
+		bus *collector.Bus
+	)
+	if feed != nil {
+		set, bus = feed.Set, feed.Bus
+	}
+	hub := NewHub(target, buildID, set)
 	hub.Start(ctx, bus)
 	return &fixedRegistry{target: target, hub: hub, resolver: resolver}
 }
@@ -191,6 +202,9 @@ func runServer(ctx context.Context, lis net.Listener, creds credentials.Transpor
 	}
 	fmt.Fprintf(os.Stderr, "[ptop] serving events for %s on %s://%s (%s)\n",
 		reg.describe(), lis.Addr().Network(), lis.Addr().String(), mode)
+	if sinkHub != nil {
+		sinkHub.reportProbes()
+	}
 	if opts.Ready != nil {
 		close(opts.Ready)
 	}

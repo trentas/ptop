@@ -74,6 +74,77 @@ func (TargetMode) EnumDescriptor() ([]byte, []int) {
 	return file_service_proto_rawDescGZIP(), []int{0}
 }
 
+// ProbeState is what became of one collector for one target (#112).
+//
+// The three ways a subsystem goes quiet are unrelated and call for opposite
+// reactions — a probe the operator switched off is a knob they can turn back
+// on, one that failed to attach is a broken deployment, and a target that
+// simply did not do the thing is the only one that is a finding. Before this
+// existed all three reached a consumer as the same absence.
+type ProbeState int32
+
+const (
+	ProbeState_PROBE_STATE_UNSPECIFIED ProbeState = 0
+	// Attached, and producing events for this target.
+	ProbeState_PROBE_STATE_ACTIVE ProbeState = 1
+	// Not asked for: named in --disable, or needing an eBPF lane --no-ebpf turned
+	// off, or opt-in and not opted into (--tls).
+	ProbeState_PROBE_STATE_DISABLED ProbeState = 2
+	// Asked for and could not attach: missing capabilities, no tracefs, kernel
+	// too old, no symbol to hook. The target is instrumented less than requested,
+	// and nothing but this field says so after the fact.
+	ProbeState_PROBE_STATE_FAILED ProbeState = 3
+	// Cannot exist here: this build embeds no eBPF programs, the platform has no
+	// such source, or the scope structurally excludes it (a uprobe into one
+	// process's mapped libc has no meaning over a cgroup subtree).
+	ProbeState_PROBE_STATE_UNSUPPORTED ProbeState = 4
+)
+
+// Enum value maps for ProbeState.
+var (
+	ProbeState_name = map[int32]string{
+		0: "PROBE_STATE_UNSPECIFIED",
+		1: "PROBE_STATE_ACTIVE",
+		2: "PROBE_STATE_DISABLED",
+		3: "PROBE_STATE_FAILED",
+		4: "PROBE_STATE_UNSUPPORTED",
+	}
+	ProbeState_value = map[string]int32{
+		"PROBE_STATE_UNSPECIFIED": 0,
+		"PROBE_STATE_ACTIVE":      1,
+		"PROBE_STATE_DISABLED":    2,
+		"PROBE_STATE_FAILED":      3,
+		"PROBE_STATE_UNSUPPORTED": 4,
+	}
+)
+
+func (x ProbeState) Enum() *ProbeState {
+	p := new(ProbeState)
+	*p = x
+	return p
+}
+
+func (x ProbeState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProbeState) Descriptor() protoreflect.EnumDescriptor {
+	return file_service_proto_enumTypes[1].Descriptor()
+}
+
+func (ProbeState) Type() protoreflect.EnumType {
+	return &file_service_proto_enumTypes[1]
+}
+
+func (x ProbeState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProbeState.Descriptor instead.
+func (ProbeState) EnumDescriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{1}
+}
+
 // SubscribeRequest opens a stream. categories filters which Event categories
 // the server sends; empty means all.
 //
@@ -151,8 +222,17 @@ type TargetInfo struct {
 	Pid int32 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
 	// CGROUP mode: the resolved absolute cgroup path, and the cgroup id it
 	// resolved to (the directory inode). Empty/0 in pid mode.
-	CgroupPath    string `protobuf:"bytes,3,opt,name=cgroup_path,json=cgroupPath,proto3" json:"cgroup_path,omitempty"`
-	CgroupId      uint64 `protobuf:"varint,4,opt,name=cgroup_id,json=cgroupId,proto3" json:"cgroup_id,omitempty"`
+	CgroupPath string `protobuf:"bytes,3,opt,name=cgroup_path,json=cgroupPath,proto3" json:"cgroup_path,omitempty"`
+	CgroupId   uint64 `protobuf:"varint,4,opt,name=cgroup_id,json=cgroupId,proto3" json:"cgroup_id,omitempty"`
+	// Every collector this server tried to run for the target and what became of
+	// it, sorted by name (#112). Empty from a server older than that.
+	//
+	// This is the second half of the scope, for the same reason as the first: a
+	// probe that is not running emits nothing, which in the events alone is
+	// indistinguishable from a target that never did the thing. A consumer
+	// comparing two captures must compare their probe sets before their numbers,
+	// or it reports the change of instrumentation as a change in behaviour.
+	Probes        []*ProbeInfo `protobuf:"bytes,5,rep,name=probes,proto3" json:"probes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -215,6 +295,89 @@ func (x *TargetInfo) GetCgroupId() uint64 {
 	return 0
 }
 
+func (x *TargetInfo) GetProbes() []*ProbeInfo {
+	if x != nil {
+		return x.Probes
+	}
+	return nil
+}
+
+// ProbeInfo is one collector's outcome for the target of this stream.
+type ProbeInfo struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Subsystem name, spelled as --disable accepts it: cpu, threads, memory,
+	// heap, syscalls, io, network, futex, signals, lifecycle, security, tls, fd.
+	Name  string     `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	State ProbeState `protobuf:"varint,2,opt,name=state,proto3,enum=ptop.v1.ProbeState" json:"state,omitempty"`
+	// Where an ACTIVE probe's numbers come from: "eBPF" or "/proc". Empty
+	// otherwise. The same subsystem read through different sources is not the
+	// same measurement, so this is part of the comparison key too.
+	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
+	// Why a probe that is not ACTIVE is not running — the attach error, or the
+	// flag that switched it off. Operator-facing prose; do not parse it.
+	Detail        string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProbeInfo) Reset() {
+	*x = ProbeInfo{}
+	mi := &file_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProbeInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProbeInfo) ProtoMessage() {}
+
+func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProbeInfo.ProtoReflect.Descriptor instead.
+func (*ProbeInfo) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ProbeInfo) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *ProbeInfo) GetState() ProbeState {
+	if x != nil {
+		return x.State
+	}
+	return ProbeState_PROBE_STATE_UNSPECIFIED
+}
+
+func (x *ProbeInfo) GetSource() string {
+	if x != nil {
+		return x.Source
+	}
+	return ""
+}
+
+func (x *ProbeInfo) GetDetail() string {
+	if x != nil {
+		return x.Detail
+	}
+	return ""
+}
+
 // StreamMeta is an out-of-band signal interleaved in the stream. It carries the
 // subscription handshake (target, sent once before any event) and reports
 // backpressure: how many events the server dropped for this subscriber because
@@ -231,7 +394,7 @@ type StreamMeta struct {
 
 func (x *StreamMeta) Reset() {
 	*x = StreamMeta{}
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -243,7 +406,7 @@ func (x *StreamMeta) String() string {
 func (*StreamMeta) ProtoMessage() {}
 
 func (x *StreamMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -256,7 +419,7 @@ func (x *StreamMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamMeta.ProtoReflect.Descriptor instead.
 func (*StreamMeta) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{2}
+	return file_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *StreamMeta) GetDropped() uint64 {
@@ -288,7 +451,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -300,7 +463,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -313,7 +476,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{3}
+	return file_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *SubscribeResponse) GetKind() isSubscribeResponse_Kind {
@@ -376,7 +539,7 @@ type ResolveStackRequest struct {
 
 func (x *ResolveStackRequest) Reset() {
 	*x = ResolveStackRequest{}
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -388,7 +551,7 @@ func (x *ResolveStackRequest) String() string {
 func (*ResolveStackRequest) ProtoMessage() {}
 
 func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -401,7 +564,7 @@ func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackRequest.ProtoReflect.Descriptor instead.
 func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{4}
+	return file_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ResolveStackRequest) GetStackId() uint64 {
@@ -431,7 +594,7 @@ type ResolveStackResponse struct {
 
 func (x *ResolveStackResponse) Reset() {
 	*x = ResolveStackResponse{}
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -443,7 +606,7 @@ func (x *ResolveStackResponse) String() string {
 func (*ResolveStackResponse) ProtoMessage() {}
 
 func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -456,7 +619,7 @@ func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackResponse.ProtoReflect.Descriptor instead.
 func (*ResolveStackResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{5}
+	return file_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ResolveStackResponse) GetFrames() []*StackFrame {
@@ -482,14 +645,20 @@ const file_service_proto_rawDesc = "" +
 	"\n" +
 	"categories\x18\x01 \x03(\x0e2\x11.ptop.v1.CategoryR\n" +
 	"categories\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\x85\x01\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\xb1\x01\n" +
 	"\n" +
 	"TargetInfo\x12'\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x13.ptop.v1.TargetModeR\x04mode\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\x05R\x03pid\x12\x1f\n" +
 	"\vcgroup_path\x18\x03 \x01(\tR\n" +
 	"cgroupPath\x12\x1b\n" +
-	"\tcgroup_id\x18\x04 \x01(\x04R\bcgroupId\"S\n" +
+	"\tcgroup_id\x18\x04 \x01(\x04R\bcgroupId\x12*\n" +
+	"\x06probes\x18\x05 \x03(\v2\x12.ptop.v1.ProbeInfoR\x06probes\"z\n" +
+	"\tProbeInfo\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
+	"\x05state\x18\x02 \x01(\x0e2\x13.ptop.v1.ProbeStateR\x05state\x12\x16\n" +
+	"\x06source\x18\x03 \x01(\tR\x06source\x12\x16\n" +
+	"\x06detail\x18\x04 \x01(\tR\x06detail\"S\n" +
 	"\n" +
 	"StreamMeta\x12\x18\n" +
 	"\adropped\x18\x01 \x01(\x04R\adropped\x12+\n" +
@@ -508,7 +677,14 @@ const file_service_proto_rawDesc = "" +
 	"TargetMode\x12\x1b\n" +
 	"\x17TARGET_MODE_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fTARGET_MODE_PID\x10\x01\x12\x16\n" +
-	"\x12TARGET_MODE_CGROUP\x10\x022\xa7\x01\n" +
+	"\x12TARGET_MODE_CGROUP\x10\x02*\x90\x01\n" +
+	"\n" +
+	"ProbeState\x12\x1b\n" +
+	"\x17PROBE_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
+	"\x12PROBE_STATE_ACTIVE\x10\x01\x12\x18\n" +
+	"\x14PROBE_STATE_DISABLED\x10\x02\x12\x16\n" +
+	"\x12PROBE_STATE_FAILED\x10\x03\x12\x1b\n" +
+	"\x17PROBE_STATE_UNSUPPORTED\x10\x042\xa7\x01\n" +
 	"\x12EventStreamService\x12D\n" +
 	"\tSubscribe\x12\x19.ptop.v1.SubscribeRequest\x1a\x1a.ptop.v1.SubscribeResponse0\x01\x12K\n" +
 	"\fResolveStack\x12\x1c.ptop.v1.ResolveStackRequest\x1a\x1d.ptop.v1.ResolveStackResponseB\x87\x01\n" +
@@ -526,36 +702,40 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_service_proto_goTypes = []any{
 	(TargetMode)(0),              // 0: ptop.v1.TargetMode
-	(*SubscribeRequest)(nil),     // 1: ptop.v1.SubscribeRequest
-	(*TargetInfo)(nil),           // 2: ptop.v1.TargetInfo
-	(*StreamMeta)(nil),           // 3: ptop.v1.StreamMeta
-	(*SubscribeResponse)(nil),    // 4: ptop.v1.SubscribeResponse
-	(*ResolveStackRequest)(nil),  // 5: ptop.v1.ResolveStackRequest
-	(*ResolveStackResponse)(nil), // 6: ptop.v1.ResolveStackResponse
-	(Category)(0),                // 7: ptop.v1.Category
-	(*Event)(nil),                // 8: ptop.v1.Event
-	(*StackFrame)(nil),           // 9: ptop.v1.StackFrame
+	(ProbeState)(0),              // 1: ptop.v1.ProbeState
+	(*SubscribeRequest)(nil),     // 2: ptop.v1.SubscribeRequest
+	(*TargetInfo)(nil),           // 3: ptop.v1.TargetInfo
+	(*ProbeInfo)(nil),            // 4: ptop.v1.ProbeInfo
+	(*StreamMeta)(nil),           // 5: ptop.v1.StreamMeta
+	(*SubscribeResponse)(nil),    // 6: ptop.v1.SubscribeResponse
+	(*ResolveStackRequest)(nil),  // 7: ptop.v1.ResolveStackRequest
+	(*ResolveStackResponse)(nil), // 8: ptop.v1.ResolveStackResponse
+	(Category)(0),                // 9: ptop.v1.Category
+	(*Event)(nil),                // 10: ptop.v1.Event
+	(*StackFrame)(nil),           // 11: ptop.v1.StackFrame
 }
 var file_service_proto_depIdxs = []int32{
-	7, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
-	0, // 1: ptop.v1.TargetInfo.mode:type_name -> ptop.v1.TargetMode
-	2, // 2: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
-	8, // 3: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
-	3, // 4: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	9, // 5: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
-	1, // 6: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	5, // 7: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
-	4, // 8: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
-	6, // 9: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
-	8, // [8:10] is the sub-list for method output_type
-	6, // [6:8] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	9,  // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
+	0,  // 1: ptop.v1.TargetInfo.mode:type_name -> ptop.v1.TargetMode
+	4,  // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
+	1,  // 3: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
+	3,  // 4: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
+	10, // 5: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
+	5,  // 6: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
+	11, // 7: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
+	2,  // 8: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	7,  // 9: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
+	6,  // 10: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	8,  // 11: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
+	10, // [10:12] is the sub-list for method output_type
+	8,  // [8:10] is the sub-list for method input_type
+	8,  // [8:8] is the sub-list for extension type_name
+	8,  // [8:8] is the sub-list for extension extendee
+	0,  // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -564,7 +744,7 @@ func file_service_proto_init() {
 		return
 	}
 	file_event_proto_init()
-	file_service_proto_msgTypes[3].OneofWrappers = []any{
+	file_service_proto_msgTypes[4].OneofWrappers = []any{
 		(*SubscribeResponse_Event)(nil),
 		(*SubscribeResponse_Meta)(nil),
 	}
@@ -573,8 +753,8 @@ func file_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   6,
+			NumEnums:      2,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

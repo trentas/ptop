@@ -161,12 +161,13 @@ func (r *onDemandRegistry) acquire(pid int) (*Hub, StackResolver, func(), error)
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
 	}
-	hub := NewHub(TargetPID(pid), buildID)
+	hub := NewHub(TargetPID(pid), buildID, feed.Set)
 	hub.Start(ctx, feed.Bus)
 
 	t := &liveTarget{hub: hub, resolver: resolver, feed: feed, cancel: cancel, refs: 1}
 	r.targets[pid] = t
 	fmt.Fprintf(os.Stderr, "[ptop] observing pid %d (%d target(s) live)\n", pid, len(r.targets))
+	hub.reportProbes()
 	return hub, resolver, r.releaseFunc(pid), nil
 }
 

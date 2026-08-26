@@ -108,7 +108,7 @@ ptop/
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
-│   │   ├── hub.go                 fan-in collectors → fan-out to sinks
+│   │   ├── hub.go                 fan-in collectors → fan-out to sinks; probe set in the handshake (#112)
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
 │   │   ├── shed.go                which event a full sink queue gives up (#108)
 │   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
@@ -145,6 +145,7 @@ ptop/
 │   ├── collector/                 /proc + eBPF collectors + shared types
 │       ├── types.go               public type contracts (see below)
 │       ├── set.go                 source-priority selection + lifecycle (Set)
+│       ├── probes.go              per-subsystem outcome: active/disabled/failed (#112)
 │       ├── bus.go                 single fan-out: Set → N consumers (Feed, #71)
 │       ├── shed.go                snapshot vs per-occurrence rate class (#108)
 │       ├── source_{linux,darwin}.go  platform source labels (Source*)
