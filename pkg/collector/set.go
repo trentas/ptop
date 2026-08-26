@@ -139,84 +139,90 @@ func NewSet(cfg SetConfig) *Set {
 		return s
 	}
 
-	if cfg.off(SubsystemFD) {
-		s.probes.disabled(SubsystemFD, "--disable "+SubsystemFD)
-	} else if c := NewFDCollector(); c.Start(cfg.PID) == nil {
-		s.FD = c
-		s.probes.active(SubsystemFD, SourceProc)
-	} else {
-		s.probes.unsupported(SubsystemFD, "FD collector unavailable for this target")
-		if !cfg.NoEBPF {
-			fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
+	if s.enabled(cfg, SubsystemFD) {
+		if c := NewFDCollector(); c.Start(cfg.PID) == nil {
+			s.FD = c
+			s.probes.active(SubsystemFD, SourceProc)
+		} else {
+			s.probes.unsupported(SubsystemFD, "FD collector unavailable for this target")
+			if !cfg.NoEBPF {
+				fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
+			}
 		}
 	}
 
 	// CPU: eBPF (the target's on-CPU time, from sched_switch) first, /proc
 	// polling of utime+stime as fallback.
-	if cfg.off(SubsystemCPU) {
-		s.probes.disabled(SubsystemCPU, "--disable "+SubsystemCPU)
-	}
-	if !cfg.NoEBPF && !cfg.off(SubsystemCPU) {
-		c := NewCPUEBPFCollector()
-		if err := c.Start(cfg.PID); err == nil {
-			s.CPUEBPF = c
-			s.Sources.CPU = "eBPF"
-			s.probes.active(SubsystemCPU, "eBPF")
-		} else {
-			warnEBPFFailure("cpu", err)
-			s.probes.failed(SubsystemCPU, err, bpf.Available)
+	if s.enabled(cfg, SubsystemCPU) {
+		if !cfg.NoEBPF {
+			c := NewCPUEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				s.CPUEBPF = c
+				s.Sources.CPU = "eBPF"
+				s.probes.active(SubsystemCPU, "eBPF")
+			} else {
+				warnEBPFFailure("cpu", err)
+				s.probes.failed(SubsystemCPU, err, bpf.Available)
+			}
 		}
-	}
-	if s.CPUEBPF == nil && !cfg.off(SubsystemCPU) {
-		if c := NewCPUCollector(); c.Start(cfg.PID) == nil {
-			s.CPUProc = c
-			s.Sources.CPU = SourceProc
-			s.probes.active(SubsystemCPU, SourceProc)
+		if s.CPUEBPF == nil {
+			if c := NewCPUCollector(); c.Start(cfg.PID) == nil {
+				s.CPUProc = c
+				s.Sources.CPU = SourceProc
+				s.probes.active(SubsystemCPU, SourceProc)
+			}
 		}
 	}
 
 	// Threads: eBPF (sched_switch → real-time CPU% + ctx switches) preferred,
 	// /proc as fallback.
-	if cfg.off(SubsystemThreads) {
-		s.probes.disabled(SubsystemThreads, "--disable "+SubsystemThreads)
-	}
-	if !cfg.NoEBPF && !cfg.off(SubsystemThreads) {
-		c := NewThreadsEBPFCollector()
-		if err := c.Start(cfg.PID); err == nil {
-			s.ThreadsEBPF = c
-			s.Sources.Threads = "eBPF"
-			s.probes.active(SubsystemThreads, "eBPF")
-		} else {
-			warnEBPFFailure("threads", err)
-			s.probes.failed(SubsystemThreads, err, bpf.Available)
+	if s.enabled(cfg, SubsystemThreads) {
+		if !cfg.NoEBPF {
+			c := NewThreadsEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				s.ThreadsEBPF = c
+				s.Sources.Threads = "eBPF"
+				s.probes.active(SubsystemThreads, "eBPF")
+			} else {
+				warnEBPFFailure("threads", err)
+				s.probes.failed(SubsystemThreads, err, bpf.Available)
+			}
 		}
-	}
-	if s.ThreadsEBPF == nil {
-		if c := NewThreadsCollector(); c.Start(cfg.PID) == nil {
-			s.ThreadsProc = c
-			s.Sources.Threads = SourceProc
-			s.probes.active(SubsystemThreads, SourceProc)
+		if s.ThreadsEBPF == nil {
+			if c := NewThreadsCollector(); c.Start(cfg.PID) == nil {
+				s.ThreadsProc = c
+				s.Sources.Threads = SourceProc
+				s.probes.active(SubsystemThreads, SourceProc)
+			}
 		}
 	}
 
 	// Memory: eBPF (real allocs/s + page faults via kprobe) preferred, /proc
 	// (accumulated minflt+majflt) as fallback.
-	if !cfg.NoEBPF {
-		c := NewMemEBPFCollector()
-		if err := c.Start(cfg.PID); err == nil {
-			s.MemEBPF = c
-			s.Sources.Mem = "eBPF"
-			s.probes.active(SubsystemMemory, "eBPF")
-		} else {
-			warnEBPFFailure("memory", err)
-			s.probes.failed(SubsystemMemory, err, bpf.Available)
+	//
+	// --disable memory takes BOTH lanes, RSS included. That is the flag's
+	// contract rather than an oversight: it exists so an operator can be certain
+	// which probes are running, and a subsystem that keeps reporting through its
+	// cheaper lane after being switched off makes that certainty worthless. The
+	// memory view then simulates, exactly as every other disabled subsystem's does.
+	if s.enabled(cfg, SubsystemMemory) {
+		if !cfg.NoEBPF {
+			c := NewMemEBPFCollector()
+			if err := c.Start(cfg.PID); err == nil {
+				s.MemEBPF = c
+				s.Sources.Mem = "eBPF"
+				s.probes.active(SubsystemMemory, "eBPF")
+			} else {
+				warnEBPFFailure("memory", err)
+				s.probes.failed(SubsystemMemory, err, bpf.Available)
+			}
 		}
-	}
-	if s.MemEBPF == nil {
-		if c := NewMemCollector(); c.Start(cfg.PID) == nil {
-			s.MemProc = c
-			s.Sources.Mem = SourceProc
-			s.probes.active(SubsystemMemory, SourceProc)
+		if s.MemEBPF == nil {
+			if c := NewMemCollector(); c.Start(cfg.PID) == nil {
+				s.MemProc = c
+				s.Sources.Mem = SourceProc
+				s.probes.active(SubsystemMemory, SourceProc)
+			}
 		}
 	}
 
@@ -224,11 +230,16 @@ func NewSet(cfg SetConfig) *Set {
 	// alongside the eBPF per-file view, so io is active on /proc whenever they
 	// start and the richer lane did not. Recorded after the eBPF block below,
 	// which gets first claim on the status.
-	if c := NewIOWaitCollector(); c.Start(cfg.PID) == nil {
-		s.IOWait = c
-	}
-	if c := NewIOThroughputCollector(); c.Start(cfg.PID) == nil {
-		s.IOThroughput = c
+	//
+	// They are not a fallback for that view — they run beside it — but they are
+	// still io, so they answer to --disable io just as it does.
+	if s.enabled(cfg, SubsystemIO) {
+		if c := NewIOWaitCollector(); c.Start(cfg.PID) == nil {
+			s.IOWait = c
+		}
+		if c := NewIOThroughputCollector(); c.Start(cfg.PID) == nil {
+			s.IOThroughput = c
+		}
 	}
 
 	// Execution/container context (#60): namespace + cgroup + uid/gid from
@@ -347,6 +358,24 @@ func NewSet(cfg SetConfig) *Set {
 	return s
 }
 
+// enabled reports whether a subsystem should be started, recording it as
+// disabled when it should not.
+//
+// Every subsystem goes through this one call instead of testing cfg.off at each
+// lane, because per-lane testing is precisely how --disable came to be honoured
+// by some lanes and ignored by others (#113): memory consulted it nowhere,
+// threads and io only on their eBPF lane, and cgroup mode not at all. A flag
+// that validates its input and then does nothing is worse than no flag —
+// ParseDisable rejects a typo so that nobody measures a configuration other
+// than the one they report.
+func (s *Set) enabled(cfg SetConfig, name string) bool {
+	if cfg.off(name) {
+		s.probes.disabled(name, "--disable "+name)
+		return false
+	}
+	return true
+}
+
 // ebpfStarter is the shape every eBPF collector shares: attach to a pid, or
 // explain why not.
 type ebpfStarter interface {
@@ -411,14 +440,12 @@ func (s *Set) startCgroup(cfg SetConfig) {
 	}
 }
 
-// startCgroupCollector starts c against a cgroup subtree, reporting a failure
-// — and a probe status — the same way PID mode does.
-//
-// cfg.off is deliberately NOT consulted: cgroup mode has never honoured
-// --disable, and this change reports what ran, it does not change what runs.
-// The status then says "active" for a subsystem the operator asked to switch
-// off, which is the truth and is exactly how the gap became visible (#113).
+// startCgroupCollector starts c against a cgroup subtree, honouring --disable and
+// reporting a failure — and a probe status — the same way PID mode does.
 func (s *Set) startCgroupCollector(name string, c CgroupTargeter, cfg SetConfig) bool {
+	if !s.enabled(cfg, name) {
+		return false
+	}
 	if err := c.StartCgroup(cfg.Cgroup); err != nil {
 		warnEBPFFailure(name, err)
 		s.probes.failed(name, err, bpf.Available)
