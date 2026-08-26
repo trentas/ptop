@@ -23,7 +23,9 @@ func statusMap(t *testing.T, sts []ProbeStatus) map[string]ProbeStatus {
 // not say", and a consumer must not read it as "nothing ran".
 func TestProbesEmptyForNonPositivePID(t *testing.T) {
 	for _, pid := range []int{0, -1} {
-		if got := NewSet(SetConfig{PID: pid}).Probes(); len(got) != 0 {
+		s := NewSet(SetConfig{PID: pid})
+		defer s.Stop()
+		if got := s.Probes(); len(got) != 0 {
 			t.Errorf("pid=%d: expected no probe statuses, got %+v", pid, got)
 		}
 	}
@@ -39,6 +41,7 @@ func TestProbesEmptyForNonPositivePID(t *testing.T) {
 // records that the probe was switched off.
 func TestDisabledSubsystemIsReportedAsDisabled(t *testing.T) {
 	s := NewSet(SetConfig{PID: os.Getpid(), Disable: map[string]bool{SubsystemHeap: true}})
+	defer s.Stop()
 	st, ok := statusMap(t, s.Probes())[SubsystemHeap]
 	if !ok {
 		t.Fatalf("heap absent from the probe set: %+v", s.Probes())
@@ -56,6 +59,7 @@ func TestDisabledSubsystemIsReportedAsDisabled(t *testing.T) {
 // looks like.
 func TestNoEBPFReportsTheEBPFOnlySubsystemsDisabled(t *testing.T) {
 	s := NewSet(SetConfig{PID: os.Getpid(), NoEBPF: true})
+	defer s.Stop()
 	m := statusMap(t, s.Probes())
 	for _, name := range ebpfOnlySubsystems {
 		st, ok := m[name]
@@ -74,6 +78,7 @@ func TestNoEBPFReportsTheEBPFOnlySubsystemsDisabled(t *testing.T) {
 // switched off" are different facts, and only the second is actionable.
 func TestCgroupScopeReportsItsStructuralOmissions(t *testing.T) {
 	s := NewSet(SetConfig{Cgroup: "/sys/fs/cgroup/nonexistent.scope"})
+	defer s.Stop()
 	m := statusMap(t, s.Probes())
 	for name, why := range cgroupUnsupported {
 		st, ok := m[name]
@@ -94,6 +99,7 @@ func TestCgroupScopeReportsItsStructuralOmissions(t *testing.T) {
 // byte-identical probe set — a consumer compares these as a key.
 func TestProbeStatusesAreSorted(t *testing.T) {
 	s := NewSet(SetConfig{PID: os.Getpid(), NoEBPF: true})
+	defer s.Stop()
 	sts := s.Probes()
 	if len(sts) < 2 {
 		t.Fatalf("expected several statuses, got %+v", sts)
