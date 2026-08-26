@@ -23,6 +23,13 @@ import (
 // Subsystem names accepted by SetConfig.Disable. They match the names in
 // ptop's own warnings, so a message about a subsystem tells you what to pass
 // to switch it off.
+//
+// Naming one switches off EVERY lane it has, not just its eBPF one: the flag is
+// a statement about what is running, and a subsystem that keeps reporting
+// through its /proc reader after being disabled makes that statement false
+// (#113). NewSet routes every subsystem through Set.enabled for exactly this
+// reason. The corresponding view then simulates, as it does for any subsystem
+// with no collector behind it.
 const (
 	SubsystemCPU       = "cpu"
 	SubsystemThreads   = "threads"

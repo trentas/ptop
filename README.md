@@ -230,7 +230,12 @@ eBPF programs in `internal/bpf/programs/`:
   stack sampled by bytes allocated
 
 Any subsystem can be switched off with `--disable <name,...>` — see
-[what it costs](#what-it-costs-the-process-it-watches) for why you might.
+[what it costs](#what-it-costs-the-process-it-watches) for why you might. Naming
+one switches off **every** lane it has, its `/proc` reader included, because the
+flag is a statement about what is running and a subsystem still reporting
+through its cheaper lane would make that statement false. The view for it then
+simulates, as it does for any subsystem with no collector behind it, and the
+stream's probe set reports it `disabled`.
 - `signal.bpf.c` — `signal:signal_generate` → signals delivered, with sender
 - `proc.bpf.c` — `sched_process_{fork,exec,exit}` → exec-lineage subtree
 - `security.bpf.c` — PROT_EXEC `mmap`/`mprotect` + SELinux AVC denials
