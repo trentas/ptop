@@ -82,6 +82,10 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Lane:               x.Lane,
 			LiveMeasured:       x.LiveMeasured,
 			SampleBytes:        x.SampleBytes,
+			TotalCallSites:     x.TotalCallSites,
+			OmittedAllocCount:  x.OmittedAllocCount,
+			OmittedAllocBytes:  x.OmittedAllocBytes,
+			OmittedLiveBytes:   x.OmittedLiveBytes,
 		}}
 
 	case collector.HeapEvent:

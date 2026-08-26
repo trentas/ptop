@@ -380,6 +380,18 @@ estimate, and `HeapSnapshot.sample_bytes` says so on the wire. What remains is
 the uprobe trap itself, which no amount of sampling removes; `--disable heap`
 is the only way to stop paying it.
 
+**`top_call_sites` says how complete it is.** The kernel keys its heap
+aggregates by stack id, so stacks reaching the same application call site are
+folded together (`foldCallSites`) BEFORE the top-N cut — otherwise the cap is
+counted in stacks, and a function reached six ways holds six of the eight slots
+while a busier single-stack site falls out (#109). The snapshot then reports
+`total_call_sites` and `omitted_alloc_count` / `omitted_alloc_bytes` /
+`omitted_live_bytes`. A consumer needs them to read ABSENCE: with a truncated
+list there is no way to tell a site that stopped allocating from one that
+stopped being reported, and those call for opposite responses
+(sunnysystems/witness#69). Equal counts mean the list is a census; otherwise the
+omitted totals bound what any one missing site can account for.
+
 **The sampling threshold is random, and that is load-bearing.** Allocation
 patterns are periodic — a handler allocates the same objects in the same order
 every request — and a fixed threshold crossed by a periodic byte stream always

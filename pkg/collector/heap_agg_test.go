@@ -203,3 +203,154 @@ func TestIsGoRuntimeFunc(t *testing.T) {
 		}
 	}
 }
+
+// TestFoldCallSitesCountsTheCapInCallSitesNotStacks is the regression for #109.
+//
+// The measured case: a thumbnail cache that stops evicting grows its map, and
+// growth reaches the allocator through several distinct stacks. The kernel keys
+// its aggregate by stack id, so before folding each of those stacks held a slot
+// of its own and pushed a busy single-stack site (fmt.Sprintf, ~6000
+// allocations a window, called identically in both builds) out of a cap of 8 —
+// while a consumer counting the FUNCTIONS it received saw a short list and
+// concluded nothing had been dropped.
+func TestFoldCallSitesCountsTheCapInCallSitesNotStacks(t *testing.T) {
+	// storeThumb reaches mallocgc through six stacks; fmt.Sprintf through one.
+	var raw []rawCallSite
+	for i := 0; i < 6; i++ {
+		raw = append(raw, rawCallSite{HeapCallSite: HeapCallSite{
+			CallSite: 0x1000, Func: "main.(*cache).storeThumb", StackID: int32(i),
+			AllocBytes: 4 << 20, AllocCount: 2004,
+		}})
+	}
+	raw = append(raw, rawCallSite{HeapCallSite: HeapCallSite{
+		CallSite: 0x2000, Func: "fmt.Sprintf", StackID: 100,
+		AllocBytes: 96 << 10, AllocCount: 6017,
+	}})
+
+	folded := foldCallSites(raw)
+	if len(folded) != 2 {
+		t.Fatalf("len(folded) = %d, want 2 — the cap must be counted in call sites", len(folded))
+	}
+
+	top, omitted := topCallSites(folded, 2)
+	if len(top) != 2 {
+		t.Fatalf("len(top) = %d, want 2", len(top))
+	}
+	var sawSprintf bool
+	for _, s := range top {
+		if s.Func == "fmt.Sprintf" {
+			sawSprintf = true
+			if s.AllocCount != 6017 {
+				t.Errorf("fmt.Sprintf AllocCount = %d, want 6017", s.AllocCount)
+			}
+		}
+		if s.Func == "main.(*cache).storeThumb" {
+			if want := uint64(6 * 2004); s.AllocCount != want {
+				t.Errorf("storeThumb AllocCount = %d, want %d (six stacks summed)", s.AllocCount, want)
+			}
+			if s.AllocBytes != 6*(4<<20) {
+				t.Errorf("storeThumb AllocBytes = %d, want %d", s.AllocBytes, 6*(4<<20))
+			}
+		}
+	}
+	if !sawSprintf {
+		t.Errorf("fmt.Sprintf fell out of a list with room for it; the fold did not take")
+	}
+	if omitted.Sites != 0 {
+		t.Errorf("omitted.Sites = %d, want 0 — this list is a census", omitted.Sites)
+	}
+}
+
+// TestFoldCallSitesKeepsTheHeaviestStack pins what a folded StackID means: the
+// stack that contributed most, so resolving it still yields frames that
+// genuinely reached this site.
+func TestFoldCallSitesKeepsTheHeaviestStack(t *testing.T) {
+	raw := []rawCallSite{
+		{HeapCallSite: HeapCallSite{CallSite: 0x40, StackID: 7, AllocBytes: 10}},
+		{HeapCallSite: HeapCallSite{CallSite: 0x40, StackID: 9, AllocBytes: 900}},
+		{HeapCallSite: HeapCallSite{CallSite: 0x40, StackID: 3, AllocBytes: 50}},
+	}
+	got := foldCallSites(raw)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].StackID != 9 {
+		t.Errorf("StackID = %d, want 9 (the heaviest contributor)", got[0].StackID)
+	}
+	if got[0].AllocBytes != 960 {
+		t.Errorf("AllocBytes = %d, want 960", got[0].AllocBytes)
+	}
+}
+
+// TestFoldCallSitesRecomputesTheLifetimeMean: a mean cannot be merged, only
+// recomputed from the pooled parts. Averaging the two averages here would give
+// 55ms; the real pooled mean is 19ms, because the 10ms bucket holds 90 of the
+// 100 freed allocations.
+func TestFoldCallSitesRecomputesTheLifetimeMean(t *testing.T) {
+	raw := []rawCallSite{
+		{HeapCallSite: HeapCallSite{CallSite: 0x50, StackID: 1}, LifetimeSumNs: 90 * 10 * 1e6, LifetimeCount: 90},
+		{HeapCallSite: HeapCallSite{CallSite: 0x50, StackID: 2}, LifetimeSumNs: 10 * 100 * 1e6, LifetimeCount: 10},
+	}
+	got := foldCallSites(raw)
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].AvgLifetimeMs != 19 {
+		t.Errorf("AvgLifetimeMs = %v, want 19 (pooled), not 55 (mean of means)", got[0].AvgLifetimeMs)
+	}
+}
+
+// TestFoldCallSitesPoolsUnresolvedStacks: a failed stack walk yields CallSite 0.
+// Those are one bucket of unattributed allocation, not N distinct sites — left
+// apart they crowd out sites that did resolve.
+func TestFoldCallSitesPoolsUnresolvedStacks(t *testing.T) {
+	raw := []rawCallSite{
+		{HeapCallSite: HeapCallSite{CallSite: 0, StackID: 1, AllocCount: 3}},
+		{HeapCallSite: HeapCallSite{CallSite: 0, StackID: 2, AllocCount: 4}},
+		{HeapCallSite: HeapCallSite{CallSite: 0, StackID: 3, AllocCount: 5}},
+		{HeapCallSite: HeapCallSite{CallSite: 0x60, StackID: 4, AllocCount: 1}},
+	}
+	got := foldCallSites(raw)
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2 (one unknown bucket + one resolved site)", len(got))
+	}
+	for _, s := range got {
+		if s.CallSite == 0 && s.AllocCount != 12 {
+			t.Errorf("unknown bucket AllocCount = %d, want 12", s.AllocCount)
+		}
+	}
+}
+
+// TestTopCallSitesAccountsForWhatItDropped pins the completeness signal.
+//
+// A truncated list cannot tell a consumer whether a site is missing because it
+// stopped allocating or because it stopped being reported, and the two call for
+// opposite responses (sunnysystems/witness#69). The omitted totals bound what
+// any one missing site can account for.
+func TestTopCallSitesAccountsForWhatItDropped(t *testing.T) {
+	sites := []HeapCallSite{
+		{CallSite: 1, AllocBytes: 1000, AllocCount: 10, LiveBytes: 100},
+		{CallSite: 2, AllocBytes: 900, AllocCount: 9, LiveBytes: 90},
+		{CallSite: 3, AllocBytes: 30, AllocCount: 3, LiveBytes: 3},
+		{CallSite: 4, AllocBytes: 20, AllocCount: 2, LiveBytes: 2},
+	}
+	top, om := topCallSites(sites, 2)
+	if len(top) != 2 {
+		t.Fatalf("len(top) = %d, want 2", len(top))
+	}
+	if om.Sites != 2 {
+		t.Errorf("omitted.Sites = %d, want 2", om.Sites)
+	}
+	if om.AllocBytes != 50 || om.AllocCount != 5 || om.LiveBytes != 5 {
+		t.Errorf("omitted = %+v, want AllocBytes 50 / AllocCount 5 / LiveBytes 5", om)
+	}
+
+	// A census reports nothing omitted — the state in which a consumer may read
+	// absence as zero.
+	if _, om := topCallSites(sites, 4); om.Sites != 0 || om.AllocBytes != 0 {
+		t.Errorf("a complete list reported omissions: %+v", om)
+	}
+	if _, om := topCallSites(sites, -1); om.Sites != 0 {
+		t.Errorf("n < 0 keeps all but reported omissions: %+v", om)
+	}
+}

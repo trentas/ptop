@@ -259,6 +259,30 @@ message HeapSnapshot {
   // walk per allocation costs a large multiple of the TARGET's own CPU time,
   // which ptop's CPU axis then reported as the target's (#108).
   uint64 sample_bytes = 8;
+  // How many distinct application call sites this snapshot aggregated, before
+  // top_call_sites was cut to the largest few. Equal to len(top_call_sites)
+  // when nothing was dropped — which is the only state in which the list is a
+  // census, and therefore the only one in which a site's ABSENCE from it means
+  // the site allocated nothing.
+  //
+  // Counted after stacks reaching one call site are folded together, so it is
+  // in the same unit as the list: the kernel keys its aggregate by stack id,
+  // and a function reached through several stacks used to hold several of the
+  // slots (#109).
+  uint32 total_call_sites = 9;
+  // The volume carried by the call sites that did not fit in top_call_sites.
+  // Zero when total_call_sites == len(top_call_sites).
+  //
+  // These exist so absence can be read instead of guessed. A consumer diffing
+  // two deploys watches a site drop out of the list and cannot tell "it stopped
+  // allocating" from "it stopped being reported" — opposite situations, and
+  // reading the first where the second holds reports the largest regression
+  // such an engine can express over no evidence at all
+  // (sunnysystems/witness#69). A site absent from the list did strictly less
+  // than these totals, which is the bound that makes the inference safe.
+  uint64 omitted_alloc_count = 10;
+  uint64 omitted_alloc_bytes = 11;
+  uint64 omitted_live_bytes = 12;
 }
 
 // ─── Threads ────────────────────────────────────────────────────────────────

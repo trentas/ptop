@@ -311,6 +311,7 @@ The lanes measure different things, and the snapshot says which:
 |---|---|---|
 | allocation rate + volume, total | exact | exact |
 | per-site split | exact | **sampled** — `sample_bytes > 0` |
+| completeness of the site list | `total_call_sites` + `omitted_*` | same |
 | `func` / `file:line` per site | via `.symtab` + DWARF | via `.gopclntab` |
 | live bytes, lifetime, leak suspects | yes | **no** — `live_measured=false` |
 
@@ -332,6 +333,34 @@ The interval is randomized around that average, because allocation patterns are
 periodic and a fixed one would cross at the same point of every cycle and hand
 one call site all the samples. `--heap-sample-bytes 0` records every allocation,
 which is exact and costs what the table below says.
+
+### The call-site list says how complete it is
+
+`top_call_sites` carries the largest few sites, not a census. Three fields say
+what it left out, on both lanes:
+
+| field | meaning |
+|---|---|
+| `total_call_sites` | distinct call sites the snapshot aggregated, before the cut |
+| `omitted_alloc_count` / `omitted_alloc_bytes` / `omitted_live_bytes` | volume carried by the sites that did not fit |
+
+When `total_call_sites` equals the length of the list, the list **is** a census
+and a site's absence from it means the site allocated nothing. Otherwise a site
+absent from the list did strictly less than the omitted totals — the bound that
+lets a consumer read absence instead of guessing at it.
+
+That distinction is not academic. A consumer diffing two deploys watches a site
+drop out of the list and cannot otherwise tell *"it stopped allocating"* from
+*"it stopped being reported"*; those are opposite situations, and reading the
+first where the second holds reports the largest regression such an engine can
+express over no evidence at all (#109, sunnysystems/witness#69).
+
+The count is in call sites, which is also the unit of the cut. The kernel keys
+its aggregate by stack id, and one call site is reached through as many stacks
+as there are paths into the allocator beneath it — a map that grows produces a
+fresh one per growth path. Stacks reaching the same site are folded together
+**before** the ranking, so a function reached many ways no longer holds several
+of the slots and pushes out a busier one reached a single way.
 
 Symbolization works on stripped release builds (`-ldflags="-s -w"`): `.symtab`
 is gone but `.gopclntab` survives, because the runtime needs it for tracebacks.
