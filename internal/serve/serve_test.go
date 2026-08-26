@@ -43,7 +43,7 @@ func TestServeUnixEndToEnd(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, addr, TargetPID(99), collector.StartBus(ctx, []collector.Collector{f}), nil, Options{})
+		runErr <- Run(ctx, addr, TargetPID(99), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil, Options{})
 	}()
 
 	// Wait for the listener socket to appear before dialing.
@@ -136,7 +136,7 @@ func TestServeBackpressureMetaOverGRPC(t *testing.T) {
 	f := newFake(8192) // holds the burst without blocking the producer
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, addr, TargetPID(1), collector.StartBus(ctx, []collector.Collector{f}), nil, Options{})
+		runErr <- Run(ctx, addr, TargetPID(1), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil, Options{})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
@@ -209,7 +209,7 @@ func TestServeJSONLExport(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), collector.StartBus(ctx, []collector.Collector{f}), nil, Options{JSONLPath: jsonl})
+		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil, Options{JSONLPath: jsonl})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 

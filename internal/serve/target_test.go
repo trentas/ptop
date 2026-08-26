@@ -26,7 +26,7 @@ func handshakeFor(t *testing.T, target Target) *pb.TargetInfo {
 	f := newFake(4)
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, addr, target, collector.StartBus(ctx, []collector.Collector{f}), nil, Options{})
+		runErr <- Run(ctx, addr, target, &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil, Options{})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
@@ -96,7 +96,7 @@ func TestSubscribeHandshakeDeclaresTarget(t *testing.T) {
 // In cgroup mode the envelope pid stays 0: events come from anywhere in the
 // subtree, so stamping one process's pid on them would be a lie.
 func TestCgroupModeLeavesEnvelopePidUnset(t *testing.T) {
-	h := NewHub(TargetCgroup("/sys/fs/cgroup/x.scope", 7), "")
+	h := NewHub(TargetCgroup("/sys/fs/cgroup/x.scope", 7), "", nil)
 	ev := h.targetInfo()
 	if ev.GetPid() != 0 {
 		t.Fatalf("handshake pid = %d, want 0", ev.GetPid())

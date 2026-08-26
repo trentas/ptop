@@ -388,7 +388,7 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	resolver := stackResolverFor(set)
 
 	if tuiCfg == nil {
-		if err := serve.Run(ctx, addr, target, feed.Bus, resolver, opts); err != nil {
+		if err := serve.Run(ctx, addr, target, feed, resolver, opts); err != nil {
 			feed.Stop() // os.Exit skips the defer
 			fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
 			os.Exit(1)
@@ -403,7 +403,7 @@ func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsByte
 	ready := make(chan struct{})
 	opts.Ready = ready
 	srvErr := make(chan error, 1)
-	go func() { srvErr <- serve.Run(ctx, addr, target, feed.Bus, resolver, opts) }()
+	go func() { srvErr <- serve.Run(ctx, addr, target, feed, resolver, opts) }()
 
 	select {
 	case <-ready:

@@ -215,7 +215,7 @@ func TestOnDemandLookupNeverStarts(t *testing.T) {
 // The fixed-target server answers for its own pid (or 0, the pre-#72 request
 // shape) and refuses to pretend it can serve another process.
 func TestFixedRegistryChecksPID(t *testing.T) {
-	reg := &fixedRegistry{target: TargetPID(42), hub: NewHub(TargetPID(42), "")}
+	reg := &fixedRegistry{target: TargetPID(42), hub: NewHub(TargetPID(42), "", nil)}
 
 	for _, pid := range []int{0, 42} {
 		if _, _, _, err := reg.acquire(pid); err != nil {
@@ -231,7 +231,7 @@ func TestFixedRegistryChecksPID(t *testing.T) {
 	}
 
 	// Cgroup mode has no pid to name, so only 0 is meaningful.
-	cg := &fixedRegistry{target: TargetCgroup("/x.scope", 99), hub: NewHub(TargetCgroup("/x.scope", 99), "")}
+	cg := &fixedRegistry{target: TargetCgroup("/x.scope", 99), hub: NewHub(TargetCgroup("/x.scope", 99), "", nil)}
 	if _, _, _, err := cg.acquire(0); err != nil {
 		t.Errorf("cgroup acquire(0) = %v, want accepted", err)
 	}

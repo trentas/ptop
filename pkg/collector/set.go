@@ -102,6 +102,24 @@ type Set struct {
 	SecurityEBPF      *SecurityEBPFCollector
 
 	Sources Sources
+
+	// probes records what became of every subsystem — including the ones that
+	// produced nothing, and why. Read it through Probes().
+	probes probeLog
+}
+
+// Probes reports every collector this Set tried to run and what became of it,
+// sorted by name (#112).
+//
+// Sources answers "where did this number come from" for the TUI; this answers
+// "was anything watching at all", which is the question a consumer diffing two
+// captures has to settle before it compares them. An empty slice means nothing
+// was attempted (PID <= 0).
+func (s *Set) Probes() []ProbeStatus {
+	if s == nil {
+		return nil
+	}
+	return s.probes.statuses()
 }
 
 // NewSet starts the collectors for cfg.PID following the per-subsystem source
@@ -121,45 +139,63 @@ func NewSet(cfg SetConfig) *Set {
 		return s
 	}
 
-	if c := NewFDCollector(); !cfg.off(SubsystemFD) && c.Start(cfg.PID) == nil {
+	if cfg.off(SubsystemFD) {
+		s.probes.disabled(SubsystemFD, "--disable "+SubsystemFD)
+	} else if c := NewFDCollector(); c.Start(cfg.PID) == nil {
 		s.FD = c
-	} else if !cfg.NoEBPF {
-		fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
+		s.probes.active(SubsystemFD, SourceProc)
+	} else {
+		s.probes.unsupported(SubsystemFD, "FD collector unavailable for this target")
+		if !cfg.NoEBPF {
+			fmt.Fprintf(os.Stderr, "warning: FD collector unavailable\n")
+		}
 	}
 
 	// CPU: eBPF (the target's on-CPU time, from sched_switch) first, /proc
 	// polling of utime+stime as fallback.
+	if cfg.off(SubsystemCPU) {
+		s.probes.disabled(SubsystemCPU, "--disable "+SubsystemCPU)
+	}
 	if !cfg.NoEBPF && !cfg.off(SubsystemCPU) {
 		c := NewCPUEBPFCollector()
 		if err := c.Start(cfg.PID); err == nil {
 			s.CPUEBPF = c
 			s.Sources.CPU = "eBPF"
+			s.probes.active(SubsystemCPU, "eBPF")
 		} else {
 			warnEBPFFailure("cpu", err)
+			s.probes.failed(SubsystemCPU, err, bpf.Available)
 		}
 	}
 	if s.CPUEBPF == nil && !cfg.off(SubsystemCPU) {
 		if c := NewCPUCollector(); c.Start(cfg.PID) == nil {
 			s.CPUProc = c
 			s.Sources.CPU = SourceProc
+			s.probes.active(SubsystemCPU, SourceProc)
 		}
 	}
 
 	// Threads: eBPF (sched_switch → real-time CPU% + ctx switches) preferred,
 	// /proc as fallback.
+	if cfg.off(SubsystemThreads) {
+		s.probes.disabled(SubsystemThreads, "--disable "+SubsystemThreads)
+	}
 	if !cfg.NoEBPF && !cfg.off(SubsystemThreads) {
 		c := NewThreadsEBPFCollector()
 		if err := c.Start(cfg.PID); err == nil {
 			s.ThreadsEBPF = c
 			s.Sources.Threads = "eBPF"
+			s.probes.active(SubsystemThreads, "eBPF")
 		} else {
 			warnEBPFFailure("threads", err)
+			s.probes.failed(SubsystemThreads, err, bpf.Available)
 		}
 	}
 	if s.ThreadsEBPF == nil {
 		if c := NewThreadsCollector(); c.Start(cfg.PID) == nil {
 			s.ThreadsProc = c
 			s.Sources.Threads = SourceProc
+			s.probes.active(SubsystemThreads, SourceProc)
 		}
 	}
 
@@ -170,14 +206,17 @@ func NewSet(cfg SetConfig) *Set {
 		if err := c.Start(cfg.PID); err == nil {
 			s.MemEBPF = c
 			s.Sources.Mem = "eBPF"
+			s.probes.active(SubsystemMemory, "eBPF")
 		} else {
 			warnEBPFFailure("memory", err)
+			s.probes.failed(SubsystemMemory, err, bpf.Available)
 		}
 	}
 	if s.MemEBPF == nil {
 		if c := NewMemCollector(); c.Start(cfg.PID) == nil {
 			s.MemProc = c
 			s.Sources.Mem = SourceProc
+			s.probes.active(SubsystemMemory, SourceProc)
 		}
 	}
 
@@ -202,15 +241,26 @@ func NewSet(cfg SetConfig) *Set {
 	// Each goes through startEBPF so "disabled" and "failed to attach" are
 	// handled the same way everywhere: a disabled subsystem is silent (it was
 	// asked for), a failed one warns.
+	if cfg.NoEBPF {
+		// Degraded mode skips these entirely, so nothing below records them.
+		// Saying so is the whole point: an eBPF-only subsystem is silent here by
+		// the operator's choice, not because the target was quiet.
+		for _, name := range ebpfOnlySubsystems {
+			s.probes.disabled(name, "--no-ebpf")
+		}
+	}
 	if !cfg.NoEBPF {
 		startEBPF := func(name string, c ebpfStarter, onOK func()) {
 			if cfg.off(name) {
+				s.probes.disabled(name, "--disable "+name)
 				return
 			}
 			if err := c.Start(cfg.PID); err != nil {
 				warnEBPFFailure(name, err)
+				s.probes.failed(name, err, bpf.Available)
 				return
 			}
+			s.probes.active(name, "eBPF")
 			onOK()
 		}
 
@@ -281,6 +331,8 @@ func NewSet(cfg SetConfig) *Set {
 				s.TLSEBPF = c7
 				s.Sources.TLS = "eBPF"
 			})
+		} else {
+			s.probes.disabled(SubsystemTLS, "not opted in (--tls); payload capture observes plaintext")
 		}
 	}
 
@@ -310,44 +362,61 @@ type ebpfStarter interface {
 // There is no /proc fallback and nothing is simulated here: cgroup targeting is
 // an in-kernel filter, so without eBPF there is simply nothing to start.
 func (s *Set) startCgroup(cfg SetConfig) {
+	// The omissions are reported, not merely skipped: "this scope cannot observe
+	// heap" and "heap was switched off" reach a consumer as the same silence
+	// otherwise, and only the second is something an operator can undo.
+	for name, why := range cgroupUnsupported {
+		s.probes.unsupported(name, why)
+	}
+
 	if cfg.NoEBPF {
 		fmt.Fprintln(os.Stderr, "warning: --cgroup targeting needs eBPF; nothing started in --no-ebpf mode")
+		for _, name := range cgroupSubsystems {
+			s.probes.disabled(name, "--no-ebpf (cgroup targeting is an in-kernel filter: without eBPF there is nothing to start)")
+		}
 		return
 	}
 
-	if c := NewCPUEBPFCollector(); startCgroupCollector("cpu", c, cfg.Cgroup) {
+	if c := NewCPUEBPFCollector(); s.startCgroupCollector(SubsystemCPU, c, cfg) {
 		s.CPUEBPF = c
 		s.Sources.CPU = "eBPF"
 	}
-	if c := NewSyscallsEBPFCollector(); startCgroupCollector("syscalls", c, cfg.Cgroup) {
+	if c := NewSyscallsEBPFCollector(); s.startCgroupCollector(SubsystemSyscalls, c, cfg) {
 		s.SyscallsEBPF = c
 		s.Sources.Syscalls = "eBPF"
 	}
-	if c := NewIOEBPFCollector(); startCgroupCollector("io", c, cfg.Cgroup) {
+	if c := NewIOEBPFCollector(); s.startCgroupCollector(SubsystemIO, c, cfg) {
 		s.IOEBPF = c
 		s.Sources.IOFiles = "eBPF"
 	}
-	if c := NewNetworkEBPFCollector(); startCgroupCollector("network", c, cfg.Cgroup) {
+	if c := NewNetworkEBPFCollector(); s.startCgroupCollector(SubsystemNetwork, c, cfg) {
 		s.NetworkEBPF = c
 		s.Sources.Net = SourceNetworkRich
 	}
-	if c := NewFutexEBPFCollector(); startCgroupCollector("futex", c, cfg.Cgroup) {
+	if c := NewFutexEBPFCollector(); s.startCgroupCollector(SubsystemFutex, c, cfg) {
 		s.FutexEBPF = c
 		s.Sources.Locks = "eBPF"
 	}
-	if c := NewSecurityEBPFCollector(); startCgroupCollector("security", c, cfg.Cgroup) {
+	if c := NewSecurityEBPFCollector(); s.startCgroupCollector(SubsystemSecurity, c, cfg) {
 		s.SecurityEBPF = c
 		s.Sources.Security = "eBPF"
 	}
 }
 
 // startCgroupCollector starts c against a cgroup subtree, reporting a failure
-// the same way PID mode does.
-func startCgroupCollector(name string, c CgroupTargeter, spec string) bool {
-	if err := c.StartCgroup(spec); err != nil {
+// — and a probe status — the same way PID mode does.
+//
+// cfg.off is deliberately NOT consulted: cgroup mode has never honoured
+// --disable, and this change reports what ran, it does not change what runs.
+// The status then says "active" for a subsystem the operator asked to switch
+// off, which is the truth and is exactly how the gap became visible (#113).
+func (s *Set) startCgroupCollector(name string, c CgroupTargeter, cfg SetConfig) bool {
+	if err := c.StartCgroup(cfg.Cgroup); err != nil {
 		warnEBPFFailure(name, err)
+		s.probes.failed(name, err, bpf.Available)
 		return false
 	}
+	s.probes.active(name, "eBPF")
 	return true
 }
 
