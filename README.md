@@ -439,6 +439,24 @@ the modes aggregate differently: in cgroup mode `Event.pid` is 0 on aggregate
 payloads (there is no single process to name) and any pid inside a payload is a
 **root-namespace** pid, since a subtree can span pid namespaces.
 
+The same handshake carries the **probe set**: every collector this server tried
+to run and what became of it — `active` (with its source, `eBPF` or `/proc`),
+`disabled`, `failed`, or `unsupported`, plus why. A probe that is not running
+emits nothing, which in the events alone is indistinguishable from a target that
+never did the thing, so a consumer comparing two captures has to compare their
+probe sets before it compares their numbers. `active` versus `failed` is the
+distinction that is not cosmetic: a probe someone switched off is a knob they can
+turn back on, one that failed to attach is a broken deployment. The server says
+the same thing on stderr when it starts:
+
+```
+[ptop] probes: 9 active, 1 failed, 3 disabled, 0 unsupported
+[ptop] ⚠ 1 collector(s) asked for but NOT attached — … : syscalls (open tracefs: no such file or directory)
+```
+
+An empty probe set means the server does not report one — never that every probe
+ran.
+
 Cgroup mode is `--serve` only (the TUI's header, thread table and fd list are
 all one process's) and needs eBPF, since the filter runs in the kernel. It
 starts a deliberately smaller set of collectors — syscalls, I/O, network,
