@@ -27,7 +27,10 @@ sudo ./bin/ptop --pid <PID>
 - Distro: <!-- e.g. Ubuntu 24.04, Debian 12, Fedora 40 -->
 - Architecture: <!-- amd64 / arm64 -->
 - Build mode: <!-- eBPF / --no-ebpf -->
-- Privileges: <!-- root / setcap CAP_BPF+CAP_PERFMON / unprivileged -->
+- Privileges: <!-- root / setcap / unprivileged -->
+- Capabilities: <!-- output of `ptop --caps` — it names which collectors your
+     privileges will actually run, which is usually the answer for "an axis is
+     all zeros" -->
 
 ## Output
 

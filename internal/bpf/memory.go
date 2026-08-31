@@ -47,7 +47,7 @@ func OpenMemoryTracer(target Target) (*MemoryTracer, error) {
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("load memory collection: %w", err)
+		return nil, kprobeLoadError("load memory collection", err)
 	}
 	t := &MemoryTracer{coll: coll}
 

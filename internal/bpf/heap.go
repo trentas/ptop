@@ -109,7 +109,7 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 
 	libcPath, lo, hi, err := resolveLibc(pid)
 	if err != nil {
-		return nil, err
+		return nil, targetReadError(fmt.Sprintf("locate libc in pid %d", pid), err)
 	}
 
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(heapBPFObj))
@@ -118,7 +118,7 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("load heap collection: %w", err)
+		return nil, kprobeLoadError("load heap collection", err)
 	}
 	t := &HeapTracer{coll: coll, libcLo: lo, libcHi: hi}
 
@@ -167,6 +167,9 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 		{"free", "uprobe_free", false},
 	}
 	var mallocEntry, mallocRet bool
+	// Keep the first malloc failure: the loop tolerates a missing symbol, so by
+	// the time the verdict is known the error that explains it is long gone.
+	var mallocErr error
 	for _, p := range probes {
 		prog := coll.Programs[p.prog]
 		if prog == nil {
@@ -182,6 +185,9 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 		if err != nil {
 			// Tolerate a missing symbol (rare for libc); malloc is required.
 			fmt.Fprintf(os.Stderr, "warning: heap uprobe %s (%s): %v\n", p.sym, p.prog, err)
+			if p.sym == "malloc" && mallocErr == nil {
+				mallocErr = err
+			}
 			continue
 		}
 		t.links = append(t.links, l)
@@ -195,7 +201,7 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 	}
 	if !mallocEntry || !mallocRet {
 		t.Close()
-		return nil, fmt.Errorf("could not attach malloc uprobes on %s", libcPath)
+		return nil, uprobeAttachError("could not attach malloc uprobes on "+libcPath, mallocErr)
 	}
 
 	eventsMap := coll.Maps["heap_events"]

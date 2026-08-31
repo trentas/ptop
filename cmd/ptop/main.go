@@ -47,6 +47,7 @@ func main() {
 	disableSpec := flag.String("disable", "", "Comma-separated subsystems NOT to collect, e.g. --disable heap. Known: "+collector.KnownSubsystems())
 	heapSample := flag.Uint64("heap-sample-bytes", bpf.GoAllocDefaultSampleBytes, "Go allocation lane: bytes allocated between recorded call-site samples. 0 records every allocation — exact per site, and a large multiple of the target's own CPU time")
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
+	showCaps := flag.Bool("caps", false, "Print which capabilities this ptop holds, which collectors will therefore run, and exit")
 	showVer := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
@@ -61,6 +62,15 @@ func main() {
 
 	if *showVer {
 		fmt.Printf("ptop %s (commit %s, built %s)\n", version, commit, buildDate)
+		os.Exit(0)
+	}
+
+	// --caps answers, before a target is even chosen, the question the probe
+	// set used to answer only by what was missing from the output (#117):
+	// which collectors these privileges can actually run. It needs no pid and
+	// attaches nothing, so it works on a host being provisioned.
+	if *showCaps {
+		fmt.Print(bpf.GetCapStatus().CapReport())
 		os.Exit(0)
 	}
 
@@ -81,6 +91,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>")
 		fmt.Fprintln(os.Stderr, "       ptop --cgroup <path|container-id> --serve tcp://127.0.0.1:50051")
 		fmt.Fprintln(os.Stderr, "       ptop --serve unix:///run/ptop.sock          (no --pid: subscribers pick the target)")
+		fmt.Fprintln(os.Stderr, "       ptop --caps                                 (which collectors these privileges run)")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
 	}
@@ -108,6 +119,9 @@ func main() {
 		}()
 	}
 
+	// caps stays zero unless the eBPF lane is actually in play; the advisory
+	// below reads it and prints nothing for a zero value.
+	var caps bpf.CapStatus
 	if !*noEBPF {
 		// Build vs runtime diagnostic:
 		//   - Available = false → binary was built WITHOUT `-tags=ebpf`.
@@ -127,7 +141,7 @@ func main() {
 			}
 			fmt.Fprintln(os.Stderr, "")
 		} else {
-			caps := bpf.GetCapStatus()
+			caps = bpf.GetCapStatus()
 			if diag := caps.Diagnose(); diag != "" {
 				fmt.Fprintln(os.Stderr, "error: eBPF not available")
 				fmt.Fprintln(os.Stderr, "")
@@ -159,6 +173,23 @@ func main() {
 	if tlsEnabled && tlsCap > 0 {
 		fmt.Fprintf(os.Stderr, "[ptop] ⚠ TLS plaintext capture ON (--tls-bytes %d): events carry decrypted\n", tlsCap)
 		fmt.Fprintln(os.Stderr, "       payload bytes (credentials/PII). Keep the stream/export private.")
+	}
+
+	// Loading is not the same as loading everything (#117). CAP_BPF +
+	// CAP_PERFMON get past Diagnose and still leave collectors out, and a
+	// collector that never attached is indistinguishable downstream from a
+	// target that never did the thing — so it is said here, before the run,
+	// rather than left to be inferred from an axis of zeros. Subsystems the
+	// operator already switched off are not a gap and are not mentioned.
+	notAsked := map[string]bool{}
+	for name := range disable {
+		notAsked[name] = true
+	}
+	if !tlsEnabled {
+		notAsked[collector.SubsystemTLS] = true
+	}
+	if adv := caps.StartupAdvisory(notAsked); adv != "" {
+		fmt.Fprint(os.Stderr, adv)
 	}
 
 	// Transport security of the event stream (#95) — distinct from --tls, which
@@ -354,6 +385,17 @@ func checkPIDExists(pid int) error {
 		// Collectors will degrade (macOS libproc needs same-euid), so warn
 		// rather than fail: partial data for a real process is still useful.
 		fmt.Fprintf(os.Stderr, "[ptop] warning: process %d is owned by another user — data may be limited or unavailable\n", pid)
+		// "Limited" understates it on Linux without CAP_SYS_PTRACE: pid-mode
+		// targeting stats /proc/<pid>/ns/pid, which is a ptrace-mode read, so
+		// EVERY eBPF collector fails to resolve its filter — not just the ones
+		// that read the target's maps (#117). Measured on 7.0.0 with every other
+		// capability granted: nine of twelve down against a root-owned target,
+		// all twelve up against a uid-matched one.
+		if caps := bpf.GetCapStatus(); bpf.Available && !caps.IsRoot && !caps.HasSysPtrace {
+			fmt.Fprintln(os.Stderr, "       Without CAP_SYS_PTRACE that means every eBPF collector, not some of them:")
+			fmt.Fprintln(os.Stderr, "       pid-mode targeting stats /proc/<pid>/ns/pid, which is a ptrace-mode read.")
+			fmt.Fprintln(os.Stderr, "       Run `ptop --caps`, or add cap_sys_ptrace to the grant.")
+		}
 		return nil
 	default:
 		return fmt.Errorf("cannot check process %d: %w", pid, err)

@@ -104,7 +104,7 @@ func OpenNetTracer(target Target) (*NetTracer, error) {
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("load net collection: %w", err)
+		return nil, kprobeLoadError("load net collection", err)
 	}
 	t := &NetTracer{coll: coll}
 

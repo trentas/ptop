@@ -43,7 +43,7 @@ func resolveTarget(t Target) (targetFilter, error) {
 func resolvePIDTarget(pid int) (targetFilter, error) {
 	var st unix.Stat_t
 	if err := unix.Stat(fmt.Sprintf("/proc/%d/ns/pid", pid), &st); err != nil {
-		return targetFilter{}, fmt.Errorf("stat pid namespace of %d: %w", pid, err)
+		return targetFilter{}, targetReadError(fmt.Sprintf("stat pid namespace of %d", pid), err)
 	}
 	return targetFilter{Mode: targetModePID, Pid: uint32(pid), Dev: st.Dev, Ino: st.Ino}, nil
 }

@@ -66,7 +66,8 @@ replace this section soon.
 
 - Linux, kernel **5.8+** (BTF + ring buffer + `CAP_BPF`)
 - `amd64` or `arm64`
-- For full mode: root, or the binary with `cap_bpf,cap_perfmon+ep`
+- For full mode: root, or the binary with all five capabilities below —
+  `cap_bpf,cap_perfmon,cap_sys_admin,cap_dac_read_search,cap_sys_ptrace+ep`
 - For building from source: Go **1.25+**, `clang`, `libbpf-dev`, `bpftool`
 
 ## Platform support
@@ -145,6 +146,9 @@ sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --expo
 # Heap probe: drop it entirely, or make it exact instead of sampled (see below)
 sudo ./bin/ptop --pid <PID> --disable heap
 sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
+
+# Which collectors will run with the privileges you actually have (no PID needed)
+./bin/ptop --caps
 ```
 
 > **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
@@ -172,8 +176,71 @@ sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
 The recommended setup is to grant capabilities once and run unprivileged:
 
 ```bash
-sudo setcap cap_bpf,cap_perfmon+ep ./bin/ptop
+sudo setcap cap_bpf,cap_perfmon,cap_sys_admin,cap_dac_read_search,cap_sys_ptrace+ep ./bin/ptop
 ./bin/ptop --pid <PID>
+```
+
+`cap_bpf,cap_perfmon` — what this README taught until v1.4 — is **not** the
+full set. It loads, and then silently runs about three quarters of the probe
+set (#117). The remainder does not announce itself: the capture comes out
+well-formed and the dropped axes publish as zeros, and zero is a measurement —
+it asserts the process did not allocate. `ptop --caps` prints exactly which
+collectors the privileges you have will run, before you take the capture:
+
+```
+$ ./bin/ptop --caps
+...
+collectors, with the privileges this process holds
+  ✓ cpu          will run
+  ✗ heap         WILL NOT COLLECT — CAP_SYS_ADMIN (uprobe PMU in perf_event_open)
+  ~ memory       eBPF lane blocked, /proc lane still reports — /proc/self/mem unreadable …
+```
+
+What each capability buys, and what its absence costs:
+
+| Capability | Without it | Why |
+|---|---|---|
+| `cap_bpf` | nothing loads | creates maps and loads programs (`bpf(2)`) |
+| `cap_perfmon` | nothing attaches | opens the perf events tracepoints and kprobes hang off |
+| `cap_sys_admin` | **no `heap`** (and no `--tls`) | the dynamic `perf_uprobe` PMU in `perf_event_open(2)` is gated on it, and **`CAP_PERFMON` does not satisfy that gate**. Both heap lanes attach by uprobe, and heap is the only axis carrying `func` and `file:line` |
+| `cap_dac_read_search` | **most of the set**: every tracepoint collector, plus `memory`, `network`, `heap` and `--tls` | see below — the `setcap` above is itself the cause. Two reads it restores: `<tracefs>/events/…/id`, which every tracepoint attach needs, and `/proc/self/mem`, which every `kprobe`- *and* `uprobe`-type program's load needs |
+| `cap_sys_ptrace` | **nothing at all**, for a target owned by another user | pid-mode targeting stats `/proc/<pid>/ns/pid` to resolve the target's pid namespace, so *every* eBPF collector fails its filter — not just the uprobe and symbolization paths that read `/proc/<pid>/{exe,maps,map_files,root}`. All ptrace-mode reads |
+
+**The trap in `cap_dac_read_search`.** The kernel marks a process
+non-dumpable at `exec` whenever the new credentials are not a subset of the old
+— which is exactly what happens when your shell execs a `setcap`'d binary — and
+a non-dumpable process's own `/proc/self/*` is reassigned to `root`. ptop, running as uid 1000, then cannot
+read its own `/proc/self/mem` — which is precisely where cilium/ebpf reads the
+running kernel's version out of the vDSO, and every `kprobe`-type program is
+loaded with that version stamped in. ptop's two collectors whose object files
+contain a `SEC("kprobe/…")` — `memory` and `network` — therefore fail to *load*,
+before any attach is attempted. So do `heap` and `--tls`: a `SEC("uprobe/…")`
+program loads as `BPF_PROG_TYPE_KPROBE` and takes the same version read, which
+is why **granting `cap_sys_admin` without `cap_dac_read_search` recovers
+nothing** — heap never reaches the PMU it was missing. `/sys/kernel/tracing`,
+where every tracepoint attach reads its numeric event id, is `0700 root:root`
+besides. **The mechanism recommended so you do not need root is the one that
+needs `CAP_DAC_READ_SEARCH` to undo itself.**
+
+Measured on Linux 7.0.0, everything else granted: against a **root-owned**
+target, nine of the twelve collectors fail —
+`stat pid namespace of <pid>: permission denied` for eight of them and
+`open /proc/<pid>/exe` for `heap`. Only `signals` and `lifecycle` survive, and
+only because they filter on a global pid of their own. Adding `cap_sys_ptrace`
+recovers all nine. Against a target that is **yours**, the same four caps
+without `cap_sys_ptrace` attach everything — so omitting it costs nothing if
+ptop only ever watches your own processes.
+
+**`cap_sys_admin` is close to root**, and in a container sharing the host pid
+namespace it *is* root. Grant it deliberately, and say so to whoever owns the
+host. Running without it is a legitimate choice — `--caps` is then the record
+of what you gave up, and `--disable heap` makes the omission explicit rather
+than incidental.
+
+Running as root grants all five and is the simplest thing that works:
+
+```bash
+sudo ./bin/ptop --pid <PID>
 ```
 
 If something is wrong (kernel too old, `unprivileged_bpf_disabled=1`, missing
@@ -185,6 +252,15 @@ error: eBPF not available
 
 Kernel 5.4 detected — ptop requires Linux 5.8+ (BTF + CAP_BPF).
 On older kernels, use --no-ebpf (/proc-only mode).
+```
+
+And if it starts with a *partial* set, it says so on stderr before collecting
+rather than leaving it to be inferred from the data:
+
+```
+[ptop] ⚠ capability gap: heap, memory, network will not collect.
+       Missing: CAP_SYS_ADMIN, CAP_DAC_READ_SEARCH
+       Their axes publish as zeros, which is not the same as the target not doing it.
 ```
 
 ## Collector sources
