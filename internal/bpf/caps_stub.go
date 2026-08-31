@@ -3,25 +3,30 @@
 package bpf
 
 // CapStatus on non-Linux OSes: always indicates eBPF cannot run.
-// We keep the same shape so main.go doesn't need a build tag.
+// We keep the same shape so main.go doesn't need a build tag — and so
+// capgates.go, which is build-tag-free, compiles against one struct.
 type CapStatus struct {
-	IsRoot       bool
-	HasBPF       bool
-	HasPerfmon   bool
-	HasSysAdmin  bool
-	HasSysPtrace bool
+	IsRoot           bool
+	HasBPF           bool
+	HasPerfmon       bool
+	HasSysAdmin      bool
+	HasSysPtrace     bool
+	HasDACReadSearch bool
 
 	KernelMajor       int
 	KernelMinor       int
 	UnprivBPFDisabled int
+
+	FileCaps            bool
+	NonDumpable         bool
+	ProcSelfMemReadable bool
+	TracefsPath         string
+	TracefsReadable     bool
 }
 
 func GetCapStatus() CapStatus {
 	return CapStatus{UnprivBPFDisabled: -1}
 }
-
-func (CapStatus) CanLoadBPF() bool         { return false }
-func (CapStatus) KernelSupportsBPF() bool  { return false }
 
 func (CapStatus) Diagnose() string {
 	return "" +

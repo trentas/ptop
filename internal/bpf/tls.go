@@ -71,7 +71,7 @@ func OpenTLSTracer(pid, maxBytes int) (*TLSTracer, error) {
 
 	libsslPath, err := resolveLibSSL(pid)
 	if err != nil {
-		return nil, err
+		return nil, targetReadError(fmt.Sprintf("locate libssl in pid %d", pid), err)
 	}
 
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(tlsBPFObj))
@@ -80,7 +80,7 @@ func OpenTLSTracer(pid, maxBytes int) (*TLSTracer, error) {
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("load tls collection: %w", err)
+		return nil, kprobeLoadError("load tls collection", err)
 	}
 	t := &TLSTracer{coll: coll}
 
@@ -137,6 +137,9 @@ func OpenTLSTracer(pid, maxBytes int) (*TLSTracer, error) {
 		{"SSL_set_fd", "uprobe_ssl_set_fd", false},
 	}
 	var haveWrite, haveRead bool
+	// As in heap.go: the loop tolerates individual failures, so the first one
+	// has to be kept or the verdict below carries no reason at all.
+	var attachErr error
 	for _, p := range probes {
 		prog := coll.Programs[p.prog]
 		if prog == nil {
@@ -153,6 +156,9 @@ func OpenTLSTracer(pid, maxBytes int) (*TLSTracer, error) {
 			// Tolerate a missing symbol (BoringSSL/version drift); we only
 			// need one of SSL_write/SSL_read to be useful.
 			fmt.Fprintf(os.Stderr, "warning: tls uprobe %s (%s): %v\n", p.sym, p.prog, err)
+			if attachErr == nil {
+				attachErr = err
+			}
 			continue
 		}
 		t.links = append(t.links, l)
@@ -165,7 +171,7 @@ func OpenTLSTracer(pid, maxBytes int) (*TLSTracer, error) {
 	}
 	if !haveWrite && !haveRead {
 		t.Close()
-		return nil, fmt.Errorf("could not attach SSL_write/SSL_read uprobes on %s", libsslPath)
+		return nil, uprobeAttachError("could not attach SSL_write/SSL_read uprobes on "+libsslPath, attachErr)
 	}
 
 	eventsMap := coll.Maps["tls_events"]

@@ -17,8 +17,10 @@ produces is a table across allocation rates rather than a number.
 
 ## Running it
 
-eBPF needs privileges. Either run as root on a host with `CAP_BPF`, or use a
-privileged container, which is what the `bench` target does:
+eBPF needs privileges. Either run as root, or use a privileged container, which
+is what the `bench` target does. Root, specifically — this benchmark is about
+the heap uprobe, and a `setcap`'d binary needs `cap_sys_admin` before that
+probe attaches at all (`ptop --caps` says so; see README → Permissions):
 
 ```
 make bench

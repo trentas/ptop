@@ -89,9 +89,11 @@ ptop/
 │   │   ├── cpulist.go             /sys CPU-list parser (build-tag-free, #108)
 │   │   ├── goalloc.go             runtime.mallocgc uprobe loader + sampling rate
 │   │   ├── goalloc_spec.go        GoAllocDefaultSampleBytes (build-tag-free)
-│   │   ├── caps.go                CAP_BPF / CAP_PERFMON detection
+│   │   ├── caps.go                capability + measured-read detection (#117)
+│   │   ├── capgates.go            which cap gates which collector; --caps report
+│   │   ├── uprobe_caps.go         uprobe attach errors that name the capability
 │   │   ├── caps_stub.go           non-Linux stub
-│   │   ├── caps_test.go
+│   │   ├── caps_test.go, capgates_test.go
 │   │   ├── cpu.go                 on-CPU time tracer (sched_switch)
 │   │   ├── syscalls.go            raw_syscalls tracepoint loader
 │   │   ├── network.go             sock tracepoints + connection seeding
@@ -525,6 +527,7 @@ ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (imp
 ptop --pid <PID> --heap-sample-bytes 0   record EVERY Go allocation (exact per site, very expensive)
 ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
+ptop --caps                 which capabilities this binary holds, and which collectors they run
 ptop --version              print version + commit + build date
 ```
 
@@ -668,9 +671,10 @@ Version metadata is injected via `-ldflags` at release time
 
 ## Security notes
 
-- eBPF requires `CAP_BPF + CAP_PERFMON` (or root). `bpf.GetCapStatus()` /
-  `Diagnose()` produce a structured error before the TUI starts — never
-  silently fall through to a non-functional state.
+- eBPF requires `CAP_BPF + CAP_PERFMON` (or root) to load *anything*, and three
+  more capabilities to load *everything* — see "Five capabilities, not two"
+  below. `bpf.GetCapStatus()` / `Diagnose()` produce a structured error before
+  the TUI starts — never silently fall through to a non-functional state.
 - In `--no-ebpf` mode, all collectors fall back to `/proc` — useful when
   granting caps isn't acceptable.
 - Never `panic` in production paths — collectors log to stderr and continue.
@@ -705,5 +709,100 @@ Version metadata is injected via `-ldflags` at release time
   rides the same `--serve`/`--export` surface, so the socket/file restrictions
   above are what keep it private. Resolve by symbol (version-drift safe); a Go or
   static target has no libssl, so capture is simply unavailable there.
+
+### Five capabilities, not two
+
+`setcap cap_bpf,cap_perfmon+ep` — what this repo taught for two years — loads
+the eBPF lane and then runs about three quarters of the probe set. The missing
+quarter is not a rounding error and it does not announce itself: the capture is
+well-formed, the dropped axes publish as zeros, and zero is a measurement — it
+says the process did not allocate (#117). `internal/bpf/capgates.go` is the
+whole story; the short version is that three different mechanisms decide it,
+and only the first looks like a capability question:
+
+- **A uprobe** is created through the dynamic `perf_uprobe` PMU in
+  `perf_event_open(2)`, whose gate is `CAP_SYS_ADMIN`. **`CAP_PERFMON` does not
+  satisfy it.** Both heap lanes and the TLS lane attach that way, so without it
+  they do not — and `heap` is the only axis carrying `func` and `file:line`.
+- **A kprobe-type program** is loaded with the running kernel's version stamped
+  into it, and cilium/ebpf reads that version out of the vDSO through
+  `/proc/self/mem` (`internal/vdso.go` upstream). The collectors affected fail
+  to **load**, before any attach is attempted — and that is `memory` and
+  `network` for their `SEC("kprobe/…")`, *plus* `heap` and `tls`, because
+  `SEC("uprobe/…")` also loads as `BPF_PROG_TYPE_KPROBE`. Hence granting
+  `CAP_SYS_ADMIN` alone recovers nothing: heap dies at load, never reaching the
+  PMU it was missing.
+- **A tracepoint** resolves its numeric event id from
+  `<tracefs>/events/<group>/<name>/id`, so an unreadable tracefs takes out every
+  tracepoint collector at once.
+- **Any pid-mode collector** stats `/proc/<pid>/ns/pid` to resolve the target's
+  namespace (`resolvePIDTarget`, `target.go`), which is a ptrace-mode read. For
+  a target owned by another user that needs `CAP_SYS_PTRACE`, and it takes out
+  *everything*, not just the two lanes that read the target's maps.
+
+And the part that catches people: **the `setcap` is itself what breaks the last
+two.** The kernel sets `secureexec` — and with `fs.suid_dumpable=2`, marks the
+process non-dumpable — whenever an `exec` gains credentials the parent did not
+have. `task_dump_owner()` then hands that process's own `/proc/self/*` to root,
+so ptop as uid 1000 can no longer read its own `/proc/self/mem` (mode 0600).
+Add tracefs being `0700 root:root` and the mechanism recommended for *not*
+needing root is the one that needs `CAP_DAC_READ_SEARCH` to undo itself.
+
+Note the "whenever an exec gains credentials" precisely, because it is what
+makes this reproduce or not: exec'd from an ordinary shell, ptop goes
+non-dumpable and loses the read; exec'd from a parent that already holds the
+same capabilities (`setpriv` without `--clear-caps`, a privileged launcher), it
+gains nothing, stays dumpable, and the identical binary with the identical file
+capabilities reads its own memory fine. `CapStatus.NonDumpable` reads
+`PR_GET_DUMPABLE` rather than inferring from `FileCaps` for exactly that
+reason, and `--caps` reports which of the two you are in.
+
+Three rules follow, for anything added here:
+
+- **Measure the read, don't infer it from cap bits.** `GetCapStatus` opens
+  `/proc/self/mem` and stats tracefs rather than reasoning from `CapEff`,
+  because AppArmor, mount options and file modes all get a vote and only the
+  open consults all three. (Both were ruled out by measurement in the report:
+  AppArmor logged no denial, and `perf_event_paranoid=2` gave the same error.)
+- **An attach error must name the probable capability**, not just the target
+  path. `uprobeAttachError` (`uprobe_caps.go`) is that for the uprobe lanes; a
+  bare "operation not permitted" against a libc path reads as a problem with the
+  *target*, which is the wrong place to look. The hint rides `ProbeStatus.Detail`
+  onto the wire, so a downstream consumer gets it too.
+- **A new attach mechanism needs a row in `ebpfCollectors`.** It is what decides
+  which capability gates a collector, and `TestEBPFCollectorsMatchPrograms` reads
+  the `.bpf.c` sources back to check the table — adding a `SEC("kprobe/…")` to an
+  existing program silently moves that collector under `CAP_DAC_READ_SEARCH`,
+  and nothing else would notice.
+
+`ptop --caps` prints the resulting inventory: capabilities held, the reads as
+measured now, and the per-collector verdict — with no pid and nothing attached,
+so it answers on a host being provisioned. A run that starts with a partial set
+also says so on stderr (`StartupAdvisory`), skipping whatever `--disable` or a
+missing `--tls` already switched off, because a warning about something nobody
+asked for is a warning nobody reads by the time it matters.
+
+All four mechanisms were verified against a live 7.0.0 kernel (privileged
+container, `setcap` at each of the three grants, running as uid 1000):
+`cap_bpf,cap_perfmon` alone gives `memory`, `network`, `heap` and `tls`
+`detecting kernel version: opening mem: open /proc/self/mem: permission denied`
+and every tracepoint collector
+`reading trace event ID …: permission denied`; adding `cap_sys_admin` on top of
+that changes **nothing**; `cap_bpf,cap_perfmon,cap_sys_admin,cap_dac_read_search`
+runs all twelve; and against a
+root-owned target with everything but `cap_sys_ptrace`, nine of twelve fail
+(`stat pid namespace of <pid>` for eight, `open /proc/<pid>/exe` for `heap`;
+only `signals` and `lifecycle` survive, filtering on a global pid of their own)
+while the same grant against a uid-matched target attaches all twelve. Two traps when reproducing this. A `setcap`
+binary on a `nosuid` mount (systemd mounts `/tmp` that way, and so a Docker
+bind of it) has its file capabilities **silently ignored** — `getcap` still
+shows them. And exec'ing it from a still-privileged parent leaves it dumpable,
+which hides the `/proc/self/mem` half entirely; put a plain binary in between
+(`setpriv … timeout 5 ./ptop`) to get the real thing.
+
+`CAP_SYS_ADMIN` is close to root, and in a container with `pid: host` it is
+root. That is a real trade and the docs state it as one — the point is that
+someone reading only this repo could not previously reach the working
+configuration, or know it was needed.
 
 See [`SECURITY.md`](SECURITY.md) for vulnerability reporting.

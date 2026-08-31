@@ -2,9 +2,11 @@
 
 ## Threat model
 
-ptop runs as root (or with `CAP_BPF + CAP_PERFMON`) and loads eBPF programs
-into the kernel. Bugs in this code path can affect the host kernel directly
-— we treat security reports accordingly.
+ptop runs as root (or with the capability set in [`README.md`](README.md#permissions)
+— `cap_bpf`, `cap_perfmon`, `cap_sys_admin`, `cap_dac_read_search`,
+`cap_sys_ptrace`) and loads eBPF programs into the kernel. Bugs in this code
+path can affect the host kernel directly — we treat security reports
+accordingly.
 
 ## Reporting a vulnerability
 
@@ -47,7 +49,14 @@ Out of scope:
 
 ## Hardening recommendations for operators
 
-- Prefer `setcap cap_bpf,cap_perfmon+ep ./bin/ptop` over running as root.
+- Prefer a file capability over running as root — but know what you are
+  granting. `CAP_SYS_ADMIN` is the gate on the uprobe PMU ptop's heap and TLS
+  lanes need, and it is close to root in practice; in a container sharing the
+  host pid namespace it *is* root. `cap_bpf,cap_perfmon+ep` alone is a real
+  hardening choice, and it costs the `heap`, `memory` and `network` collectors
+  (#117) — run `ptop --caps` to see exactly which collectors a given grant
+  will run, and pick the trade knowingly rather than discovering it in the
+  shape of a capture.
 - Don't run ptop binaries from untrusted sources. Verify release archives
   with the published `SHA256SUMS`.
 - The release binaries are built with `CGO_ENABLED=0` and no dynamic linking

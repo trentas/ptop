@@ -154,7 +154,7 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	exePath := fmt.Sprintf("/proc/%d/exe", pid)
 	mallocOff, err := goMallocFileOffset(exePath)
 	if err != nil {
-		return nil, err
+		return nil, targetReadError("locate "+goMallocSymbol+" in the target executable", err)
 	}
 
 	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(goallocBPFObj))
@@ -163,7 +163,7 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
-		return nil, fmt.Errorf("load goalloc collection: %w", err)
+		return nil, kprobeLoadError("load goalloc collection", err)
 	}
 	t := &GoAllocTracer{coll: coll}
 
@@ -225,7 +225,8 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	})
 	if err != nil {
 		t.Close()
-		return nil, fmt.Errorf("attach uprobe %s at file offset %#x: %w", goMallocSymbol, mallocOff, err)
+		return nil, uprobeAttachError(
+			fmt.Sprintf("attach uprobe %s at file offset %#x", goMallocSymbol, mallocOff), err)
 	}
 	t.links = append(t.links, l)
 
