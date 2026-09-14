@@ -5,7 +5,6 @@ package bpf
 import (
 	"bufio"
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -19,9 +18,6 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/tls.bpf.o
-var tlsBPFObj []byte
 
 // tlsMaxData mirrors TLS_MAX_DATA in programs/tls.bpf.c — the hard per-call
 // capture cap and the fixed size of the event's data buffer.

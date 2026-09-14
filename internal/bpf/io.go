@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -16,9 +15,6 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/io.bpf.o
-var ioBPFObj []byte
 
 // IOEvent is the 1:1 layout of struct io_event in programs/io.bpf.c.
 // Fixed size 32 bytes; binary.LittleEndian.Read parses it directly from the ring buffer.

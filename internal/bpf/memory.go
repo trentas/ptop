@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"errors"
 	"fmt"
 
@@ -12,9 +11,6 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/memory.bpf.o
-var memoryBPFObj []byte
 
 // MemCounters mirrors `struct mem_counters` in programs/memory.bpf.c 1:1.
 // 32 bytes (4 × u64).

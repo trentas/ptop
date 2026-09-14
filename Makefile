@@ -38,19 +38,35 @@ all: gen vet test-all build-ebpf
 
 # ─── eBPF compilation ────────────────────────────────────────────────────────
 
-# Detect arch to set __TARGET_ARCH_<...> in clang and the GNU multiarch
-# triple, which points to the `asm/` headers installed by libc6-dev on
-# Debian/Ubuntu (e.g. /usr/include/x86_64-linux-gnu/asm/types.h).
-BPF_ARCH := $(shell uname -m | sed -e 's/x86_64/x86/' -e 's/aarch64/arm64/')
+# Which architecture the eBPF objects are FOR. BPF bytecode is portable, but
+# the pt_regs offsets baked into it by bpf_tracing.h's PT_REGS_PARM*/PT_REGS_RC
+# are not — an object built with __TARGET_ARCH_x86 and run on arm64 reads every
+# uprobe argument and return value from the wrong place, and does it silently:
+# the program still loads, verifies and attaches (#123).
+#
+# GOARCH is the parameter, because that is what the resulting object has to
+# match: `make gen GOARCH=arm64`. It defaults to the host, which is what a
+# local build wants; the release sets it per target and compiles on a runner of
+# that architecture, since the asm/ headers have to match the macro (they are
+# what makes a MISmatch a compile error rather than a silent wrong answer).
+GOARCH ?= $(shell go env GOARCH)
 
-ifeq ($(BPF_ARCH),x86)
+ifeq ($(GOARCH),amd64)
+  BPF_ARCH   := x86
   GNU_TRIPLE := x86_64-linux-gnu
-else ifeq ($(BPF_ARCH),arm64)
+else ifeq ($(GOARCH),arm64)
+  BPF_ARCH   := arm64
   GNU_TRIPLE := aarch64-linux-gnu
 else
-  # Fallback: try gcc -print-multiarch (covers Debian/Ubuntu on any arch)
+  # Unknown arch: pass it through and let clang say so, rather than guessing.
+  BPF_ARCH   := $(GOARCH)
   GNU_TRIPLE := $(shell gcc -print-multiarch 2>/dev/null)
 endif
+
+# Objects live under their GOARCH so both sets can sit in the tree at once and
+# the embed picks by build tag (internal/bpf/objects_*.go). Without that, the
+# release would have to swap files between two builds of one goreleaser run.
+BPF_OBJ_DIR := internal/bpf/programs/obj/$(GOARCH)
 
 # List of eBPF programs to compile. Add new .bpf.c files here.
 BPF_SRCS := \
@@ -68,11 +84,14 @@ BPF_SRCS := \
 	internal/bpf/programs/proc.bpf.c \
 	internal/bpf/programs/security.bpf.c
 
-BPF_OBJS := $(BPF_SRCS:.c=.o)
+BPF_OBJS := $(patsubst internal/bpf/programs/%.bpf.c,$(BPF_OBJ_DIR)/%.bpf.o,$(BPF_SRCS))
 
 # Every BPF object includes the shared filter header — editing it must
-# trigger a rebuild (the %.bpf.o rule below only tracks the .c file).
-$(BPF_OBJS): internal/bpf/programs/target.bpf.h
+# trigger a rebuild (the rule below only tracks the .c file).
+$(BPF_OBJS): internal/bpf/programs/target.bpf.h | $(BPF_OBJ_DIR)
+
+$(BPF_OBJ_DIR):
+	mkdir -p $@
 
 CLANG  ?= clang
 
@@ -81,14 +100,14 @@ CLANG  ?= clang
 # `-O2 -g`: optimization + dwarf info (BPF verifier uses the DWARF)
 # `-D__TARGET_ARCH_*`: define used by bpf_tracing.h for pt_regs offsets
 # `-I/usr/include/$GNU_TRIPLE`: required to find `asm/types.h` etc.
-%.bpf.o: %.bpf.c
+$(BPF_OBJ_DIR)/%.bpf.o: internal/bpf/programs/%.bpf.c | $(BPF_OBJ_DIR)
 	$(CLANG) -O2 -g -target bpf \
 		-D__TARGET_ARCH_$(BPF_ARCH) \
 		-I/usr/include \
 		$(if $(GNU_TRIPLE),-I/usr/include/$(GNU_TRIPLE),) \
 		-c $< -o $@
 
-# `make gen` produces all .o files from programs/. Requires libbpf-dev.
+# `make gen` produces all .o files for GOARCH. Requires libbpf-dev.
 gen: $(BPF_OBJS)
 
 # ─── benchmark ───────────────────────────────────────────────────────────────
@@ -205,6 +224,7 @@ vet:
 clean:
 	rm -rf bin/
 	find . -name "*.bpf.o" -delete
+	rm -rf internal/bpf/programs/obj
 
 lint:
 	golangci-lint run ./...

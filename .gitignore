@@ -3,6 +3,7 @@
 /ptop
 *.o
 *.bpf.o
+internal/bpf/programs/obj/
 
 # Test artifacts
 /tmp/

@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,9 +16,6 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/network.bpf.o
-var networkBPFObj []byte
 
 // NetConnKey mirrors `struct net_key` in programs/network.bpf.c 1:1.
 // 40 bytes, no padding besides the trailing _pad. cilium/ebpf can iterate

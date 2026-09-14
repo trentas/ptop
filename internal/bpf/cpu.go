@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -15,9 +14,6 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
-
-//go:embed programs/cpu.bpf.o
-var cpuBPFObj []byte
 
 // CPUTracer accumulates how many nanoseconds the target spent on-CPU, by
 // bracketing its scheduler slices at sched:sched_switch (see programs/cpu.bpf.c

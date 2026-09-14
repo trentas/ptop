@@ -68,6 +68,10 @@ ptop/
 ├── cmd/ebpfselftest/              root-only eBPF self-diagnostic
 ├── internal/
 │   ├── bpf/                       eBPF programs + loader (build tag `ebpf`)
+│   │   ├── objects_amd64.go       per-arch embeds of the compiled objects (#123)
+│   │   ├── objects_arm64.go       same set, arm64-built — see "Build tags"
+│   │   ├── objects_other.go       nil vars for any other GOARCH
+│   │   ├── programs/obj/<goarch>/ compiled .bpf.o, per target arch (gitignored)
 │   │   ├── programs/              .bpf.c sources, compiled by `make gen`
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
@@ -519,6 +523,39 @@ v1 host, or a cgroup namespace that shows `/` as its own root).
 
 This split lets the project `go vet` and `go test` on any host without the
 eBPF toolchain. The `bpf.Available` const reflects which lane was compiled.
+
+### The compiled objects are per target architecture (#123)
+
+BPF **bytecode** is portable. The `pt_regs` offsets `bpf_tracing.h` bakes into
+it through `PT_REGS_PARM*` / `PT_REGS_RC` are not. An object compiled with
+`-D__TARGET_ARCH_x86` and loaded on arm64 reads every uprobe argument and
+return value from the wrong register — and does it **silently**: the program
+loads, verifies, attaches, and reports `active`. Every published arm64 binary
+carried x86-built objects until the release was split, because the release
+compiled them once on an x86 runner and embedded that one set in both binaries.
+
+So:
+
+- `make gen` takes **`GOARCH`** (defaulting to the host) and writes to
+  `internal/bpf/programs/obj/$(GOARCH)/`. Build on a host of that architecture:
+  the `asm/` headers have to match the macro, and a mismatch is a *compile*
+  error — which is the only thing standing between this and another silent
+  wrong answer.
+- `internal/bpf/objects_{amd64,arm64}.go` embed their own architecture's
+  objects behind an arch build tag, so both sets coexist in the tree and
+  `go build` picks by `GOARCH`. That is what lets goreleaser build both
+  architectures from one checkout without swapping files between them.
+  `objects_other.go` declares the same vars as nil for any other architecture:
+  a missing object fails at `Start`, where a wrong-architecture one would not
+  fail at all.
+- `objects_test.go` holds the three places in sync — the `.bpf.c` sources and
+  the two embed files — because updating one and not the others yields a binary
+  that compiles for the author's architecture and silently carries fewer probes
+  on the other.
+
+The general rule this is an instance of: **a build input derived from the build
+host is a bug whenever the artifact runs somewhere else.** `uname -m` was that
+input here.
 
 ---
 

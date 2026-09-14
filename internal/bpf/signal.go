@@ -5,7 +5,6 @@ package bpf
 import (
 	"bufio"
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -19,9 +18,6 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/signal.bpf.o
-var signalBPFObj []byte
 
 // SignalRecord is the 1:1 layout of struct sig_event in programs/signal.bpf.c
 // (#58). Fixed size 56 bytes; binary.LittleEndian parses it directly from the
