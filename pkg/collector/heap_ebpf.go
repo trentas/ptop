@@ -49,6 +49,7 @@ type HeapEBPFCollector struct {
 	goTracer *bpf.GoAllocTracer // Go lane; nil on the libc lane
 	lane     string             // HeapLaneLibc | HeapLaneGo
 	sym      *symbol.Symbolizer // nil if /proc maps couldn't be parsed
+	syms     *symbol.Debuginfod // optional off-ELF symbol source (#119); nil = local ELF only
 	ch       chan interface{}
 	stop     chan struct{}
 	pid      int
@@ -97,11 +98,15 @@ const (
 // HeapSampleEveryAllocation records every allocation, exact and expensive (see
 // goalloc.bpf.c). Callers holding a SetConfig should go through
 // heapSampleBytes, which fills in the default.
-func NewHeapEBPFCollector(sampleBytes uint64) *HeapEBPFCollector {
+//
+// syms is the optional off-ELF symbol source (#119) — nil resolves from the
+// mapped image alone, which is every case the operator did not opt into.
+func NewHeapEBPFCollector(sampleBytes uint64, syms *symbol.Debuginfod) *HeapEBPFCollector {
 	return &HeapEBPFCollector{
 		ch:            make(chan interface{}, 64),
 		stop:          make(chan struct{}),
 		sampleBytes:   sampleBytes,
+		syms:          syms,
 		leakThreshold: heapDefaultLeakThreshold,
 		siteCache:     make(map[int32]heapSite),
 		stackCache:    make(map[int32][]symbol.Frame),
@@ -129,7 +134,7 @@ func (c *HeapEBPFCollector) Start(pid int) error {
 	c.pid = pid
 	// Symbolize call sites best-effort: without /proc maps (or off Linux) the
 	// sites degrade to hex, exactly as before #54 — never fail Start over it.
-	if sym, err := symbol.NewSymbolizer(pid); err == nil {
+	if sym, err := symbol.NewSymbolizer(pid, symbol.WithDebuginfod(c.syms)); err == nil {
 		c.sym = sym
 	} else {
 		fmt.Fprintf(os.Stderr, "heap: call-site symbolization unavailable for pid %d: %v\n", pid, err)

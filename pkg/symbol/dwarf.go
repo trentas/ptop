@@ -58,7 +58,7 @@ var dwarfSections = []string{
 func loadDWARFSections(f *elf.File) map[string][]byte {
 	var total uint64
 	for _, name := range dwarfSections {
-		if sec := f.Section(name); sec != nil {
+		if sec := f.Section(name); sec != nil && sec.Type != elf.SHT_NOBITS {
 			total += sec.Size
 		}
 	}
@@ -67,14 +67,14 @@ func loadDWARFSections(f *elf.File) map[string][]byte {
 	}
 	// .debug_info and .debug_line are the two that must be there; without
 	// either there is no line program to read and the copy is wasted.
-	if f.Section(".debug_info") == nil || f.Section(".debug_line") == nil {
+	if !hasBits(f, ".debug_info") || !hasBits(f, ".debug_line") {
 		return nil
 	}
 
 	out := make(map[string][]byte, len(dwarfSections))
 	for _, name := range dwarfSections {
 		sec := f.Section(name)
-		if sec == nil {
+		if sec == nil || sec.Type == elf.SHT_NOBITS {
 			continue
 		}
 		data, err := sec.Data()
@@ -168,4 +168,11 @@ func (m *Module) dwarfLine(fileVaddr uint64) (file string, line int, ok bool) {
 		return "", 0, false
 	}
 	return ent.File.Name, ent.Line, true
+}
+
+// hasBits reports whether f carries section name with actual contents. A
+// SHT_NOBITS section is a header with nothing behind it — see OpenModule.
+func hasBits(f *elf.File, name string) bool {
+	sec := f.Section(name)
+	return sec != nil && sec.Type != elf.SHT_NOBITS
 }

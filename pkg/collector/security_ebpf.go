@@ -22,6 +22,7 @@ import (
 type SecurityEBPFCollector struct {
 	tracer *bpf.SecurityTracer
 	sym    *symbol.Symbolizer // nil if /proc maps couldn't be parsed
+	syms   *symbol.Debuginfod // optional off-ELF symbol source (#119); nil = local ELF only
 	ch     chan interface{}
 	stop   chan struct{}
 
@@ -36,8 +37,11 @@ type secSite struct {
 	frame symbol.Frame
 }
 
-func NewSecurityEBPFCollector() *SecurityEBPFCollector {
+// NewSecurityEBPFCollector builds the collector. syms is the optional off-ELF
+// symbol source (#119); nil resolves from the mapped image alone.
+func NewSecurityEBPFCollector(syms *symbol.Debuginfod) *SecurityEBPFCollector {
 	return &SecurityEBPFCollector{
+		syms:      syms,
 		ch:        make(chan interface{}, 64),
 		stop:      make(chan struct{}),
 		siteCache: make(map[int32]secSite),
@@ -64,7 +68,7 @@ func (c *SecurityEBPFCollector) start(t bpf.Target, pid int) error {
 	// (cgroup mode) there is nothing to symbolize against, so skip it quietly.
 	if pid <= 0 {
 		c.sym = nil
-	} else if sym, err := symbol.NewSymbolizer(pid); err == nil {
+	} else if sym, err := symbol.NewSymbolizer(pid, symbol.WithDebuginfod(c.syms)); err == nil {
 		c.sym = sym
 	} else {
 		fmt.Fprintf(os.Stderr, "security: call-site symbolization unavailable for pid %d: %v\n", pid, err)

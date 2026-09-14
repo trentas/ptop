@@ -25,6 +25,7 @@ import (
 type FutexEBPFCollector struct {
 	tracer *bpf.FutexTracer
 	sym    *symbol.Symbolizer // nil in cgroup mode, or if /proc maps failed
+	syms   *symbol.Debuginfod // optional off-ELF symbol source (#119); nil = local ELF only
 	ch     chan interface{}
 	stop   chan struct{}
 
@@ -43,8 +44,11 @@ const contentionThreshold = 20
 // footprint; keep it compact.
 const topLockEntries = 8
 
-func NewFutexEBPFCollector() *FutexEBPFCollector {
+// NewFutexEBPFCollector builds the collector. syms is the optional off-ELF
+// symbol source (#119); nil resolves from the mapped image alone.
+func NewFutexEBPFCollector(syms *symbol.Debuginfod) *FutexEBPFCollector {
 	return &FutexEBPFCollector{
+		syms:       syms,
 		ch:         make(chan interface{}, 8),
 		stop:       make(chan struct{}),
 		prev:       make(map[uint64]uint64),
@@ -73,7 +77,7 @@ func (c *FutexEBPFCollector) start(t bpf.Target, pid int) error {
 	// address, exactly as before #89 — never fail Start over it.
 	if pid <= 0 {
 		c.sym = nil
-	} else if sym, err := symbol.NewSymbolizer(pid); err == nil {
+	} else if sym, err := symbol.NewSymbolizer(pid, symbol.WithDebuginfod(c.syms)); err == nil {
 		c.sym = sym
 	} else {
 		fmt.Fprintf(os.Stderr, "futex: call-site symbolization unavailable for pid %d: %v\n", pid, err)

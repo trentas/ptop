@@ -181,6 +181,7 @@ ptop/
 │   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)
 │       ├── elf.go                 OS-agnostic ELF/gosym core (Module, build-id)
 │       ├── dwarf.go               C/C++ file:line from .debug_line
+│       ├── debuginfod.go          off-image symbols by build-id: local bundle + debuginfod (#119)
 │       ├── lookup.go              name → address (uprobe attach), gosym fallback
 │       ├── gopath.go              build-machine source path → import path (#107)
 │       ├── perfmap.go             JIT /tmp/perf-<pid>.map frames
@@ -524,6 +525,9 @@ ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key
 ptop --pid <PID> ... --serve-tls-client-ca <ca>   also require a client certificate (mTLS)
 ptop --pid <PID> --tls       TLS payload metadata (libssl uprobes) — OFF by default (#55)
 ptop --pid <PID> --tls-bytes 256   also capture ≤256 plaintext bytes/call (implies --tls)
+ptop --pid <PID> --symbol-cache /srv/symbols   symbols for a STRIPPED module from a local bundle (#119)
+ptop --pid <PID> --debuginfod            also query $DEBUGINFOD_URLS — network lookup is opt-in
+ptop --pid <PID> --debuginfod-urls https://debuginfod.example   name the servers outright
 ptop --pid <PID> --heap-sample-bytes 0   record EVERY Go allocation (exact per site, very expensive)
 ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
@@ -662,6 +666,55 @@ it. Two consequences worth knowing: a new stack-capturing collector must claim
 a source constant, and both symbolization paths are **pid-mode only** — in
 cgroup mode there is no single memory map to resolve against, so sites stay
 unresolved.
+
+### Symbols that live outside the binary (#119)
+
+The cascade above — `.gopclntab` → `.symtab`/`.dynsym` → DWARF → perf map →
+`module+0xoffset` — resolves everything whose symbols travel INSIDE the mapped
+image. The case it leaves unnamed is a third-party binary shipped stripped
+(`-s`, no DWARF, no perf map), where the heap axis, the only one carrying
+`func` and `file:line`, produces addresses and nothing more.
+
+What is missing there is a symbol **source**, not an identity: `build_id`
+already rides every `StackRef` and every `Frame`, and it is exactly the key the
+ecosystem uses to match a binary with symbols published outside it.
+`pkg/symbol/debuginfod.go` is that lookup — a local store
+(`--symbol-cache <dir>`, laid out `<dir>/<build-id>/debuginfo`, the elfutils
+client layout so a primed cache or an unpacked vendor bundle works as-is) and,
+opt-in, debuginfod servers (`--debuginfod`, `--debuginfod-urls`).
+`symbol.Options` rides `collector.SetConfig`, one `*Debuginfod` is built per
+`Set` and shared by the heap, futex and security symbolizers, and
+`Symbolizer.supplement` consults it only for what the mapped image could not
+answer.
+
+Four invariants, each of which is a test:
+
+- **A build-id that does not match is absence.** `loadVerified` parses the file
+  and compares its own build-id before a symbol is taken from it; a mismatch, or
+  an image carrying no build-id note at all, is discarded. A wrong symbol is
+  worse than a bare address — an address reads as a gap, a wrong `file:line`
+  reads as an answer. A download failing the check is never promoted into the
+  cache, so one mis-publishing server cannot poison later runs on the host.
+- **The network is off unless asked for.** `DEBUGINFOD_URLS` alone does
+  nothing; `--debuginfod` is what reads it. The zero `symbol.Options` consults
+  nothing, not even disk — which is why the default lives in the zero value
+  rather than in a flag someone has to remember.
+- **Local wins.** `mergeSupplement` fills gaps only. A `Func` or `File:Line` the
+  image supplied is never overwritten, and `Module`/`Offset`/`BuildID` always
+  stay as the mapping reported them (the debug file is itself named
+  `debuginfo`, and its load base need not match the image's).
+- **One lookup per build-id, hit or miss**, via a `sync.Once` per entry. The
+  lookup is synchronous and can therefore stall a collector's publish loop once
+  per stripped module (bounded by `DEBUGINFOD_TIMEOUT`, default 30s). That is
+  the deliberate trade: `siteCache`/`stackCache` upstream cache permanently, so
+  an async "not yet" would freeze an unresolved frame for the whole capture.
+
+One trap this added elsewhere: a separate debug image keeps every allocated
+section's **header** while blanking its contents to `SHT_NOBITS`, and
+`elf.Section.Data` on one of those returns a zero-filled buffer the size of the
+original. `OpenModule` and `loadDWARFSections` now skip `SHT_NOBITS` sections
+for that reason — without it, a debug file's `.gopclntab` is a large allocation
+that can only parse as garbage.
 
 Version metadata is injected via `-ldflags` at release time
 (`main.version`, `main.commit`, `main.buildDate`). In dev they stay as
