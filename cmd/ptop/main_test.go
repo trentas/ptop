@@ -99,3 +99,86 @@ func TestCheckTargetFlags(t *testing.T) {
 		})
 	}
 }
+
+// The headline property of #119: with no flag, nothing off-image is consulted —
+// not the network, and not a cache directory either. DEBUGINFOD_URLS being set
+// in the environment does not by itself send a profiler to the internet.
+func TestSymbolOptionsOffByDefault(t *testing.T) {
+	t.Setenv("DEBUGINFOD_URLS", "https://debuginfod.example")
+	got, err := symbolOptions(false, "", "")
+	if err != nil {
+		t.Fatalf("symbolOptions: %v", err)
+	}
+	if got.Enabled() {
+		t.Errorf("no flags gave %+v, want nothing configured", got)
+	}
+}
+
+func TestSymbolOptions(t *testing.T) {
+	cacheDir := t.TempDir()
+
+	t.Run("debuginfod reads the environment", func(t *testing.T) {
+		t.Setenv("DEBUGINFOD_URLS", "https://a.example https://b.example")
+		got, err := symbolOptions(true, "", cacheDir)
+		if err != nil {
+			t.Fatalf("symbolOptions: %v", err)
+		}
+		if len(got.URLs) != 2 || got.URLs[0] != "https://a.example" {
+			t.Errorf("URLs = %v", got.URLs)
+		}
+		if got.CacheDir != cacheDir {
+			t.Errorf("CacheDir = %q, want %q", got.CacheDir, cacheDir)
+		}
+	})
+
+	t.Run("explicit urls override the environment", func(t *testing.T) {
+		t.Setenv("DEBUGINFOD_URLS", "https://env.example")
+		got, err := symbolOptions(false, "https://flag.example", cacheDir)
+		if err != nil {
+			t.Fatalf("symbolOptions: %v", err)
+		}
+		if len(got.URLs) != 1 || got.URLs[0] != "https://flag.example" {
+			t.Errorf("URLs = %v, want the flag's server", got.URLs)
+		}
+	})
+
+	// --symbol-cache alone is the offline shape: a vendor bundle on disk, and
+	// no server to reach.
+	t.Run("cache alone stays offline", func(t *testing.T) {
+		t.Setenv("DEBUGINFOD_URLS", "https://env.example")
+		got, err := symbolOptions(false, "", cacheDir)
+		if err != nil {
+			t.Fatalf("symbolOptions: %v", err)
+		}
+		if len(got.URLs) != 0 {
+			t.Errorf("URLs = %v, want none", got.URLs)
+		}
+		if !got.Enabled() || got.CacheDir != cacheDir {
+			t.Errorf("got %+v, want the store enabled", got)
+		}
+	})
+
+	t.Run("a store is defaulted once a server is in play", func(t *testing.T) {
+		got, err := symbolOptions(false, "https://a.example", "")
+		if err != nil {
+			t.Fatalf("symbolOptions: %v", err)
+		}
+		if got.CacheDir == "" {
+			t.Error("CacheDir empty: a fetch would repeat every run")
+		}
+	})
+
+	// Rejected at startup, not as a per-module warning during a capture.
+	t.Run("bad input fails early", func(t *testing.T) {
+		t.Setenv("DEBUGINFOD_URLS", "")
+		if _, err := symbolOptions(true, "", ""); err == nil {
+			t.Error("--debuginfod with no servers: want an error")
+		}
+		if _, err := symbolOptions(false, "not-a-url", ""); err == nil {
+			t.Error("--debuginfod-urls with a bad URL: want an error")
+		}
+		if _, err := symbolOptions(false, "   ", ""); err == nil {
+			t.Error("--debuginfod-urls naming nothing: want an error")
+		}
+	})
+}

@@ -6,9 +6,13 @@ import "errors"
 
 // Symbolizer is unavailable off Linux: resolving a live process's addresses
 // needs /proc/<pid>/maps. The ELF Module core (elf.go) still works everywhere.
-type Symbolizer struct{}
+type Symbolizer struct {
+	// Present so Option (debuginfod.go) type-checks on every platform; the
+	// off-ELF source is reached through Symbolize, which does not run here.
+	debuginfod *Debuginfod
+}
 
-func NewSymbolizer(int) (*Symbolizer, error) {
+func NewSymbolizer(int, ...Option) (*Symbolizer, error) {
 	return nil, errors.New("symbolizer requires /proc (Linux only)")
 }
 

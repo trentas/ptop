@@ -10,7 +10,7 @@ import (
 
 type FutexEBPFCollector struct{}
 
-func NewFutexEBPFCollector() *FutexEBPFCollector {
+func NewFutexEBPFCollector(*symbol.Debuginfod) *FutexEBPFCollector {
 	return &FutexEBPFCollector{}
 }
 

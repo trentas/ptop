@@ -149,6 +149,10 @@ sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
 
 # Which collectors will run with the privileges you actually have (no PID needed)
 ./bin/ptop --caps
+
+# Name a STRIPPED third-party binary: symbols by build-id, off-image (see below)
+sudo ./bin/ptop --pid <PID> --symbol-cache /srv/symbols   # a bundle on disk, no network
+sudo ./bin/ptop --pid <PID> --debuginfod                  # servers from $DEBUGINFOD_URLS
 ```
 
 > **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
@@ -454,6 +458,60 @@ sources the module carries, in that order:
 | `/tmp/perf-<pid>.map` | func + file:line | JIT runtimes (Node, JVM) |
 
 A module with none of them degrades to `module+0xoffset` rather than guessing.
+
+#### Symbols that live outside the binary
+
+Those four sources all travel *inside* the mapped image. The case they leave
+unnamed is a third-party binary shipped stripped — built with `-s`, no DWARF,
+no perf map — where the heap axis, the only one carrying `func` and
+`file:line`, produces addresses and nothing more.
+
+What is missing there is a symbol *source*, not an identity: every frame
+already carries the module's GNU build-id, which is the key the ecosystem uses
+to match a binary with symbols published separately. Two flags turn that key
+into names (#119):
+
+```
+ptop --pid <PID> --symbol-cache /srv/symbols        a bundle on disk, no network
+ptop --pid <PID> --debuginfod                       servers from $DEBUGINFOD_URLS
+ptop --pid <PID> --debuginfod-urls https://debuginfod.example   named outright
+```
+
+`--symbol-cache <dir>` is a local symbol store laid out as
+`<dir>/<build-id>/debuginfo` — the same layout elfutils' debuginfod client
+uses, so an already-primed client cache works as-is, and so does a vendor
+symbol bundle unpacked into it. On its own it reaches no network at all. With
+a server configured it is also where a fetched file is written, so a module is
+downloaded once per host rather than once per capture; it then defaults to
+`$DEBUGINFOD_CACHE_PATH`, else `$XDG_CACHE_HOME/debuginfod_client`, else
+`~/.cache/debuginfod_client`.
+
+Four properties are deliberate:
+
+- **A build-id that does not match is absence.** A file is parsed and its own
+  build-id compared to the one asked for before a single symbol is taken from
+  it; anything else is discarded and the frame stays `module+0xoffset`. A wrong
+  symbol is worse than no symbol — unlike a bare address it does not look like
+  a gap, and it points a reader at a line of source that has nothing to do with
+  what ran. A download that fails the check is not written to the cache either,
+  so one mis-publishing server cannot poison later runs on the host.
+- **The network is off unless asked for.** `$DEBUGINFOD_URLS` alone does
+  nothing: `--debuginfod` is what reads it. A profiler that reaches out to the
+  internet because a binary happened to be stripped is a posture decision, not
+  a convenience. With no flag at all, nothing off-image is consulted — not even
+  a cache directory.
+- **Local resolution stays local.** This source is consulted only for what the
+  mapped image could not answer, and it fills gaps only: a name or a
+  `file:line` the binary supplied is never overwritten, and `module`, `offset`
+  and `build_id` always stay as the mapping reported them.
+- **One lookup per build-id, per process.** The hit and the miss are both
+  remembered, so a stripped module costs one query rather than one per frame.
+  The lookup is synchronous, so the first frame in such a module waits on it
+  (bounded by `$DEBUGINFOD_TIMEOUT`, default 30s) — the alternative is caching
+  an unresolved frame for the life of the capture.
+
+Symbolization is pid-mode only, here as elsewhere: `--cgroup` has no single
+memory map to resolve against.
 
 JIT'd code has no ELF behind it — V8 and the JVM compile into anonymous
 executable memory — so an address in no file-backed mapping is resolved from

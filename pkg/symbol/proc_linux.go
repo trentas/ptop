@@ -30,6 +30,10 @@ type Symbolizer struct {
 	mu   sync.Mutex
 	mods map[string]*Module // by resolved path; nil value = open failed
 
+	// Optional off-ELF symbol source (#119), consulted only for what the
+	// mapped image could not answer. nil unless the operator configured one.
+	debuginfod *Debuginfod
+
 	buildOnce   sync.Once
 	execBuildID string
 
@@ -43,12 +47,16 @@ type Symbolizer struct {
 // NewSymbolizer snapshots pid's executable mappings. The set of mapped modules
 // is assumed stable for the lifetime of the symbolizer (true for the steady
 // state ptop observes); dlopen after construction won't be picked up.
-func NewSymbolizer(pid int) (*Symbolizer, error) {
+func NewSymbolizer(pid int, opts ...Option) (*Symbolizer, error) {
 	segs, err := parseMaps(pid)
 	if err != nil {
 		return nil, err
 	}
-	return &Symbolizer{pid: pid, segs: segs, mods: make(map[string]*Module)}, nil
+	s := &Symbolizer{pid: pid, segs: segs, mods: make(map[string]*Module)}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 // Symbolize resolves a runtime address. It never errors: an address in an
@@ -74,7 +82,27 @@ func (s *Symbolizer) Symbolize(addr uint64) Frame {
 	if !ok {
 		return Frame{Module: m.name, Offset: addr - seg.start, BuildID: m.buildID}
 	}
-	return m.Resolve(v)
+	return s.supplement(m.Resolve(v), v)
+}
+
+// supplement fills what the mapped image could not name from the off-ELF symbol
+// source (#119) — a local symbol bundle, or debuginfod when the operator opted
+// in. It is a no-op for everything that already resolved, so a binary carrying
+// its own symbols never pays the lookup.
+//
+// The local frame wins every field it filled: the separate debug image is a
+// second opinion about names, never about identity. Module, Offset and BuildID
+// in particular stay as the mapping reported them — the debug file's own name
+// is "debuginfo", and its load base need not match the image's.
+func (s *Symbolizer) supplement(fr Frame, fileVaddr uint64) Frame {
+	if s.debuginfod == nil || fr.BuildID == "" || (fr.Func != "" && fr.File != "") {
+		return fr
+	}
+	dm := s.debuginfod.Module(fr.BuildID)
+	if dm == nil {
+		return fr
+	}
+	return mergeSupplement(fr, dm.Resolve(fileVaddr))
 }
 
 func (s *Symbolizer) Close() error { return nil }

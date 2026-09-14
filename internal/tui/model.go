@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/trentas/ptop/pkg/collector"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // simInterval defines the granularity of the simulation. TickMsg fires at FPS
@@ -76,6 +77,9 @@ type Config struct {
 	// HeapSampleBytes is the Go allocation lane's sampling rate; see
 	// collector.SetConfig.
 	HeapSampleBytes uint64
+	// Symbols names the optional off-ELF symbol sources (#119); see
+	// collector.SetConfig.
+	Symbols symbol.Options
 
 	// Feed, when set, is an already-running Set plus the Bus fanning it out
 	// (#71) — how `--serve --tui` drives the TUI and the gRPC stream from ONE
@@ -295,6 +299,7 @@ func NewModel(cfg Config) Model {
 		m.feed = collector.StartFeed(ctx, collector.SetConfig{
 			PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
 			Disable: cfg.Disable, HeapSampleBytes: cfg.HeapSampleBytes,
+			Symbols: cfg.Symbols,
 		})
 	}
 	m.collectors = m.feed.Set

@@ -9,6 +9,7 @@ import (
 	_ "net/http/pprof" // registers /debug/pprof handlers on http.DefaultServeMux
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/trentas/ptop/internal/serve"
 	"github.com/trentas/ptop/internal/tui"
 	"github.com/trentas/ptop/pkg/collector"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // Variables injected via -ldflags in the release build (goreleaser).
@@ -45,6 +47,9 @@ func main() {
 	tls := flag.Bool("tls", false, "Capture TLS payload metadata (direction/fd/byte count) via libssl uprobes — OFF by default (#55)")
 	tlsBytes := flag.Int("tls-bytes", 0, "Also capture up to N bytes of PLAINTEXT per TLS call (implies --tls; 0=metadata only, max 4096). Sensitive: may include credentials/PII")
 	disableSpec := flag.String("disable", "", "Comma-separated subsystems NOT to collect, e.g. --disable heap. Known: "+collector.KnownSubsystems())
+	debuginfod := flag.Bool("debuginfod", false, "Resolve symbols for STRIPPED modules from the debuginfod servers in $DEBUGINFOD_URLS, keyed by build-id. Network lookup is off unless asked for")
+	debuginfodURLs := flag.String("debuginfod-urls", "", "debuginfod servers to query, comma/space separated (implies --debuginfod; overrides $DEBUGINFOD_URLS)")
+	symbolCache := flag.String("symbol-cache", "", "Local symbol store, <dir>/<build-id>/debuginfo — read before any network and written after a fetch. Alone it resolves offline from an unpacked vendor bundle")
 	heapSample := flag.Uint64("heap-sample-bytes", bpf.GoAllocDefaultSampleBytes, "Go allocation lane: bytes allocated between recorded call-site samples. 0 records every allocation — exact per site, and a large multiple of the target's own CPU time")
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
 	showCaps := flag.Bool("caps", false, "Print which capabilities this ptop holds, which collectors will therefore run, and exit")
@@ -79,6 +84,14 @@ func main() {
 	disable, err := collector.ParseDisable(*disableSpec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: --disable: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Off-ELF symbols (#119). Resolved here so a bad server URL is a startup
+	// error rather than a warning per stripped module, mid-capture.
+	symbolOpts, err := symbolOptions(*debuginfod, *debuginfodURLs, *symbolCache)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -192,6 +205,13 @@ func main() {
 		fmt.Fprint(os.Stderr, adv)
 	}
 
+	// Everything about WHAT to collect, in one value: the target is filled in
+	// per call site below (a fixed pid, a cgroup, or a subscriber's pid).
+	base := collector.SetConfig{
+		NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap,
+		Disable: disable, HeapSampleBytes: heapSampleBytes, Symbols: symbolOpts,
+	}
+
 	// Transport security of the event stream (#95) — distinct from --tls, which
 	// captures the *target's* TLS payload. It configures the --serve endpoint,
 	// so it is meaningless (and probably a mistake) without one.
@@ -235,15 +255,15 @@ func main() {
 				fmt.Fprintln(os.Stderr, "error: --export needs a fixed target (--pid): an event export names one target in its header")
 				os.Exit(1)
 			}
-			runServeOnDemand(*serveAddr, *noEBPF, tlsEnabled, tlsCap, disable, heapSampleBytes, opts)
+			runServeOnDemand(*serveAddr, base, opts)
 			return
 		}
 
 		var tuiCfg *tui.Config
 		if *withTUI {
-			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes}
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, Symbols: symbolOpts}
 		}
-		runServe(*serveAddr, target, *noEBPF, tlsEnabled, tlsCap, disable, heapSampleBytes, opts, tuiCfg)
+		runServe(*serveAddr, target, base, opts, tuiCfg)
 		return
 	}
 
@@ -256,22 +276,70 @@ func main() {
 		TLSMaxBytes:     tlsCap,
 		Disable:         disable,
 		HeapSampleBytes: heapSampleBytes,
+		Symbols:         symbolOpts,
 	})
+}
+
+// symbolOptions resolves the off-ELF symbol sources (#119) from the flags and
+// the environment.
+//
+// The network stays off unless it was asked for, so DEBUGINFOD_URLS alone does
+// nothing: --debuginfod is what reads it, and --debuginfod-urls names servers
+// outright. --symbol-cache alone is the offline shape — a vendor symbol bundle
+// unpacked into <dir>/<build-id>/debuginfo, resolved with no server at all.
+//
+// A cache directory is only defaulted once some source is in play; with no flag
+// at all ptop reads nothing off-image, not even from disk.
+func symbolOptions(enable bool, urls, cacheDir string) (symbol.Options, error) {
+	var o symbol.Options
+	switch {
+	case urls != "":
+		o.URLs = symbol.ParseDebuginfodURLs(urls)
+		if len(o.URLs) == 0 {
+			return o, fmt.Errorf("--debuginfod-urls %q names no server", urls)
+		}
+	case enable:
+		o.URLs = symbol.DebuginfodURLsFromEnv()
+		if len(o.URLs) == 0 {
+			return o, errors.New("--debuginfod needs servers: set $DEBUGINFOD_URLS or pass --debuginfod-urls")
+		}
+	}
+
+	switch {
+	case cacheDir != "":
+		abs, err := filepath.Abs(cacheDir)
+		if err != nil {
+			return symbol.Options{}, fmt.Errorf("--symbol-cache %s: %w", cacheDir, err)
+		}
+		o.CacheDir = abs
+	case len(o.URLs) > 0:
+		o.CacheDir = symbol.DefaultCacheDir()
+	}
+
+	// A URL that cannot be turned into a request is a typo, and a typo that
+	// only surfaces as a per-module warning during a capture is a typo nobody
+	// sees in time.
+	for _, u := range o.URLs {
+		if err := symbol.ValidateDebuginfodURL(u); err != nil {
+			return symbol.Options{}, fmt.Errorf("debuginfod server %q: %w", u, err)
+		}
+	}
+	o.Timeout = symbol.DebuginfodTimeoutFromEnv()
+	return o, nil
 }
 
 // runServeOnDemand serves targets its subscribers pick (#72): no collectors run
 // until someone subscribes to a pid, and a target's collectors are released
 // when its last subscriber disconnects. Everything about a single target is
 // built exactly as runServe builds its one — same Set config, same resolver.
-func runServeOnDemand(addr string, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, heapSampleBytes uint64, opts serve.Options) {
+func runServeOnDemand(addr string, base collector.SetConfig, opts serve.Options) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	factory := func(ctx context.Context, pid int) (*collector.Feed, serve.StackResolver, error) {
-		feed := collector.StartFeed(ctx, collector.SetConfig{
-			PID: pid, NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
-			Disable: disable, HeapSampleBytes: heapSampleBytes,
-		})
+		cfg := base
+		cfg.PID = pid
+		feed := collector.StartFeed(ctx, cfg)
 		return feed, stackResolverFor(feed.Set), nil
 	}
 
@@ -412,18 +480,16 @@ func checkPIDExists(pid int) error {
 // of collectors, watched live and streamed at once. The TUI then runs in the
 // foreground and quitting it shuts the server down; without it this is headless
 // as before.
-func runServe(addr string, target serve.Target, noEBPF, tlsEnabled bool, tlsBytes int, disable map[string]bool, heapSampleBytes uint64, opts serve.Options, tuiCfg *tui.Config) {
+func runServe(addr string, target serve.Target, base collector.SetConfig, opts serve.Options, tuiCfg *tui.Config) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	feed := collector.StartFeed(ctx, collector.SetConfig{
-		PID: target.PID, Cgroup: target.CgroupPath,
-		NoEBPF: noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsBytes,
-		Disable: disable, HeapSampleBytes: heapSampleBytes,
-	})
+	cfg := base
+	cfg.PID, cfg.Cgroup = target.PID, target.CgroupPath
+	feed := collector.StartFeed(ctx, cfg)
 	defer feed.Stop()
 	set := feed.Set
 

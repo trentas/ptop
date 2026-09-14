@@ -99,7 +99,12 @@ func OpenModule(r io.ReaderAt, name string) (*Module, error) {
 	m.dwarfSecs = loadDWARFSections(f)
 
 	// Stash the Go line table inputs for lazy gosym construction.
-	if sec := f.Section(".gopclntab"); sec != nil {
+	//
+	// SHT_NOBITS is skipped throughout: a separate debug image (#119) keeps
+	// every allocated section's header while blanking its contents, and
+	// Section.Data on one of those hands back a zero-filled buffer the size of
+	// the original — a large allocation that can only parse as garbage.
+	if sec := f.Section(".gopclntab"); sec != nil && sec.Type != elf.SHT_NOBITS {
 		if data, err := sec.Data(); err == nil && len(data) > 0 {
 			m.pclnData = data
 			if t := f.Section(".text"); t != nil {

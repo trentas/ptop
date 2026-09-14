@@ -10,7 +10,9 @@ import (
 
 type HeapEBPFCollector struct{}
 
-func NewHeapEBPFCollector(uint64) *HeapEBPFCollector { return &HeapEBPFCollector{} }
+func NewHeapEBPFCollector(uint64, *symbol.Debuginfod) *HeapEBPFCollector {
+	return &HeapEBPFCollector{}
+}
 func (*HeapEBPFCollector) Start(int) error {
 	return errors.New("eBPF heap collector not available in this build")
 }

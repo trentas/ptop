@@ -14,6 +14,13 @@
 // a stripped module degrades gracefully to "module+0xoffset". Modules are
 // parsed once and cached.
 //
+// What that cascade cannot name is a third-party binary shipped stripped, whose
+// symbols live outside the mapped image. debuginfod.go (#119) adds the optional
+// last step: a lookup by GNU build-id against a local symbol bundle and, when
+// the operator opts in, a debuginfod server. It is OFF by default, it never
+// overrides an answer the image already gave, and a build-id that does not
+// match is treated as absence rather than as the closest available guess.
+//
 // An address in no file-backed mapping is JIT'd code rather than junk, and is
 // resolved from the runtime's perf map (perfmap.go) — the /tmp/perf-<pid>.map
 // side file Node and the JVM already write for perf(1).

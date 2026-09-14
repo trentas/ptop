@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 // SetConfig parameterizes which collectors a Set starts.
@@ -38,6 +39,13 @@ type SetConfig struct {
 	// simply did not fill this field must not get that by omission. Ask for it
 	// explicitly with HeapSampleEveryAllocation.
 	HeapSampleBytes uint64
+
+	// Symbols names the optional symbol sources consulted after the mapped ELF
+	// (#119): a local symbol bundle, and debuginfod when the operator opted in.
+	// The zero value resolves from the target's own images alone, which is the
+	// default everywhere — a collector does not reach the network because a
+	// binary happened to be stripped.
+	Symbols symbol.Options
 }
 
 // HeapSampleEveryAllocation is the HeapSampleBytes value that records every
@@ -138,6 +146,11 @@ func NewSet(cfg SetConfig) *Set {
 	if cfg.PID <= 0 {
 		return s
 	}
+
+	// One source shared by every collector that symbolizes, so a stripped
+	// module is looked up once for the target rather than once per collector.
+	// nil unless cfg.Symbols configures something.
+	syms := symbol.NewDebuginfod(cfg.Symbols)
 
 	if s.enabled(cfg, SubsystemFD) {
 		if c := NewFDCollector(); c.Start(cfg.PID) == nil {
@@ -297,7 +310,7 @@ func NewSet(cfg SetConfig) *Set {
 			s.Sources.Net = SourceNetworkRich
 		})
 
-		c4 := NewFutexEBPFCollector()
+		c4 := NewFutexEBPFCollector(syms)
 		startEBPF(SubsystemFutex, c4, func() {
 			s.FutexEBPF = c4
 			s.Sources.Locks = "eBPF"
@@ -310,7 +323,7 @@ func NewSet(cfg SetConfig) *Set {
 		// This is also the expensive one, by a wide margin: its probe fires
 		// once per allocation, where the others fire on comparatively rare
 		// kernel events. It is the subsystem --disable exists for.
-		c5 := NewHeapEBPFCollector(heapSampleBytes(cfg))
+		c5 := NewHeapEBPFCollector(heapSampleBytes(cfg), syms)
 		startEBPF(SubsystemHeap, c5, func() {
 			s.HeapEBPF = c5
 			s.Sources.Heap = "eBPF"
@@ -332,7 +345,7 @@ func NewSet(cfg SetConfig) *Set {
 
 		// Security: runtime PROT_EXEC mappings + best-effort SELinux LSM
 		// denials (#59).
-		c9 := NewSecurityEBPFCollector()
+		c9 := NewSecurityEBPFCollector(syms)
 		startEBPF(SubsystemSecurity, c9, func() {
 			s.SecurityEBPF = c9
 			s.Sources.Security = "eBPF"
@@ -430,11 +443,14 @@ func (s *Set) startCgroup(cfg SetConfig) {
 		s.NetworkEBPF = c
 		s.Sources.Net = SourceNetworkRich
 	}
-	if c := NewFutexEBPFCollector(); s.startCgroupCollector(SubsystemFutex, c, cfg) {
+	// nil symbol source on both of these: cgroup mode symbolizes nothing at all
+	// (a subtree has no single memory map to resolve against), so there is
+	// nothing for an off-ELF source to supplement.
+	if c := NewFutexEBPFCollector(nil); s.startCgroupCollector(SubsystemFutex, c, cfg) {
 		s.FutexEBPF = c
 		s.Sources.Locks = "eBPF"
 	}
-	if c := NewSecurityEBPFCollector(); s.startCgroupCollector(SubsystemSecurity, c, cfg) {
+	if c := NewSecurityEBPFCollector(nil); s.startCgroupCollector(SubsystemSecurity, c, cfg) {
 		s.SecurityEBPF = c
 		s.Sources.Security = "eBPF"
 	}
