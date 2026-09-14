@@ -76,10 +76,7 @@ func (c *ProcContextCollector) loop() {
 // the rest is unavailable.
 func (c *ProcContextCollector) publish() {
 	pc := c.sample()
-	select {
-	case c.ch <- pc:
-	default:
-	}
+	publish(c.ch, pc)
 }
 
 func (c *ProcContextCollector) sample() ProcContext {

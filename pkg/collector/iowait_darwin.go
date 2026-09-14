@@ -114,8 +114,5 @@ func (c *IOWaitCollector) publish() {
 	c.blockedFrac = 0
 	c.mu.Unlock()
 
-	select {
-	case c.ch <- IOWaitSample{Pct: pct, Timestamp: now}:
-	default:
-	}
+	publish(c.ch, IOWaitSample{Pct: pct, Timestamp: now})
 }

@@ -79,10 +79,7 @@ func (c *NetworkEBPFCollector) collectAndEmit() {
 	if err != nil {
 		return
 	}
-	select {
-	case c.ch <- conns:
-	default:
-	}
+	publish(c.ch, conns)
 }
 
 func (c *NetworkEBPFCollector) collect() ([]NetConn, error) {

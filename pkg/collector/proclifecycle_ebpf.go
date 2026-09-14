@@ -70,9 +70,6 @@ func (c *ProcLifecycleEBPFCollector) readLoop(tracer *bpf.ProcTracer) {
 		}
 		ev := decodeProcLifecycle(time.Now(), rec.Kind, rec.PID, rec.PPID,
 			rec.Comm[:], rec.Filename[:])
-		select {
-		case c.ch <- ev:
-		default:
-		}
+		publish(c.ch, ev)
 	}
 }

@@ -158,10 +158,7 @@ func (c *FutexEBPFCollector) loop() {
 			return
 		case <-t.C:
 			snap, hot := c.snapshot()
-			select {
-			case c.ch <- snap:
-			default:
-			}
+			publish(c.ch, snap)
 			// Timeline events: one per "hot" lock in the interval.
 			// Cap at 3 per tick to avoid flooding.
 			emitted := 0
@@ -169,17 +166,15 @@ func (c *FutexEBPFCollector) loop() {
 				if emitted >= 3 {
 					break
 				}
-				select {
-				case c.ch <- TimelineEvent{
+				if publish(c.ch, TimelineEvent{
 					Timestamp: time.Now(),
 					Category:  "lock",
 					Message: fmt.Sprintf(
 						"%s ↑ %d waits (avg %.1fms, last tid %d)",
 						lockName(e), e.WaitDelta, e.LatencyMs, e.LastWaitTID,
 					),
-				}:
+				}) {
 					emitted++
-				default:
 				}
 			}
 		}

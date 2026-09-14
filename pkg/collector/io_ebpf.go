@@ -142,10 +142,7 @@ func (c *IOEBPFCollector) fsReadLoop(tracer *bpf.IOTracer) {
 			continue // transient (short/garbled record) — keep reading
 		}
 		fe := decodeFSEvent(time.Now(), rec.Op, rec.Ret, rec.Path[:], rec.NewPath[:])
-		select {
-		case c.ch <- fe:
-		default:
-		}
+		publish(c.ch, fe)
 	}
 }
 
@@ -223,10 +220,7 @@ func (c *IOEBPFCollector) publishLoop() {
 			return
 		case <-t.C:
 			snap := c.snapshot()
-			select {
-			case c.ch <- snap:
-			default:
-			}
+			publish(c.ch, snap)
 		}
 	}
 }

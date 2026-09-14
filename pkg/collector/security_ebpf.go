@@ -103,10 +103,7 @@ func (c *SecurityEBPFCollector) readLoop(tracer *bpf.SecurityTracer) {
 			continue
 		}
 		ev := c.decode(time.Now(), rec)
-		select {
-		case c.ch <- ev:
-		default:
-		}
+		publish(c.ch, ev)
 	}
 }
 

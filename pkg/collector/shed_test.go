@@ -82,3 +82,67 @@ func TestSubscriptionFloodDoesNotStarveSnapshots(t *testing.T) {
 		t.Error("shed values were not counted")
 	}
 }
+
+// The defect #121 is about: a collector writes both classes to ONE channel, and
+// a per-occurrence flood used to take every slot, so the collector's own
+// timer-driven snapshot was thrown away at the first hop — before the bus
+// reserve upstream ever got a chance to protect it.
+func TestPublishFloodDoesNotStarveTheSnapshot(t *testing.T) {
+	ch := make(chan interface{}, 64)
+
+	// Far more events than the queue holds, exactly as a 700k/s allocator does.
+	var accepted int
+	for i := 0; i < 10_000; i++ {
+		if publish(ch, HeapEvent{Size: 128}) {
+			accepted++
+		}
+	}
+	if want := perOccurrenceLimitOf(64); accepted != want {
+		t.Errorf("flood took %d slots, want it capped at %d", accepted, want)
+	}
+
+	// The whole point: the snapshot still fits behind the flood.
+	if !publish(ch, HeapStats{AllocRate: 689648, TotalCallSites: 1}) {
+		t.Fatal("snapshot shed behind a per-occurrence flood — this is #121")
+	}
+
+	// And it is the snapshot that comes out, not a lost one.
+	var gotStats bool
+	for len(ch) > 0 {
+		if _, ok := (<-ch).(HeapStats); ok {
+			gotStats = true
+		}
+	}
+	if !gotStats {
+		t.Error("no HeapStats in the queue after publishing one")
+	}
+}
+
+// A snapshot may use the whole queue — the reserve holds back the flood, not
+// the thing being protected. Once genuinely full, publish reports the drop
+// rather than blocking a collector's publish loop.
+func TestPublishSnapshotsMayFillTheQueue(t *testing.T) {
+	ch := make(chan interface{}, 4)
+	for i := 0; i < 4; i++ {
+		if !publish(ch, CpuSample{UsagePct: 1}) {
+			t.Fatalf("snapshot %d shed with room left", i)
+		}
+	}
+	if publish(ch, CpuSample{UsagePct: 1}) {
+		t.Error("publish accepted a value into a full queue")
+	}
+	if publish(ch, HeapEvent{}) {
+		t.Error("publish accepted an event into a full queue")
+	}
+}
+
+// A queue carrying only snapshots is unaffected by the reserve, so collectors
+// that never emit per-occurrence values behave exactly as before.
+func TestPublishLeavesSnapshotOnlyCollectorsAlone(t *testing.T) {
+	ch := make(chan interface{}, 8)
+	for i := 0; i < 8; i++ {
+		if !publish(ch, MemStats{}) {
+			t.Fatalf("snapshot %d shed with room left", i)
+		}
+	}
+}

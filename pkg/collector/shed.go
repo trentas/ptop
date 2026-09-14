@@ -11,6 +11,32 @@ package collector
 // once-a-second CpuSample never fits — the consumer ends up with no CPU axis
 // at all, which reads as an idle process rather than as a gap.
 
+// publish offers v on a collector's own output channel, applying the same
+// reserve the bus applies one layer up (#121).
+//
+// This hop was the one place the policy was missing, and it is the first one a
+// value passes: a collector that emits both classes writes them to ONE channel,
+// so `select { case ch <- v: default: }` lets the flood own all 64 slots and the
+// collector's own timer-driven snapshot — built correctly, out of the kernel
+// aggregate — is thrown away on the way out. Measured on a C target allocating
+// ~700k times a second: every heap snapshot carried a call site and an alloc
+// rate, and roughly half never left the collector, with the survivors starved
+// again downstream. What reached the consumer was a heap axis of zeros, which
+// reads as a process that did not allocate.
+//
+// Returns false when v was shed, so a caller that counts drops can.
+func publish(ch chan interface{}, v interface{}) bool {
+	if isPerOccurrenceValue(v) && len(ch) >= perOccurrenceLimitOf(cap(ch)) {
+		return false
+	}
+	select {
+	case ch <- v:
+		return true
+	default:
+		return false
+	}
+}
+
 // perOccurrenceLimitOf is the share of a queue of size n that an
 // unbounded-rate value may occupy; the rest is reserved for snapshots.
 func perOccurrenceLimitOf(n int) int {

@@ -73,10 +73,7 @@ func (c *SyscallsEBPFCollector) loop() {
 			return
 		case <-t.C:
 			if snap, err := c.snapshot(); err == nil {
-				select {
-				case c.ch <- snap:
-				default:
-				}
+				publish(c.ch, snap)
 			}
 		}
 	}

@@ -303,8 +303,11 @@ this.
 ### Rate classes, and why a full queue is not first-come-first-served
 
 Collector values fall into two shapes, and every bounded queue in the pipeline
-has to know which it is holding (`pkg/collector/shed.go`,
-`internal/serve/shed.go`):
+has to know which it is holding — the collector's own output channel included,
+which is the first queue a value meets and was the one place the policy was
+missing (`collector.publish`, #121). The policy lives in
+`pkg/collector/shed.go`; `internal/serve/shed.go` applies it again one layer
+down:
 
 - **Periodic snapshots** — `CpuSample`, `MemStats`, `HeapStats`, `[]ThreadInfo`,
   `[]LockEntry`, … One per collector tick. A handful per second, all told.
@@ -321,7 +324,18 @@ service had a CPU distribution of zero at every percentile.
 So the last quarter of every queue is reserved for the snapshots: a flood fills
 three quarters and stops. Shed values are still counted and still surfaced
 (`Subscription.Dropped`, `StreamMeta.dropped`) — a gap is reported, never
-hidden. **A new collector value type defaults to the snapshot class**, so
+hidden.
+
+**Every send a collector makes goes through `publish`** (`shed.go`), never a
+bare `select { case ch <- v: default: }`. A collector that emits both classes
+writes them to ONE channel of 64, so without the reserve the flood owned every
+slot and the collector's own timer-driven snapshot — built correctly, out of the
+kernel aggregate — was thrown away on the way out, before the bus reserve
+upstream could protect anything. Measured against a C target allocating ~700k
+times a second (#121): every heap snapshot carried a call site and an alloc
+rate, and the consumer received fifteen consecutive snapshots with neither.
+The one gap left at this hop is that the shed value is not yet counted — the bus
+and the sink report theirs, the collector does not. **A new collector value type defaults to the snapshot class**, so
 adding one cannot silently starve it; add it to `isPerOccurrenceValue` /
 `isPerOccurrence` only if it really is emitted per occurrence.
 
