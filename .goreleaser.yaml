@@ -156,7 +156,17 @@ release:
     ## ptop {{ .Version }}
 
     Linux binaries (amd64 / arm64) with eBPF collectors embedded.
-    Requires kernel 5.8+ with BTF, and either root or `CAP_BPF + CAP_PERFMON`.
+    Requires kernel 5.8+ with BTF, and either root or five capabilities:
+
+    ```bash
+    sudo setcap cap_bpf,cap_perfmon,cap_sys_admin,cap_dac_read_search,cap_sys_ptrace+ep ptop
+    ```
+
+    `cap_bpf,cap_perfmon` alone — what these notes said until 1.6.0 — loads the
+    eBPF lane and then silently runs about three quarters of the probe set. The
+    remainder does not announce itself: the capture is well-formed and the
+    dropped axes publish zeros, and zero is a measurement (#117). Run
+    `ptop --caps` to see which collectors your privileges actually run.
 
     ### Integrity verification
 
