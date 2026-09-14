@@ -56,10 +56,18 @@ jobs:
         with:
           fetch-depth: 0  # goreleaser uses git history for the changelog
 
+      # No build cache on the release job. A release artifact should be built
+      # from source, not from whatever a previous run left behind: v1.7.1 was
+      # published from the right commit (vcs.revision matched, and a pristine
+      # clone of that tag built with these exact flags behaves correctly) and
+      # still shipped pre-fix behaviour. The eBPF objects, the Go patch version
+      # and the macOS cross-compile were each reproduced locally and each
+      # produced a correct binary, which leaves the runner's restored cache as
+      # the only untested input. Releases are rare; the cache buys little.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          cache: true
+          cache: false
 
       - uses: actions/download-artifact@v4
         with:
