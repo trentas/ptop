@@ -5,7 +5,6 @@ package bpf
 import (
 	"bufio"
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -21,9 +20,6 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"golang.org/x/sys/unix"
 )
-
-//go:embed programs/heap.bpf.o
-var heapBPFObj []byte
 
 // heapStackDepth mirrors HEAP_STACK_DEPTH in programs/heap.bpf.c — the user
 // stack depth captured per call site.

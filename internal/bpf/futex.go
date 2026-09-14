@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"errors"
 	"fmt"
 
@@ -12,9 +11,6 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/futex.bpf.o
-var futexBPFObj []byte
 
 // futexStackDepth mirrors FUTEX_STACK_DEPTH in programs/futex.bpf.c — the user
 // stack depth captured at a contention site.

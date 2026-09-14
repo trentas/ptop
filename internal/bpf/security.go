@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -15,9 +14,6 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/security.bpf.o
-var securityBPFObj []byte
 
 // secStackDepth mirrors SEC_STACK_DEPTH in programs/security.bpf.c.
 const secStackDepth = 32

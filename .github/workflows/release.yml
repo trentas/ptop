@@ -12,10 +12,29 @@ jobs:
   # ─── eBPF objects ─────────────────────────────────────────────────────────
   # The .bpf.c programs compile against Linux kernel headers, so this is the
   # only place they can be built. They are embedded into the Linux binary via
-  # go:embed and handed to the release job as an artifact.
+  # go:embed and handed to the release job as artifacts.
+  #
+  # ONE JOB PER TARGET ARCHITECTURE, on a runner of that architecture (#123).
+  # BPF bytecode is portable, but the pt_regs offsets bpf_tracing.h bakes into
+  # it are not: objects built with __TARGET_ARCH_x86 and run on arm64 read every
+  # uprobe argument and return value from the wrong register, and do it
+  # silently — the program still loads, verifies and attaches. Every published
+  # arm64 binary carried x86 objects until this was split.
+  #
+  # Compiling on a native runner rather than cross-defining __TARGET_ARCH_* is
+  # deliberate: the asm/ headers must match the macro, and a mismatch is a
+  # COMPILE error. That is the only thing standing between this and another
+  # silent wrong answer.
   bpf:
-    name: compile eBPF objects
-    runs-on: ubuntu-latest
+    name: compile eBPF objects (${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            runner: ubuntu-latest
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -34,12 +53,21 @@ jobs:
             linux-tools-generic
 
       - name: make gen (compile .bpf.c → .bpf.o)
-        run: make gen
+        run: make gen GOARCH=${{ matrix.goarch }}
+
+      # Guard against a runner whose architecture does not match the matrix
+      # entry: the whole point is that the object is built natively.
+      - name: the runner is the architecture it is building for
+        run: |
+          test "$(go env GOARCH)" = "${{ matrix.goarch }}" || {
+            echo "runner is $(go env GOARCH), expected ${{ matrix.goarch }}"
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: bpf-objects
-          path: internal/bpf/programs/*.o
+          name: bpf-objects-${{ matrix.goarch }}
+          path: internal/bpf/programs/obj/${{ matrix.goarch }}/*.o
           if-no-files-found: error
           retention-days: 1
 
@@ -69,19 +97,34 @@ jobs:
           go-version-file: go.mod
           cache: false
 
+      # Both sets land in the tree at once; the embed picks by build tag, so
+      # goreleaser can build both architectures from one checkout without
+      # swapping files between them.
       - uses: actions/download-artifact@v4
         with:
-          name: bpf-objects
-          path: internal/bpf/programs
+          name: bpf-objects-amd64
+          path: internal/bpf/programs/obj/amd64
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bpf-objects-arm64
+          path: internal/bpf/programs/obj/arm64
 
       # go:embed fails at compile time on a missing file, but an empty or
-      # truncated object would only surface at runtime on a user's machine.
-      - name: verify the eBPF objects arrived
+      # truncated object would only surface at runtime on a user's machine —
+      # and an object present for one architecture and missing for the other
+      # would ship a binary with fewer probes on one of them.
+      - name: verify the eBPF objects arrived, for both architectures
         run: |
-          ls -l internal/bpf/programs/*.o
-          for o in internal/bpf/programs/*.bpf.o; do
-            test -s "$o" || { echo "empty eBPF object: $o"; exit 1; }
+          for arch in amd64 arm64; do
+            ls -l "internal/bpf/programs/obj/$arch"/*.o
+            for o in "internal/bpf/programs/obj/$arch"/*.bpf.o; do
+              test -s "$o" || { echo "empty eBPF object: $o"; exit 1; }
+            done
           done
+          a=$(ls internal/bpf/programs/obj/amd64/*.bpf.o | xargs -n1 basename | sort)
+          b=$(ls internal/bpf/programs/obj/arm64/*.bpf.o | xargs -n1 basename | sort)
+          test "$a" = "$b" || { echo "the two architectures carry different programs"; diff <(echo "$a") <(echo "$b"); exit 1; }
 
       - uses: goreleaser/goreleaser-action@v6
         with:

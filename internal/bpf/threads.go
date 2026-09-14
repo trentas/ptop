@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"errors"
 	"fmt"
 
@@ -12,9 +11,6 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/threads.bpf.o
-var threadsBPFObj []byte
 
 // ThreadState mirrors `struct thread_state` in programs/threads.bpf.c 1:1.
 // 40 bytes aligned (5 × u64).

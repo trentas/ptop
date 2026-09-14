@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -15,9 +14,6 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
-
-//go:embed programs/proc.bpf.o
-var procBPFObj []byte
 
 // procRecordSize is the on-wire size of struct proc_event in programs/proc.bpf.c
 // (#60). The trailing _pad makes this match C's sizeof exactly (168 bytes).

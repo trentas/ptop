@@ -4,7 +4,6 @@ package bpf
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -17,9 +16,6 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 	"github.com/trentas/ptop/pkg/symbol"
 )
-
-//go:embed programs/goalloc.bpf.o
-var goallocBPFObj []byte
 
 // goallocStackDepth mirrors GOALLOC_STACK_DEPTH in programs/goalloc.bpf.c.
 const goallocStackDepth = 32

@@ -698,9 +698,10 @@ contracts, and conventions.
 
 ```bash
 make            # gen + vet + test (both lanes) + build-ebpf — default goal
+make gen GOARCH=arm64   # eBPF objects FOR arm64 — build them on an arm64 host
 make test       # go test -race ./...
 make vet        # vet in both modes (default + tags=ebpf)
-make clean      # rm -rf bin/ + *.bpf.o
+make clean      # rm -rf bin/ + the compiled eBPF objects
 make lint       # golangci-lint (must be installed)
 ```
 
