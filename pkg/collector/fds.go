@@ -95,11 +95,10 @@ func (c *FDCollector) collectAndEmit() {
 }
 
 func (c *FDCollector) emit(msg interface{}) {
-	select {
-	case c.ch <- msg:
-	default:
-		// channel full; drop. UI will pick up the next round.
-	}
+	// Both classes go out here — an FDEvent per open/close, and the []FDEntry
+	// snapshot per poll — so the reserve matters (#121): a process churning
+	// descriptors must not cost the consumer its fd table.
+	publish(c.ch, msg)
 }
 
 // collect returns the current snapshot + events (open/close) detected

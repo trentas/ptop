@@ -84,10 +84,7 @@ func (c *CPUEBPFCollector) loop() {
 			return
 		case <-t.C:
 			if s, err := c.sample(); err == nil {
-				select {
-				case c.ch <- s:
-				default:
-				}
+				publish(c.ch, s)
 			}
 		}
 	}

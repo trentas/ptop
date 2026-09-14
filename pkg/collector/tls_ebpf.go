@@ -73,9 +73,6 @@ func (c *TLSEBPFCollector) readLoop(tracer *bpf.TLSTracer) {
 			continue // transient (short/garbled record) — keep reading
 		}
 		p := decodeTLS(time.Now(), rec.Dir, rec.FD, rec.Len, rec.Captured, rec.Data[:])
-		select {
-		case c.ch <- p:
-		default:
-		}
+		publish(c.ch, p)
 	}
 }

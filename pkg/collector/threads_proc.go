@@ -54,10 +54,7 @@ func (c *ThreadsCollector) loop() {
 			return
 		case <-t.C:
 			if threads, err := c.collect(); err == nil {
-				select {
-				case c.ch <- threads:
-				default:
-				}
+				publish(c.ch, threads)
 			}
 		}
 	}

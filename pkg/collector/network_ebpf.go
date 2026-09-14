@@ -109,10 +109,7 @@ func (c *NetworkEBPFCollector) publishLoop() {
 				c.bootstrapFromProc()
 			}
 			conns := c.snapshot()
-			select {
-			case c.ch <- conns:
-			default:
-			}
+			publish(c.ch, conns)
 		}
 	}
 }
@@ -136,10 +133,7 @@ func (c *NetworkEBPFCollector) readLoop(tracer *bpf.NetTracer) {
 		}
 		ne := decodeNetError(time.Now(), rec.Key.DAddr, rec.Key.DPort,
 			rec.Key.Family, rec.Kind, rec.Retransmits, rec.DetailNs)
-		select {
-		case c.ch <- ne:
-		default:
-		}
+		publish(c.ch, ne)
 	}
 }
 

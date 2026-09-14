@@ -73,9 +73,6 @@ func (c *SignalEBPFCollector) readLoop(tracer *bpf.SignalTracer) {
 		}
 		se := decodeSignal(time.Now(), int32(rec.Signo), int32(rec.SenderPID),
 			int32(rec.TargetTID), rec.Code, int32(rec.Result), rec.SenderComm[:])
-		select {
-		case c.ch <- se:
-		default:
-		}
+		publish(c.ch, se)
 	}
 }

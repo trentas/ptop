@@ -195,10 +195,7 @@ func (c *HeapEBPFCollector) readLoopLibc() {
 			WeightCount: 1,
 			WeightBytes: ev.Size,
 		}
-		select {
-		case c.ch <- he:
-		default:
-		}
+		publish(c.ch, he)
 	}
 }
 
@@ -227,10 +224,7 @@ func (c *HeapEBPFCollector) readLoopGo() {
 			WeightCount: ev.WeightCount,
 			WeightBytes: ev.WeightBytes,
 		}
-		select {
-		case c.ch <- he:
-		default:
-		}
+		publish(c.ch, he)
 	}
 }
 
@@ -348,10 +342,7 @@ func (c *HeapEBPFCollector) publishLoop() {
 			return
 		case <-t.C:
 			if s, err := c.snapshot(); err == nil {
-				select {
-				case c.ch <- s:
-				default:
-				}
+				publish(c.ch, s)
 			}
 		}
 	}

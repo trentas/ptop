@@ -90,10 +90,7 @@ func (c *FDCollector) collectAndEmit() {
 }
 
 func (c *FDCollector) emit(msg interface{}) {
-	select {
-	case c.ch <- msg:
-	default:
-	}
+	publish(c.ch, msg)
 }
 
 func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
