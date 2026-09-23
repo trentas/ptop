@@ -14,16 +14,16 @@ import (
 //
 // Layout:
 //
-//   ┌── FD Count Over Time (left) ─┬── Breakdown ─────┐
-//   │ sparkline + value           │ file ▇▇▇  6       │
-//   └─────────────────────────────┴───────────────────┘
-//   filter chips: [all][file][socket][pipe][epoll][timer]
-//   ┌── FD table ─────────────────────────────────────┐
-//   │ FD TYPE DESC FLAGS BYTES AGE ●                  │
-//   │ ...                                             │
-//   ├── Alerts ───┬── Stats ─────┬── FD Events ──────┤
+//	┌── FD Count Over Time (left) ─┬── Breakdown ─────┐
+//	│ sparkline + value           │ file ▇▇▇  6       │
+//	└─────────────────────────────┴───────────────────┘
+//	filter chips: [all][file][socket][pipe][epoll][timer]
+//	┌── FD table ─────────────────────────────────────┐
+//	│ FD TYPE DESC FLAGS BYTES AGE ●                  │
+//	│ ...                                             │
+//	├── Alerts ───┬── Stats ─────┬── FD Events ──────┤
 func renderFDView(m Model, w, h int) string {
-	if w < 50 || h < 12 {
+	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
 	}
 
@@ -100,8 +100,12 @@ func renderFDCountSparkline(m Model, w int) string {
 
 func renderFDFilterRow(m Model, w int) string {
 	pieces := []string{}
+	selected := -1
 	counts := fdBreakdownCounts(m.FDs)
-	for _, t := range append([]string{"all"}, fdTypeOrder...) {
+	for i, t := range append([]string{"all"}, fdTypeOrder...) {
+		if t == m.FDFilter {
+			selected = i
+		}
 		var label string
 		if t == "all" {
 			label = fmt.Sprintf("all (%d)", len(m.FDs))
@@ -123,7 +127,32 @@ func renderFDFilterRow(m Model, w int) string {
 		}
 		pieces = append(pieces, style.Render(label))
 	}
-	row := lipgloss.JoinHorizontal(lipgloss.Top, pieces...)
+	// Drop chips that do not fit, rather than letting the row run past w.
+	//
+	// The gap clamp below stops the PADDING going negative, which is not the
+	// same thing as the row fitting: at 80 columns the chips came to 6 more
+	// than the width, the line wrapped, and the whole FD tab slid down a row.
+	// This is the same priority-dropping the header uses, with one extra rule —
+	// the SELECTED chip is always kept, since a filter row that hides which
+	// filter is active is worse than a short one.
+	kept, used, keptSelected := []string{}, 0, false
+	for i, p := range pieces {
+		pw := lipgloss.Width(p)
+		if used+pw > w {
+			break
+		}
+		kept, used = append(kept, p), used+pw
+		if i == selected {
+			keptSelected = true
+		}
+	}
+	if !keptSelected && len(kept) > 0 && selected >= 0 {
+		used -= lipgloss.Width(kept[len(kept)-1])
+		kept[len(kept)-1] = pieces[selected]
+		used += lipgloss.Width(pieces[selected])
+	}
+
+	row := lipgloss.JoinHorizontal(lipgloss.Top, kept...)
 	gap := w - lipgloss.Width(row)
 	if gap < 0 {
 		gap = 0

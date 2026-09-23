@@ -13,8 +13,8 @@ import (
 //   │ ...                                   │ ...                     │
 //   └───────────────────────────────────────┴─────────────────────────┘
 func renderSyscallsView(m Model, w, h int) string {
-	if w < 40 || h < 10 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+	if w < minTerminalWidth || h < minContentHeight {
+		return MutedStyle.Render("(terminal too small)")
 	}
 	if syscallsUnavailable {
 		return Panel("Syscalls",

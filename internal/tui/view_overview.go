@@ -26,8 +26,8 @@ import (
 //	                           │ 12:34:56 SYS read    │
 //	                           └──────────────────────┘
 func renderOverviewView(m Model, w, h int) string {
-	if w < 40 || h < 10 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+	if w < minTerminalWidth || h < minContentHeight {
+		return MutedStyle.Render("(terminal too small)")
 	}
 
 	leftW, rightW := splitOverviewWidth(w)

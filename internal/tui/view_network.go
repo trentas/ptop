@@ -20,7 +20,7 @@ import (
 //   │ remote        ▇▇▇▇▇▇  42ms          │                          │
 //   └─────────────────────────────────────┴──────────────────────────┘
 func renderNetworkView(m Model, w, h int) string {
-	if w < 40 || h < 10 {
+	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
 	}
 	leftW := w * 2 / 3

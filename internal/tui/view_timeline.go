@@ -101,8 +101,8 @@ func protBits(prot uint32) string {
 // renderTimelineView (F7) — assets/mockup.jsx → TimelineView
 // Stream completo de eventos com badge por categoria.
 func renderTimelineView(m Model, w, h int) string {
-	if w < 30 || h < 6 {
-		return MutedStyle.Render("(terminal pequeno demais)")
+	if w < minTerminalWidth || h < minContentHeight {
+		return MutedStyle.Render("(terminal too small)")
 	}
 	body := renderTimelineFull(m.Timeline, w-2, h-3)
 	return Panel("Full Event Stream", body, w, h)

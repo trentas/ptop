@@ -20,7 +20,7 @@ import (
 //   │ <0.1ms ▇▇  42 / 28          │  │ 12:34 IO read … │
 //   └─────────────────────────────┘  └─────────────────┘
 func renderIOView(m Model, w, h int) string {
-	if w < 50 || h < 12 {
+	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
 	}
 	leftW := w * 22 / 32 // ratio 2.2 vs 1.0

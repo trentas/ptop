@@ -684,6 +684,13 @@ func (m Model) renderFrame() string {
 		return "starting..."
 	}
 
+	// Decided before any chrome exists. A view only learns the CONTENT area, so
+	// a view-level check happens after the header, tab bar and status bar have
+	// already been drawn into a terminal that cannot hold them.
+	if tooSmall(m.Width, m.Height) {
+		return renderTooSmall(m.Width, m.Height)
+	}
+
 	header := renderHeader(m)
 	tabbar := renderTabBar(m)
 
