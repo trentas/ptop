@@ -101,6 +101,11 @@ type CpuMsg collector.CpuSample
 type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
 type HeapMsg collector.HeapStats
+
+// CPUProfileMsg carries one window of per-function CPU attribution (#125).
+// Separate from CpuMsg on purpose: one is exact scheduler-accounted time, the
+// other an estimate from samples, and the panel presents them as such.
+type CPUProfileMsg collector.CPUProfile
 type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
@@ -141,6 +146,7 @@ type Model struct {
 	NetErrors      []collector.NetError // eBPF RST/retransmit anomalies (#56), newest-first
 	MemStats       collector.MemStats
 	HeapStats      collector.HeapStats // eBPF malloc/free pairing (#53); empty without eBPF
+	CPUSites       cpuSiteWindow       // rolling window of CPU attribution profiles (#125)
 	HeapLiveHist   []float64           // live-heap bytes history for the F1 sparkline
 	Threads        []collector.ThreadInfo
 	IOStats        collector.IOStats
@@ -438,6 +444,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case MemMsg:
 		m.MemStats = collector.MemStats(v)
 		m.usingMockMem = false
+		return m, m.waitBus()
+
+	case CPUProfileMsg:
+		m.CPUSites.add(collector.CPUProfile(v))
 		return m, m.waitBus()
 
 	case HeapMsg:
@@ -1285,6 +1295,8 @@ func busMsg(v interface{}) tea.Msg {
 		return MemMsg(t)
 	case collector.HeapStats:
 		return HeapMsg(t)
+	case collector.CPUProfile:
+		return CPUProfileMsg(t)
 	case collector.IOWaitSample:
 		return IOWaitMsg(t)
 	case collector.IOThroughputSample:

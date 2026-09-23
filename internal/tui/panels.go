@@ -16,7 +16,7 @@ import (
 // renderCPU draws a sparkline + current value on the right.
 // Uses a FIXED 0-100% scale — without this the sparkline would rescale every
 // tick and cause the "everything jumping" effect.
-func renderCPU(history []float64, w int) string {
+func renderCPU(history []float64, sites cpuSiteSummary, w, h int) string {
 	if w < 12 {
 		return MutedStyle.Render("…")
 	}
@@ -47,7 +47,140 @@ func renderCPU(history []float64, w int) string {
 		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Right).Render(lbl),
 	)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, spark, panelSp2, right)
+	top := lipgloss.JoinHorizontal(lipgloss.Top, spark, panelSp2, right)
+
+	// The sparkline block is two rows; whatever is left of the panel goes to
+	// the attribution list, and a panel with no room simply keeps the classic
+	// layout rather than truncating a ranking into meaninglessness.
+	body := renderCPUSites(sites, w, h-2)
+	if body == "" {
+		return top
+	}
+	return top + "\n" + body
+}
+
+// renderCPUSites is the lower half of the F1 CPU panel (#125): WHICH functions
+// the target's CPU time went into, under the sparkline that says HOW MUCH of it
+// there was.
+//
+// The two halves come from different instruments and the panel does not blur
+// them. The percentage above is scheduler-accounted time, exact. The percentages
+// below are shares of a sample count, and every one of them is printed beside
+// the count it came from, because a share alone cannot be refused by the reader.
+//
+// h is the rows available; 0 or fewer renders nothing, so a short terminal keeps
+// the classic sparkline-only panel.
+func renderCPUSites(sum cpuSiteSummary, w, h int) string {
+	if h <= 0 || sum.WindowMs == 0 {
+		return ""
+	}
+	head := renderCPUSitesHeader(sum, w)
+	if !sum.Ranked() {
+		// Refusing is the honest output. At 99Hz a target using 2.5% of a core
+		// contributes a couple of samples a second, and a top-N built from a
+		// dozen of them is an ordering of noise that a reader will believe.
+		return head + "\n" + MutedStyle.Render(truncate(
+			fmt.Sprintf("too few samples to rank — %d in %ds", sum.Total, sum.WindowMs/1000), w))
+	}
+
+	lines := []string{head}
+	if blind := sum.BlindPct(); blind >= cpuSiteBlindWarnPct {
+		// Actionable only by the human in front of the terminal, which is the
+		// whole reason this panel carries it: a stream consumer can record that
+		// the axis came back blind but cannot rebuild the binary.
+		lines = append(lines, AmberStyle.Render(truncate(
+			fmt.Sprintf("%.0f%% of samples unnamed — no symbols for the hot module", blind), w)))
+	}
+	rows := h - len(lines)
+	for i, site := range sum.Sites {
+		if i >= rows {
+			break
+		}
+		lines = append(lines, renderCPUSiteRow(site, w))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// cpuSiteBlindWarnPct is where an unnamed fraction stops being a footnote. A
+// tenth of the samples missing does not change what the list says; a third does.
+const cpuSiteBlindWarnPct = 30
+
+// renderCPUSitesHeader states what the numbers below are made of: how many
+// samples, over how long, at what rate the kernel ACTUALLY delivered.
+//
+// The achieved rate and not the requested one, and it is here rather than
+// hidden because #108 measured them diverging by 10-20% on a quiet host. It is
+// also the one diagnostic on this panel that points at the machine rather than
+// at the code.
+func renderCPUSitesHeader(sum cpuSiteSummary, w int) string {
+	label := "hot functions"
+	if sum.Truncated() {
+		// Say the list is a selection. A reader watching a function leave the
+		// list cannot otherwise tell that from the function going quiet.
+		label = fmt.Sprintf("hot functions (top %d of %d)", len(sum.Sites), sum.TotalSites)
+	}
+	right := fmt.Sprintf("%s samples · %ds · %.0fHz",
+		fmtCount(sum.Total), sum.WindowMs/1000, sum.RateHz)
+	gap := w - lipgloss.Width(label) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return MutedStyle.Render(label) +
+		lipgloss.NewStyle().Background(ColorPanel).Render(strings.Repeat(" ", gap)) +
+		MutedStyle.Render(right)
+}
+
+// renderCPUSiteRow lays out one function: its name, a share bar, the share, and
+// the sample count the share was computed from.
+//
+// The count is not decoration. 38% of 2400 samples and 38% of 24 are the same
+// number and completely different claims, and the second one should not survive
+// contact with a reader who can see both.
+func renderCPUSiteRow(s collector.CPUSite, w int) string {
+	const barW, pctW, cntW = 20, 5, 7
+	pct := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).
+		Width(pctW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f%%", s.SharePct))
+	cnt := MutedStyle.Width(cntW).Align(lipgloss.Right).Render(fmtCount(s.Samples))
+
+	nameW := w - barW - pctW - cntW - 3
+	if nameW < 8 {
+		nameW = 8
+	}
+	name := CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW))
+	return name + panelSp1 + renderShareBar(s.SharePct, barW) + panelSp1 + pct + panelSp1 + cnt
+}
+
+// renderShareBar draws a share as a filled fraction of barW. Clamped, because a
+// share is of the window total and rounding at the last site can exceed 100.
+func renderShareBar(pct float64, barW int) string {
+	filled := int(pct / 100 * float64(barW))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > barW {
+		filled = barW
+	}
+	return lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Render(strings.Repeat("█", filled)) +
+		lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW-filled))
+}
+
+// cpuSiteLabel renders a sampled function the same way heapSiteLabel renders a
+// call site, and for the same reason — one visual vocabulary for "where in the
+// code" across every axis that has an answer.
+//
+// The line is the HOTTEST line inside the function, not its declaration, which
+// is why a function appears once with one line rather than once per line.
+func cpuSiteLabel(s collector.CPUSite) string {
+	if s.Func != "" {
+		if s.File != "" && s.Line > 0 {
+			return fmt.Sprintf("%s (%s:%d)", s.Func, filepath.Base(s.File), s.Line)
+		}
+		return s.Func
+	}
+	if s.Module != "" {
+		return s.Module
+	}
+	return s.AddrHex
 }
 
 // ─── Syscall bars ────────────────────────────────────────────────────────────

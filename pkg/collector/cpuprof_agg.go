@@ -38,14 +38,29 @@ type rawCPUSite struct {
 // instruction offset would fragment it exactly the way folding by address does.
 // By address only when even the module is unknown, which means /proc/<pid>/maps
 // did not cover it and there is no coarser identity available to honestly use.
-func cpuFoldKey(r rawCPUSite) string {
+func cpuFoldKey(r rawCPUSite) string { return cpuSiteOf(r).Key() }
+
+// Key is the identity two samples must share to be the same site — see
+// cpuFoldKey for why it is a function and not an address.
+//
+// Exported because the fold happens twice: once in the collector, over one
+// window's stacks, and again in any consumer merging several windows (the TUI
+// aggregates ~30s of them, since one second of a lightly loaded target is too
+// few samples to rank). Two copies of this rule would drift, and the drift
+// would be silent — a consumer folding differently from the collector produces
+// a plausible list that disagrees with the one on the wire.
+//
+// It is an identity within one process, not across processes: Module+Func is
+// stable across runs and ASLR, but an unsymbolized site keys on its module and
+// a wholly unresolved one on its raw address, which is not.
+func (s CPUSite) Key() string {
 	switch {
-	case r.Frame.Func != "":
-		return "f\x00" + r.Frame.Module + "\x00" + r.Frame.Func
-	case r.Frame.Module != "":
-		return "m\x00" + r.Frame.Module
+	case s.Func != "":
+		return "f\x00" + s.Module + "\x00" + s.Func
+	case s.Module != "":
+		return "m\x00" + s.Module
 	default:
-		return fmt.Sprintf("a\x00%x", r.Addr)
+		return fmt.Sprintf("a\x00%x", s.Addr)
 	}
 }
 

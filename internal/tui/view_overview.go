@@ -8,30 +8,40 @@ import (
 //
 // Layout (2 colunas, ratios 2 e 1.3):
 //
-//   ┌── CPU ──────────────┐    ┌── I/O Throughput ────┐
-//   │ [sparkline]   34%   │    │ [dual sparkline]     │
-//   └─────────────────────┘    │ stats line           │
-//   ┌── Top Syscalls ─────┐    └──────────────────────┘
-//   │ epoll_wait ▇▇▇  120 │    ┌── File Descriptors ──┐
-//   │ ...                 │    │ open fds          15 │
-//   └─────────────────────┘    │ file/socket/pipe...  │
-//   ┌── Threads ──────────┐    └──────────────────────┘
-//   │ ▶ main 34%          │    ┌── Network ───────────┐
-//   │ ■ worker-1 mutex-A  │    │ TCP 10.0.1.5  WAIT … │
-//   └─────────────────────┘    └──────────────────────┘
-//                              ┌── Memory ────────────┐
-//                              │ RSS  148 MB ...      │
-//                              └──────────────────────┘
-//                              ┌── Event Stream ──────┐
-//                              │ 12:34:56 SYS read    │
-//                              └──────────────────────┘
+//	┌── CPU ──────────────┐    ┌── I/O Throughput ────┐
+//	│ [sparkline]   34%   │    │ [dual sparkline]     │
+//	└─────────────────────┘    │ stats line           │
+//	┌── Top Syscalls ─────┐    └──────────────────────┘
+//	│ epoll_wait ▇▇▇  120 │    ┌── File Descriptors ──┐
+//	│ ...                 │    │ open fds          15 │
+//	└─────────────────────┘    │ file/socket/pipe...  │
+//	┌── Threads ──────────┐    └──────────────────────┘
+//	│ ▶ main 34%          │    ┌── Network ───────────┐
+//	│ ■ worker-1 mutex-A  │    │ TCP 10.0.1.5  WAIT … │
+//	└─────────────────────┘    └──────────────────────┘
+//	                           ┌── Memory ────────────┐
+//	                           │ RSS  148 MB ...      │
+//	                           └──────────────────────┘
+//	                           ┌── Event Stream ──────┐
+//	                           │ 12:34:56 SYS read    │
+//	                           └──────────────────────┘
 func renderOverviewView(m Model, w, h int) string {
 	if w < 40 || h < 10 {
 		return MutedStyle.Render("(terminal pequeno demais)")
 	}
 
 	leftW, rightW := splitOverviewWidth(w)
-	leftHs := splitFlex([]float64{1.0, 1.5, 1.4}, h)
+
+	// The CPU panel grows to fit the attribution list (#125) only when the
+	// sampler has produced something, the same way the Memory panel grows for
+	// the heap detail below; without it the panel keeps the mockup's compact
+	// sparkline layout and the other two keep their height.
+	cpuSites := m.CPUSites.fold()
+	cpuRatio, syscallRatio, threadRatio := 1.0, 1.5, 1.4
+	if cpuSites.WindowMs > 0 {
+		cpuRatio, syscallRatio, threadRatio = 1.55, 1.25, 1.1
+	}
+	leftHs := splitFlex([]float64{cpuRatio, syscallRatio, threadRatio}, h)
 
 	// The Memory panel grows to fit the heap detail (live-heap sparkline + top
 	// call sites) only when the eBPF heap collector (#53) has data; otherwise it
@@ -44,7 +54,7 @@ func renderOverviewView(m Model, w, h int) string {
 
 	// Coluna esquerda
 	cpu := Panel("CPU",
-		renderCPU(m.CPUHistory, leftW-2),
+		renderCPU(m.CPUHistory, cpuSites, leftW-2, leftHs[0]-3),
 		leftW, leftHs[0])
 
 	syscalls := Panel("Top Syscalls",

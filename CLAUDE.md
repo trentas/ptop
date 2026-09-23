@@ -37,8 +37,19 @@ simulated data. **Each Go view must faithfully reproduce the layout of the
 corresponding mockup.** Use it as the authoritative visual spec — if there's
 any doubt about layout, the mockup wins.
 
-`assets/screenshot-overview.txt` is a captured F1 dump used as a regression
-fixture in `internal/tui/dump_test.go`.
+`assets/screenshot-overview.txt` is a captured F1 dump, kept as a reference for
+what the view looks like. Two things about it that have caught people:
+
+- **Nothing compares against it.** `TestDumpFrames` in `internal/tui/dump_test.go`
+  only WRITES dumps, and only when `TUI_DUMP=1`; it is a generator, not an
+  assertion. Regenerate with
+  `TUI_DUMP=1 TUI_W=140 TUI_H=39 go test ./internal/tui -run TestDumpFrames`,
+  on Linux — a capture taken on the macOS port carries the libproc footer and a
+  `(?)` process name.
+- **It is a `--no-ebpf` capture**, so the panels that exist only with eBPF are
+  absent from it by construction: the Memory panel's heap detail (#53) and the
+  CPU panel's hot-function list (#125). `assets/mockup.jsx` is where those are
+  specified.
 
 Color palette (defined in `internal/tui/styles.go`):
 
