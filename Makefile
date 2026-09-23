@@ -72,6 +72,7 @@ BPF_OBJ_DIR := internal/bpf/programs/obj/$(GOARCH)
 BPF_SRCS := \
 	internal/bpf/programs/syscalls.bpf.c \
 	internal/bpf/programs/cpu.bpf.c \
+	internal/bpf/programs/cpuprof.bpf.c \
 	internal/bpf/programs/io.bpf.c \
 	internal/bpf/programs/network.bpf.c \
 	internal/bpf/programs/threads.bpf.c \

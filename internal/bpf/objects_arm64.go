@@ -20,6 +20,9 @@ import _ "embed"
 //go:embed programs/obj/arm64/cpu.bpf.o
 var cpuBPFObj []byte
 
+//go:embed programs/obj/arm64/cpuprof.bpf.o
+var cpuprofBPFObj []byte
+
 //go:embed programs/obj/arm64/futex.bpf.o
 var futexBPFObj []byte
 

@@ -18,11 +18,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/pkg/symbol"
 )
 
 func main() {
@@ -120,6 +122,10 @@ func run() error {
 	}
 
 	if !checkCPUAccuracy(cpuT) {
+		failed = true
+	}
+
+	if !checkCPUAttribution(pid) {
 		failed = true
 	}
 
@@ -283,4 +289,176 @@ func procOnCPUNanos() (uint64, error) {
 		total += ns
 	}
 	return total, nil
+}
+
+// ─── CPU attribution (#125) ─────────────────────────────────────────────────
+
+// cpuBurnSink keeps the burn loop from being optimized away.
+var cpuBurnSink uint64
+
+// cpuBurnHotLoop is the function the attribution axis is expected to name.
+//
+// Deliberately call-free arithmetic, and deliberately not inlined: the leaf
+// frame of a sample taken inside it is then the function itself, so a failure
+// means the axis attributed CPU to the wrong place — not that a helper got
+// inlined somewhere unexpected. The deadline is checked in an outer loop so
+// time.Now() is a rounding error in the sample distribution rather than a
+// competing leaf.
+//
+//go:noinline
+func cpuBurnHotLoop(d time.Duration) uint64 {
+	var acc uint64
+	deadline := time.Now().Add(d)
+	for time.Now().Before(deadline) {
+		for i := 0; i < 20_000_000; i++ {
+			acc = acc*1664525 + 1013904223
+		}
+	}
+	return acc
+}
+
+// checkCPUAttribution is the gate for the sampled attribution axis: it burns
+// CPU in a known function and fails unless the axis names THAT function.
+//
+// A counter that moves is not a counter that is right (#108), and for this axis
+// "right" means the name. Three things are checked, because each one fails in a
+// different direction:
+//
+//   - the burn window names cpuBurnHotLoop, with a majority of the samples;
+//   - an idle window right afterwards attributes almost nothing, so the axis is
+//     reporting what the target did rather than what it did once;
+//   - the ACHIEVED sampling rate is reported beside the requested one, since
+//     #108 measured them diverging by 10-20% on a quiet host.
+func checkCPUAttribution(pid int) bool {
+	prof, err := bpf.OpenCPUProfiler(bpf.TargetPID(pid), bpf.CPUProfDefaultHz)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  cpusite: OpenCPUProfiler: %v\n", err)
+		return false
+	}
+	defer prof.Close()
+
+	sym, err := symbol.NewSymbolizer(pid)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  cpusite: no symbolizer for self: %v\n", err)
+		return false
+	}
+
+	// Clear whatever the attach window collected, then measure one burn.
+	if _, err := prof.Samples(); err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  cpusite: Samples: %v\n", err)
+		return false
+	}
+	rate0, _ := prof.Rate()
+	start := time.Now()
+	cpuBurnSink += cpuBurnHotLoop(3 * time.Second)
+	elapsed := time.Since(start)
+
+	samples, err := prof.Samples()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  cpusite: Samples: %v\n", err)
+		return false
+	}
+	rate1, _ := prof.Rate()
+
+	byFunc, total, unresolved := foldSamplesByFunc(prof, sym, samples)
+	if total == 0 {
+		fmt.Fprintln(os.Stderr, "FAIL  cpusite: 0 samples attributed to the target during a 3s CPU burn")
+		return false
+	}
+	if unresolved*2 > total {
+		fmt.Fprintf(os.Stderr,
+			"FAIL  cpusite: %d of %d samples have no resolvable stack — frame pointers missing?\n",
+			unresolved, total)
+		return false
+	}
+
+	top, topN := topFunc(byFunc)
+	const wantFunc = "main.cpuBurnHotLoop"
+	share := float64(topN) / float64(total) * 100
+	if top != wantFunc {
+		fmt.Fprintf(os.Stderr,
+			"FAIL  cpusite: hottest function is %q (%d/%d samples, %.0f%%), want %q\n",
+			top, topN, total, share, wantFunc)
+		return false
+	}
+	// A correct axis puts nearly everything here; half is a floor that leaves
+	// room for the runtime's own background work on a loaded machine.
+	if share < 50 {
+		fmt.Fprintf(os.Stderr,
+			"FAIL  cpusite: %s holds only %.0f%% of %d samples — attribution is too diffuse to trust\n",
+			wantFunc, share, total)
+		return false
+	}
+	fmt.Printf("PASS  cpusite: %s holds %d/%d samples (%.0f%%)\n", wantFunc, topN, total, share)
+
+	// The achieved rate, measured, beside the one that was asked for. Reported
+	// rather than asserted: a loaded or tickless host legitimately delivers
+	// fewer, and the point of publishing it is that nobody has to assume.
+	if fired := rate1.Fired - rate0.Fired; fired > 0 && prof.NumCPU() > 0 {
+		hz := float64(fired) / elapsed.Seconds() / float64(prof.NumCPU())
+		fmt.Printf("      cpusite: sampler delivered %.0fHz per CPU of the %dHz requested\n",
+			hz, prof.RequestedHz())
+	}
+
+	// Idle control: nothing is burning now, so almost nothing should be
+	// attributed. An axis that keeps naming a function after the work stopped
+	// is reporting its own history.
+	time.Sleep(1500 * time.Millisecond)
+	idle, err := prof.Samples()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  cpusite: Samples (idle): %v\n", err)
+		return false
+	}
+	_, idleTotal, _ := foldSamplesByFunc(prof, sym, idle)
+	if limit := total / 10; idleTotal > limit {
+		fmt.Fprintf(os.Stderr,
+			"FAIL  cpusite: %d samples attributed while idle (more than the %d allowed) — the filter is leaking\n",
+			idleTotal, limit)
+		return false
+	}
+	fmt.Printf("PASS  cpusite: %d samples while idle, against %d while burning\n", idleTotal, total)
+	return true
+}
+
+// foldSamplesByFunc resolves each stack's LEAF frame — the function actually
+// executing when the sample was taken — and sums the samples per function name.
+// This is a self-time profile: there is no walking past machinery here, the way
+// the heap axis walks past the allocator, because on this axis the machinery IS
+// where the time went.
+func foldSamplesByFunc(prof *bpf.CPUProfiler, sym *symbol.Symbolizer, samples map[int32]uint64) (byFunc map[string]uint64, total, unresolved uint64) {
+	byFunc = make(map[string]uint64, len(samples))
+	for sid, n := range samples {
+		total += n
+		frames, err := prof.ResolveStack(sid)
+		if err != nil || len(frames) == 0 {
+			unresolved += n
+			continue
+		}
+		name := sym.Symbolize(frames[0]).Func
+		if name == "" {
+			unresolved += n
+			continue
+		}
+		byFunc[name] += n
+	}
+	return byFunc, total, unresolved
+}
+
+// topFunc returns the most-sampled function, ties broken by name so a failure
+// message is reproducible.
+func topFunc(byFunc map[string]uint64) (string, uint64) {
+	names := make([]string, 0, len(byFunc))
+	for name := range byFunc {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		if byFunc[names[i]] != byFunc[names[j]] {
+			return byFunc[names[i]] > byFunc[names[j]]
+		}
+		return names[i] < names[j]
+	})
+	if len(names) == 0 {
+		return "", 0
+	}
+	return names[0], byFunc[names[0]]
 }
