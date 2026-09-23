@@ -412,10 +412,14 @@ Four things are load-bearing:
   sample the PMU delivers, so `sample_rate_hz` is what the kernel actually ran
   at and `requested_rate_hz` is what was asked for. Dividing by the requested
   rate was half of what made the pre-#108 axis wrong.
-- **99Hz, not 100** (`--cpu-sample-hz`, `NormalizeCPUProfHz`). A sampler whose
-  rate divides a workload's period lands on the same phase of the cycle every
-  time — the time-domain twin of the fixed-threshold aliasing above, and 10ms
-  loops are everywhere.
+- **99Hz, not 100** (`--cpu-sample-hz`, `NormalizeCPUProfHz`) — insurance, and
+  labelled as such. A sampler whose period divides a periodic workload's would
+  land at the same point of every cycle, which is the time-domain shape of the
+  fixed-threshold aliasing above. It could not be reproduced here: an 8ms/2ms
+  duty cycle sampled at exactly 100Hz measured 80/77/79/85 against a true 80,
+  because perf freq mode re-derives its period from the observed rate and the
+  phase dithers. Kept because it costs nothing and a fixed-period sampler would
+  lock — but the repo does not claim a measured defect it did not find.
 - **Sites fold by FUNCTION, not by address.** This is where `foldCallSites`
   (#109) does *not* transfer: an allocation call site is one call instruction,
   but a CPU sample lands wherever the PC happened to be, so folding by address
