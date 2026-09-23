@@ -47,11 +47,11 @@ func TestNormalizeCPUProfHz(t *testing.T) {
 	}
 }
 
-// 99 rather than 100 is load-bearing, not cosmetic: a sampler whose rate
-// divides a workload's period lands on the same phase of the cycle every time,
-// so one function takes every sample. 10ms loops are everywhere, which makes
-// 100Hz exactly the wrong choice — the time-domain twin of the fixed-threshold
-// aliasing goalloc.bpf.c draws a random threshold to avoid (#108).
+// 99 rather than 100 is a deliberate choice, pinned so it is not "tidied" to a
+// round number. It is insurance against phase-locking on a periodic workload,
+// not a fix for a defect measured here — 100Hz against an 8ms/2ms duty cycle
+// did NOT lock on a 7.0 kernel (freq mode dithers the period). See
+// CPUProfDefaultHz for the measurement and why the choice stands anyway.
 func TestCPUProfDefaultRateDoesNotDivideCommonPeriods(t *testing.T) {
 	// Periods a real workload ticks at, in Hz.
 	for _, common := range []int{1, 2, 4, 5, 10, 20, 25, 50, 100, 250, 1000} {

@@ -43,12 +43,17 @@
 // the number it had asked for. This one reports fired/(ncpu·Δt) as the rate it
 // actually got, beside the rate it wanted, and lets the reader see the gap.
 //
-// The requested rate defaults to 99Hz rather than 100, for the same reason
-// goalloc.bpf.c draws its sampling threshold at random: a periodic workload
-// sampled at a rate that divides its period lands on the same phase of the
-// cycle every time, and one call site takes every sample while its neighbours
-// take none. 10ms timer loops are everywhere; a 10ms sampler over one of them
-// measures whatever that loop happens to be doing at the tick.
+// The requested rate defaults to 99Hz rather than 100, as insurance against the
+// shape of problem goalloc.bpf.c draws its threshold at random to avoid: a
+// sampler whose period divides a periodic workload's would land at the same
+// point of every cycle, and one function would take every sample.
+//
+// Insurance, not a repair: the attempt to reproduce it failed. An 8ms/2ms duty
+// cycle sampled at exactly 100Hz measured 80/77/79/85 against a true 80. Freq
+// mode re-derives the period from the observed rate — the same behaviour #108
+// found underdelivering — so the phase dithers rather than locking, and a real
+// workload's own jitter does likewise. A FIXED-period sampler would have no
+// such dithering, which is why the choice stays.
 //
 // ─── Scope ──────────────────────────────────────────────────────────────────
 //

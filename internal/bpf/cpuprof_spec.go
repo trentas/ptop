@@ -10,13 +10,22 @@ import "fmt"
 const (
 	// CPUProfDefaultHz is the per-CPU sampling rate, in Hz.
 	//
-	// 99 and not 100, deliberately. A sampler whose rate divides a workload's
-	// period lands on the same phase of that workload's cycle every time, so
-	// one function takes every sample and its neighbours take none — the
-	// time-domain twin of the fixed-threshold aliasing goalloc.bpf.c draws a
-	// random threshold to avoid (#108), and 10ms loops are everywhere. An odd
-	// rate that divides no common period spreads the sample points across the
-	// cycle instead.
+	// 99 and not 100, as cheap insurance against phase-locking on a periodic
+	// workload: a sampler whose period divides the workload's would land at the
+	// same point of every cycle, and one function would take every sample while
+	// its neighbours took none — the time-domain shape of the fixed-threshold
+	// aliasing goalloc.bpf.c draws a random threshold to avoid (#108).
+	//
+	// Stated as the reason for a choice, NOT as a defect measured here, because
+	// the attempt to measure it failed: a workload alternating 8ms in one
+	// function with 2ms in another, sampled at exactly 100Hz on a 7.0 kernel,
+	// came out 80/77/79/85 against a true 80 — no lock at any phase. Two
+	// reasons, either sufficient: perf freq mode re-derives its period from the
+	// rate it observes (the very behaviour #108 found underdelivering), so the
+	// phase dithers instead of locking; and a real workload's own timing jitter
+	// does the same. The insurance stays because it costs nothing and because a
+	// FIXED-period sampler — PerfBitFreq off, a period in nanoseconds — has no
+	// such dithering and would lock.
 	CPUProfDefaultHz = 99
 
 	// CPUProfMaxHz caps what an operator can ask for. The sampler's cost is
