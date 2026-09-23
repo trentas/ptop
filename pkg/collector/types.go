@@ -66,10 +66,17 @@ type CPUProfile struct {
 	// carry.
 	TotalSamples uint64
 
-	// UnresolvedSamples is the samples whose stack walk failed — a target
-	// built without frame pointers, most often. They are counted here instead
-	// of taking a slot in Sites, so a blind axis says it is blind rather than
-	// ranking the few stacks that happened to resolve.
+	// UnresolvedSamples is the samples whose leaf could not be established at
+	// all — bpf_get_stackid failed, or nothing symbolized the address. They are
+	// counted here instead of taking a slot in Sites, so a blind axis says it
+	// is blind rather than ranking the few stacks that happened to resolve.
+	//
+	// NOT a frame-pointer problem, contrary to the obvious guess: a perf
+	// sample's leaf comes from the interrupted register state rather than from
+	// unwinding, so it resolves either way. Measured on one C target built both
+	// ways, the arms differed only in the DEPTH of the stack above the leaf and
+	// both reported zero here. Missing frame pointers cost ResolveStack's
+	// answer, not this ranking.
 	//
 	// Because they are in TotalSamples but not in Sites, the SharePct values
 	// sum to LESS than 100 and the shortfall is exactly the blind fraction.

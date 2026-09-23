@@ -939,9 +939,15 @@ type CpuProfile struct {
 	// unresolved ones. The denominator of every share_pct, and the ruler for
 	// deciding what this profile can carry.
 	TotalSamples uint64 `protobuf:"varint,2,opt,name=total_samples,json=totalSamples,proto3" json:"total_samples,omitempty"`
-	// Samples whose stack walk failed — a target built without frame pointers,
-	// most often. Counted here rather than given a slot in sites, so a blind
-	// axis says it is blind instead of ranking the few stacks that resolved.
+	// Samples whose leaf could not be established at all — the kernel's stack
+	// capture failed, or nothing symbolized the address. Counted here rather than
+	// given a slot in sites, so a blind axis says it is blind instead of ranking
+	// the few stacks that resolved.
+	//
+	// NOT a frame-pointer problem, contrary to the obvious guess: a perf sample's
+	// leaf comes from the interrupted register state rather than from unwinding,
+	// so it resolves either way. A target built without frame pointers loses the
+	// DEPTH of the stack that ResolveStack returns, not its place in this list.
 	//
 	// They are in total_samples but not in sites, so the share_pct values sum to
 	// LESS than 100 and the shortfall is exactly the blind fraction.

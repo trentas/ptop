@@ -170,8 +170,11 @@ sudo ./bin/ptop --pid <PID> --debuginfod                  # servers from $DEBUGI
 > process at 2.5% of a core draws ~150 samples a minute, which is enough for a
 > rough top-N and not enough to claim a function went from 12% to 18%. The
 > profile also reports the rate the kernel *actually* delivered next to the one
-> requested — those differ by 10-20% on a quiet host — and, when the target was
-> built without frame pointers, how many samples it could not see into.
+> requested — those differ by 10-20% on a quiet host — and how many samples it
+> could not name at all. (That last one is *not* about frame pointers: a
+> sample's leaf comes from the interrupted registers, not from unwinding, so a
+> target built without them still gets named. What it loses is the depth of the
+> stack `ResolveStack` returns.)
 
 > **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
 > libssl (`SSL_write`/`SSL_read`) to record plaintext before encryption / after

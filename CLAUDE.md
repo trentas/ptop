@@ -424,9 +424,14 @@ Four things are load-bearing:
   (#109) does *not* transfer: an allocation call site is one call instruction,
   but a CPU sample lands wherever the PC happened to be, so folding by address
   shatters one hot function into an entry per sampled instruction. An address
-  that resolved to a module but no symbol folds by *module*; a failed stack walk
-  goes to `unresolved_samples` and never takes a list slot, so the shares sum to
-  less than 100 and the shortfall is the blind fraction.
+  that resolved to a module but no symbol folds by *module*; a sample with no
+  usable leaf goes to `unresolved_samples` and never takes a list slot, so the
+  shares sum to less than 100 and the shortfall is the blind fraction. That last
+  bucket is **not** the frame-pointer case, which is the natural guess and is
+  wrong: the leaf comes from the interrupted registers, so a target built
+  without frame pointers is still named and only loses the depth `ResolveStack`
+  returns (measured — one C target built both ways differed by one frame and
+  reported zero unresolved in both arms).
 
 It is **pid-mode only** — not because the kernel filter cannot span a subtree,
 but because folding by function resolves against one process's memory map, so

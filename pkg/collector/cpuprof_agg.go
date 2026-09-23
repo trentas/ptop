@@ -52,11 +52,11 @@ func cpuFoldKey(r rawCPUSite) string {
 // foldCPUSites merges per-stack sample counts into per-function ones and
 // returns them with the samples that could not be attributed at all.
 //
-// A stack whose walk failed (Addr 0) is NOT given a bucket: it goes to the
-// unresolved count. Letting it fold into a site would put "unknown" in the
-// ranking, where on a target without frame pointers it would win every time and
-// push out the handful of functions that did resolve — reporting a nearly blind
-// axis as a confident one-item profile.
+// A stack with no usable leaf (Addr 0) is NOT given a bucket: it goes to the
+// unresolved count. Letting it fold into a site would put "unknown" into the
+// ranking, where on a capture the sampler cannot see into it would win every
+// time and push out the handful of functions that did resolve — reporting a
+// nearly blind axis as a confident one-item profile.
 //
 // Within a bucket the DOMINANT sample (the most-sampled leaf address) supplies
 // the identity fields, which is what makes Line the hottest line inside the
