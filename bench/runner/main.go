@@ -99,6 +99,21 @@ type config struct {
 // number, and the decomposition was simply no longer a decomposition.
 var heapOnly = everySubsystemExcept(collector.SubsystemHeap)
 
+// cpuprofOnly isolates the CPU attribution sampler (#125) the same way.
+//
+// It gets a column because the issue that asked for it predicted the probe
+// would be free, and a prediction is not a measurement. Inferring it from the
+// "no heap probe" column cannot settle it: that column holds eleven probes at
+// once, so a small cost from any one of them is indistinguishable from the
+// others and from the floor.
+//
+// Read it differently from the heap columns, though. The heap probe fires once
+// per allocation, so its cost scales with the sweep's axis. This one fires at a
+// fixed rate per CPU whatever the target does, so its cost per unit of target
+// CPU time should be roughly CONSTANT down the column — and the control row,
+// which allocates nothing, is where it is least contaminated by anything else.
+var cpuprofOnly = everySubsystemExcept(collector.SubsystemCPUProf)
+
 // everySubsystemExcept names every --disable subsystem but one.
 func everySubsystemExcept(keep string) string {
 	all := strings.Split(collector.KnownSubsystems(), ", ")
@@ -124,6 +139,7 @@ var configs = []config{
 	// replacing it (#108).
 	{name: "ptop, heap probe unsampled", ptop: true, disable: heapOnly,
 		extra: []string{"--heap-sample-bytes", "0"}},
+	{name: "ptop, cpu sampler only", ptop: true, disable: cpuprofOnly},
 }
 
 // sweepPoint is one row of the table: a workload shape. compute sets how much

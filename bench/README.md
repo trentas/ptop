@@ -87,6 +87,14 @@ what separates *"ptop costs something"* from *"ptop costs something here"*.
 | ptop, no heap probe | everything except the allocator uprobe (`--disable heap`) |
 | ptop, heap probe only | the allocator uprobe alone, sampled (the default) |
 | ptop, heap probe unsampled | the same probe walking a stack on EVERY allocation (`--heap-sample-bytes 0`) |
+| ptop, cpu sampler only | the CPU attribution sampler alone (#125) |
+
+Read the last column differently from the heap ones. The heap probe fires once
+per allocation, so its cost scales with the axis this table sweeps. The CPU
+sampler fires at a fixed rate per CPU whatever the target does, so its cost per
+unit of the target's CPU time should be roughly constant down the column — and
+the control row, which allocates nothing, is where it is least contaminated by
+anything else.
 
 The decomposition is the actionable part. *"ptop costs N%"* leaves an operator
 with nothing to do; *"the heap probe is N% of it and you can turn it off with
