@@ -366,8 +366,12 @@ func checkCPUAttribution(pid int) bool {
 		return false
 	}
 	if unresolved*2 > total {
+		// Not a frame-pointer problem: the leaf comes from the interrupted
+		// registers, so it resolves with or without them (measured — a C target
+		// built both ways differed only in stack depth). Reaching here means
+		// bpf_get_stackid itself failed, or nothing symbolized the leaf at all.
 		fmt.Fprintf(os.Stderr,
-			"FAIL  cpusite: %d of %d samples have no resolvable stack — frame pointers missing?\n",
+			"FAIL  cpusite: %d of %d samples have no resolvable leaf — stack capture or symbolization is failing\n",
 			unresolved, total)
 		return false
 	}

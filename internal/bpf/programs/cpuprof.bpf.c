@@ -63,10 +63,19 @@
 // /proc/kallsyms and a kptr_restrict conversation, and is a declared absence
 // rather than a silent one.
 //
-// A failed stack walk (no frame pointers) returns a negative id, which keys
-// its own bucket here and is published by userspace as an unresolved-sample
-// COUNT rather than as a list entry — so a binary this program cannot see into
-// says so, instead of quietly ranking the few stacks that did resolve.
+// A failed stack walk returns a negative id, which keys its own bucket here and
+// is published by userspace as an unresolved-sample COUNT rather than as a list
+// entry — so a capture this program cannot see into says so, instead of quietly
+// ranking the few stacks that did resolve.
+//
+// Worth being precise about what that does and does not cover, because the
+// obvious guess is wrong. Missing frame pointers do NOT land here: the leaf
+// comes from the interrupted register state, not from unwinding, so it resolves
+// either way. Measured on a C target built both ways, the only difference was
+// the DEPTH of the stack above the leaf (4 frames against 3) — the attribution
+// was identical, and unresolved was zero in both. Since this axis attributes by
+// the leaf, it is largely immune to a target without frame pointers; what
+// suffers is ResolveStack's answer, not the ranking.
 //
 // Userspace reads cpuprof_counts with a read-and-DELETE, so each publish
 // covers exactly one window and stack ids that stopped being sampled evaporate
