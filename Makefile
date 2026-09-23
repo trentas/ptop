@@ -1,4 +1,4 @@
-.PHONY: all build build-ebpf run gen proto proto-lint clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest bench
+.PHONY: all build build-ebpf run gen proto proto-lint clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest bench probe-cost
 
 .DEFAULT_GOAL := all
 
@@ -132,6 +132,23 @@ bench: gen
 		mount -t debugfs nodev /sys/kernel/debug 2>/dev/null; \
 		mount -t tracefs nodev /sys/kernel/tracing 2>/dev/null; \
 		cd /b && ./runner $(BENCH_ARGS)'
+
+# What each probe costs the MACHINE, read from the kernel's own per-program
+# accounting instead of inferred from a benchmark delta (bench/README.md).
+#
+# Use this, not `make bench`, for any probe that fires at a fixed rate rather
+# than on something the target does. The CPU attribution sampler costs about a
+# hundredth of a percent of a core; the benchmark's best-ever noise floor is
+# ±1.8%, so it cannot resolve it and three attempts confirmed as much.
+#
+# ptop must ALREADY be attached — this starts nothing and measures whatever the
+# kernel has loaded, from any container on the host.
+PROBECOST_ARGS ?= -window 30s
+
+probe-cost:
+	@mkdir -p $(BENCH_DIR)
+	CGO_ENABLED=0 $(GO) build -o $(BENCH_DIR)/probecost ./bench/probecost
+	docker run --rm --privileged -v $(BENCH_DIR):/b $(BENCH_IMAGE) /b/probecost $(PROBECOST_ARGS)
 
 # ─── protobuf codegen ─────────────────────────────────────────────────────────
 
