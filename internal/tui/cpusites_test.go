@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/trentas/ptop/pkg/collector"
 )
@@ -156,5 +159,35 @@ func TestCPUSiteKeySeparatesFunctionsAndJoinsAddresses(t *testing.T) {
 	unsym := collector.CPUSite{Module: "libfoo.so", Addr: 0x7f00}
 	if unsym.Key() == a.Key() {
 		t.Error("an unsymbolized module is not the application function")
+	}
+}
+
+// A panel wider than its box wraps, and a wrapped line inside a border pushes
+// every row below it out — the failure the width-discipline rule in CLAUDE.md
+// exists for. The first version of this panel overflowed by 23 columns at w=20:
+// fixed column widths plus a minimum name width cannot fit in a narrow terminal,
+// so columns are dropped in priority order instead.
+func TestCPUPanelNeverOverflowsItsWidth(t *testing.T) {
+	var w cpuSiteWindow
+	for i := 0; i < 30; i++ {
+		w.add(collector.CPUProfile{
+			TotalSamples: 200, WindowMs: 1000, SampleRateHz: 97, RequestedRateHz: 99,
+			OmittedSamples: 40, TotalSites: 231, UnresolvedSamples: 70,
+			Sites: []collector.CPUSite{
+				{Func: "github.com/some/very/long/module/path.(*Deeply).NestedReceiverMethodName",
+					Module: "api", File: "an_extremely_long_source_file_name.go", Line: 123456, Samples: 90},
+				{Module: "libsomethingwithaverylongname.so.6", AddrHex: "0x7f22aabbccdd", Samples: 40},
+			},
+		})
+	}
+	sum := w.fold()
+	for _, width := range []int{20, 40, 60, 80, 120, 200} {
+		body := renderCPU(make([]float64, 60), sum, width, 12)
+		for i, line := range strings.Split(body, "\n") {
+			if got := lipgloss.Width(line); got > width {
+				t.Errorf("w=%d: line %d is %d wide — a panel that overflows wraps and flips the layout\n%q",
+					width, i, got, line)
+			}
+		}
 	}
 }

@@ -113,21 +113,35 @@ const cpuSiteBlindWarnPct = 30
 // also the one diagnostic on this panel that points at the machine rather than
 // at the code.
 func renderCPUSitesHeader(sum cpuSiteSummary, w int) string {
-	label := "hot functions"
+	full := "hot functions"
 	if sum.Truncated() {
 		// Say the list is a selection. A reader watching a function leave the
 		// list cannot otherwise tell that from the function going quiet.
-		label = fmt.Sprintf("hot functions (top %d of %d)", len(sum.Sites), sum.TotalSites)
+		full = fmt.Sprintf("hot functions (top %d of %d)", len(sum.Sites), sum.TotalSites)
 	}
 	right := fmt.Sprintf("%s samples · %ds · %.0fHz",
 		fmtCount(sum.Total), sum.WindowMs/1000, sum.RateHz)
-	gap := w - lipgloss.Width(label) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
+
+	// Priority-based segment dropping, the pattern header.go uses: a strip that
+	// overflows its width wraps, and a wrapped line inside a bordered panel
+	// pushes every row below it out of the box. The sample count is the last
+	// thing to go, since it is what makes the shares refusable.
+	for _, pair := range [][2]string{
+		{full, right},
+		{"hot functions", right},
+		{"", right},
+		{full, ""},
+	} {
+		label, rhs := pair[0], pair[1]
+		gap := w - lipgloss.Width(label) - lipgloss.Width(rhs)
+		if gap < 1 {
+			continue
+		}
+		return MutedStyle.Render(label) +
+			lipgloss.NewStyle().Background(ColorPanel).Render(strings.Repeat(" ", gap)) +
+			MutedStyle.Render(rhs)
 	}
-	return MutedStyle.Render(label) +
-		lipgloss.NewStyle().Background(ColorPanel).Render(strings.Repeat(" ", gap)) +
-		MutedStyle.Render(right)
+	return MutedStyle.Render(truncate(right, w))
 }
 
 // renderCPUSiteRow lays out one function: its name, a share bar, the share, and
@@ -137,17 +151,45 @@ func renderCPUSitesHeader(sum cpuSiteSummary, w int) string {
 // number and completely different claims, and the second one should not survive
 // contact with a reader who can see both.
 func renderCPUSiteRow(s collector.CPUSite, w int) string {
-	const barW, pctW, cntW = 20, 5, 7
-	pct := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).
-		Width(pctW).Align(lipgloss.Right).Render(fmt.Sprintf("%.0f%%", s.SharePct))
-	cnt := MutedStyle.Width(cntW).Align(lipgloss.Right).Render(fmtCount(s.Samples))
+	const pctW, cntW, minNameW = 5, 7, 12
+	const maxBarW = 20
 
-	nameW := w - barW - pctW - cntW - 3
-	if nameW < 8 {
-		nameW = 8
+	// Columns are dropped in reverse order of what they are for: the name says
+	// WHERE, the share says how much of the window, the count says whether the
+	// share can be believed, and the bar is the only decorative one. Each drop
+	// is checked against the width rather than assumed to fit, because a row
+	// one column too wide wraps and takes the whole panel with it.
+	name := truncate(cpuSiteLabel(s), w)
+	pct := fmt.Sprintf("%.0f%%", s.SharePct)
+	cnt := fmtCount(s.Samples)
+
+	barW := maxBarW
+	for {
+		nameW := w - barW - pctW - cntW - 3
+		if barW > 0 && nameW < minNameW {
+			if barW -= 4; barW < 4 {
+				barW = 0
+			}
+			continue
+		}
+		if barW > 0 {
+			return CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW)) + panelSp1 +
+				renderShareBar(s.SharePct, barW) + panelSp1 +
+				BrightStyle.Width(pctW).Align(lipgloss.Right).Render(pct) + panelSp1 +
+				MutedStyle.Width(cntW).Align(lipgloss.Right).Render(cnt)
+		}
+		break
 	}
-	name := CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW))
-	return name + panelSp1 + renderShareBar(s.SharePct, barW) + panelSp1 + pct + panelSp1 + cnt
+	if nameW := w - pctW - cntW - 2; nameW >= 6 {
+		return CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW)) + panelSp1 +
+			BrightStyle.Width(pctW).Align(lipgloss.Right).Render(pct) + panelSp1 +
+			MutedStyle.Width(cntW).Align(lipgloss.Right).Render(cnt)
+	}
+	if nameW := w - pctW - 1; nameW >= 4 {
+		return CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW)) + panelSp1 +
+			BrightStyle.Width(pctW).Align(lipgloss.Right).Render(pct)
+	}
+	return CyanStyle.Render(name)
 }
 
 // renderShareBar draws a share as a filled fraction of barW. Clamped, because a
