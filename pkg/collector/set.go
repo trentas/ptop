@@ -40,6 +40,11 @@ type SetConfig struct {
 	// explicitly with HeapSampleEveryAllocation.
 	HeapSampleBytes uint64
 
+	// CPUProfHz is the per-CPU sampling rate of the CPU attribution axis
+	// (#125), in Hz. 0 takes bpf.CPUProfDefaultHz — see NormalizeCPUProfHz for
+	// why the default is 99 and not 100.
+	CPUProfHz int
+
 	// Symbols names the optional symbol sources consulted after the mapped ELF
 	// (#119): a local symbol bundle, and debuginfod when the operator opted in.
 	// The zero value resolves from the target's own images alone, which is the
@@ -57,6 +62,18 @@ const HeapSampleEveryAllocation uint64 = 1
 
 // heapSampleBytes resolves the configured rate, filling in the default for the
 // zero value.
+// cpuProfHz resolves the configured CPU sampling rate, filling in the default.
+// The warning (a rate clamped, or one high enough to be worth naming) goes to
+// stderr here rather than being swallowed, since the flag layer is not the only
+// caller — an embedder setting SetConfig deserves the same notice.
+func cpuProfHz(cfg SetConfig) int {
+	hz, warn := bpf.NormalizeCPUProfHz(cfg.CPUProfHz)
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
+	return hz
+}
+
 func heapSampleBytes(cfg SetConfig) uint64 {
 	if cfg.HeapSampleBytes == 0 {
 		return bpf.GoAllocDefaultSampleBytes
@@ -70,6 +87,7 @@ func heapSampleBytes(cfg SetConfig) uint64 {
 // These strings surface in the TUI's "?" help overlay; never lie about them.
 type Sources struct {
 	CPU       string
+	CPUProf   string
 	Threads   string
 	Mem       string
 	Heap      string
@@ -92,6 +110,7 @@ type Set struct {
 	FD                *FDCollector
 	CPUProc           *CPUCollector
 	CPUEBPF           *CPUEBPFCollector
+	CPUProfEBPF       *CPUProfEBPFCollector
 	ThreadsProc       *ThreadsCollector
 	ThreadsEBPF       *ThreadsEBPFCollector
 	MemProc           *MemCollector
@@ -310,6 +329,16 @@ func NewSet(cfg SetConfig) *Set {
 			s.Sources.Net = SourceNetworkRich
 		})
 
+		// CPU attribution (#125): WHERE the target's CPU time goes, sampled,
+		// beside the exact nanoseconds the cpu subsystem publishes. Its own
+		// subsystem because it is its own probe with its own cost — and because
+		// an operator switching off one must not lose the other.
+		c10 := NewCPUProfEBPFCollector(cpuProfHz(cfg), syms)
+		startEBPF(SubsystemCPUProf, c10, func() {
+			s.CPUProfEBPF = c10
+			s.Sources.CPUProf = "eBPF"
+		})
+
 		c4 := NewFutexEBPFCollector(syms)
 		startEBPF(SubsystemFutex, c4, func() {
 			s.FutexEBPF = c4
@@ -500,6 +529,10 @@ func (s *Set) Stop() {
 	if s.MemEBPF != nil {
 		s.MemEBPF.Stop()
 	}
+	if s.CPUProfEBPF != nil {
+		s.CPUProfEBPF.Stop()
+		s.CPUProfEBPF = nil
+	}
 	if s.HeapEBPF != nil {
 		s.HeapEBPF.Stop()
 	}
@@ -560,6 +593,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.MemProc, s.MemProc != nil)
 	add(s.MemEBPF, s.MemEBPF != nil)
 	add(s.HeapEBPF, s.HeapEBPF != nil)
+	add(s.CPUProfEBPF, s.CPUProfEBPF != nil)
 	add(s.IOWait, s.IOWait != nil)
 	add(s.IOThroughput, s.IOThroughput != nil)
 	add(s.SyscallsEBPF, s.SyscallsEBPF != nil)
@@ -582,6 +616,7 @@ func (s *Set) MockCPU() bool          { return s.CPUEBPF == nil && s.CPUProc == 
 func (s *Set) MockThreads() bool      { return s.ThreadsEBPF == nil && s.ThreadsProc == nil }
 func (s *Set) MockMem() bool          { return s.MemEBPF == nil && s.MemProc == nil }
 func (s *Set) MockHeap() bool         { return s.HeapEBPF == nil }
+func (s *Set) MockCPUProf() bool      { return s.CPUProfEBPF == nil }
 func (s *Set) MockIOWait() bool       { return s.IOWait == nil }
 func (s *Set) MockIOThroughput() bool { return s.IOThroughput == nil }
 func (s *Set) MockSyscalls() bool     { return s.SyscallsEBPF == nil }

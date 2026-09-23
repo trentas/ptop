@@ -9,6 +9,95 @@ type CpuSample struct {
 	Timestamp time.Time
 }
 
+// CPUSite is one function the sampler caught the target executing, with how
+// many samples landed there (#125).
+//
+// This is a SELF-TIME profile: the site is the LEAF of the captured stack, the
+// function actually running, not an application frame found by walking past
+// machinery the way HeapCallSite is. On this axis the machinery is where the
+// time went, and a consumer that wants cumulative attribution has StackID.
+//
+// Entries are folded by FUNCTION, not by address: samples land anywhere in a
+// function's body, so folding by instruction pointer would shatter one hot
+// function into dozens of one-sample entries and make the top-N meaningless.
+// A frame that symbolized to no function folds by MODULE instead ("the time is
+// in libfoo.so, function unknown"), which keeps the list readable without
+// inventing an identity.
+type CPUSite struct {
+	// Addr is the instruction pointer of the DOMINANT sample in this bucket —
+	// representative, not exhaustive. Line is that sample's line, so it is the
+	// HOTTEST line inside Func rather than the function's declaration.
+	Addr    uint64
+	AddrHex string // "0x…" raw-address fallback
+	Func    string // resolved function name ("" when only the module resolved)
+	File    string // source file ("" when the module carries no line info)
+	Line    int    // hottest line within Func (0 if unknown)
+	Module  string // backing module basename ("" if unresolved)
+	Offset  uint64 // module-relative offset — comparable across runs/ASLR
+	StackID int32  // kernel stack-map id (<0 unknown); resolves to full frames
+
+	// Samples is how many samples landed in this function during the window,
+	// and SharePct its share of CPUProfile.TotalSamples.
+	//
+	// The count travels with the share deliberately. A share alone cannot be
+	// refused: a process at 2.5% of a core draws ~150 samples a minute, enough
+	// for a rough top-N and NOT enough to assert that a function went from 12%
+	// to 18%. Without the count a consumer reports sampling noise as a
+	// behavioural regression.
+	Samples  uint64
+	SharePct float64
+}
+
+// CPUProfile is the periodic per-function CPU attribution snapshot (#125) —
+// the WHERE axis, published beside CpuSample's HOW MUCH and never merged into
+// it. CpuSample is exact, scheduler-accounted nanoseconds; this is an estimate
+// from samples, and the two answer different questions (see cpuprof.bpf.c).
+//
+// A consumer wanting time-in-function multiplies SharePct by the on-CPU time
+// itself — and inherits this axis's sampling uncertainty by doing so, which is
+// why ptop does not do that multiplication anywhere.
+type CPUProfile struct {
+	Timestamp time.Time
+	Sites     []CPUSite
+
+	// TotalSamples is every sample that caught the target on-CPU in this
+	// window, INCLUDING the unresolved ones. It is the denominator of every
+	// SharePct and the ruler a consumer uses to decide what the profile can
+	// carry.
+	TotalSamples uint64
+
+	// UnresolvedSamples is the samples whose stack walk failed — a target
+	// built without frame pointers, most often. They are counted here instead
+	// of taking a slot in Sites, so a blind axis says it is blind rather than
+	// ranking the few stacks that happened to resolve.
+	//
+	// Because they are in TotalSamples but not in Sites, the SharePct values
+	// sum to LESS than 100 and the shortfall is exactly the blind fraction.
+	UnresolvedSamples uint64
+
+	// WindowMs is the wall time this window covers. Sites are per-window, not
+	// cumulative: a share over the whole capture hides a regression that
+	// started a minute ago.
+	WindowMs uint64
+
+	// SampleRateHz is what the kernel ACTUALLY delivered, per CPU, measured
+	// over this window; RequestedRateHz is what was asked for. #108 measured
+	// them diverging by 10-20% on a lightly loaded host — in freq mode the
+	// period is re-derived at scheduler ticks, which do not run on an idle
+	// CPU. Nothing here divides by the requested rate; it is published so the
+	// gap is visible rather than assumed away.
+	SampleRateHz    float64
+	RequestedRateHz float64
+
+	// TotalSites is how many distinct functions this window saw before Sites
+	// was cut to the largest few, and OmittedSamples the volume the cut left
+	// out. Equal counts mean the list is a census and a function's absence
+	// means it took no samples; otherwise OmittedSamples bounds what any one
+	// missing function can account for. Same contract as HeapStats (#109).
+	TotalSites     uint32
+	OmittedSamples uint64
+}
+
 // ─── Syscalls ─────────────────────────────────────────────────────────────────
 
 type SyscallEvent struct {

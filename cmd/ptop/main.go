@@ -51,6 +51,7 @@ func main() {
 	debuginfodURLs := flag.String("debuginfod-urls", "", "debuginfod servers to query, comma/space separated (implies --debuginfod; overrides $DEBUGINFOD_URLS)")
 	symbolCache := flag.String("symbol-cache", "", "Local symbol store, <dir>/<build-id>/debuginfo — read before any network and written after a fetch. Alone it resolves offline from an unpacked vendor bundle")
 	heapSample := flag.Uint64("heap-sample-bytes", bpf.GoAllocDefaultSampleBytes, "Go allocation lane: bytes allocated between recorded call-site samples. 0 records every allocation — exact per site, and a large multiple of the target's own CPU time")
+	cpuProfHz := flag.Int("cpu-sample-hz", bpf.CPUProfDefaultHz, "CPU attribution axis: stack samples per second per CPU. Names the functions the target runs in, beside the exact on-CPU nanoseconds")
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
 	showCaps := flag.Bool("caps", false, "Print which capabilities this ptop holds, which collectors will therefore run, and exit")
 	showVer := flag.Bool("version", false, "Print version and exit")
@@ -210,6 +211,7 @@ func main() {
 	base := collector.SetConfig{
 		NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap,
 		Disable: disable, HeapSampleBytes: heapSampleBytes, Symbols: symbolOpts,
+		CPUProfHz: *cpuProfHz,
 	}
 
 	// Transport security of the event stream (#95) — distinct from --tls, which
@@ -261,7 +263,7 @@ func main() {
 
 		var tuiCfg *tui.Config
 		if *withTUI {
-			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, Symbols: symbolOpts}
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, CPUProfHz: *cpuProfHz, Symbols: symbolOpts}
 		}
 		runServe(*serveAddr, target, base, opts, tuiCfg)
 		return
@@ -276,6 +278,7 @@ func main() {
 		TLSMaxBytes:     tlsCap,
 		Disable:         disable,
 		HeapSampleBytes: heapSampleBytes,
+		CPUProfHz:       *cpuProfHz,
 		Symbols:         symbolOpts,
 	})
 }
@@ -350,7 +353,8 @@ func runServeOnDemand(addr string, base collector.SetConfig, opts serve.Options)
 }
 
 // stackResolverFor builds the ResolveStack backing for one target. The heap
-// (#54) and futex (#89) collectors each own a stack tracer + symbolizer, and
+// (#54), futex (#89) and cpuprof (#125) collectors each own a stack tracer +
+// symbolizer, and
 // wire ids are namespaced by source, so one combined resolver serves both. Only
 // a collector that actually started is registered — a nil pointer stored in the
 // map would still read as a non-nil interface.
@@ -361,6 +365,9 @@ func stackResolverFor(set *collector.Set) serve.StackResolver {
 	}
 	if set.FutexEBPF != nil {
 		resolvers[serve.StackSourceFutex] = set.FutexEBPF
+	}
+	if set.CPUProfEBPF != nil {
+		resolvers[serve.StackSourceCPUProf] = set.CPUProfEBPF
 	}
 	return serve.CombineStackResolvers(resolvers)
 }

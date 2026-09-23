@@ -19,8 +19,9 @@ import "github.com/trentas/ptop/pkg/symbol"
 type StackSource uint32
 
 const (
-	StackSourceHeap  StackSource = 0 // heap_stacks (#53/#54)
-	StackSourceFutex StackSource = 1 // futex_stacks (#89)
+	StackSourceHeap    StackSource = 0 // heap_stacks (#53/#54)
+	StackSourceFutex   StackSource = 1 // futex_stacks (#89)
+	StackSourceCPUProf StackSource = 2 // cpuprof_stacks (#125)
 )
 
 // taggedStackID widens a kernel stack id for the wire, stamping its source. A
@@ -46,7 +47,7 @@ type combinedResolver struct {
 func CombineStackResolvers(bySource map[StackSource]StackResolver) StackResolver {
 	c := &combinedResolver{bySource: make(map[StackSource]StackResolver, len(bySource))}
 	// Fixed order (not map order) so ProcessBuildID is stable across runs.
-	for _, src := range []StackSource{StackSourceHeap, StackSourceFutex} {
+	for _, src := range []StackSource{StackSourceHeap, StackSourceFutex, StackSourceCPUProf} {
 		if r := bySource[src]; r != nil {
 			c.order = append(c.order, src)
 			c.bySource[src] = r
