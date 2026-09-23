@@ -72,6 +72,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // config is one ptop configuration under test. Decomposing by subsystem is an
@@ -87,7 +89,27 @@ type config struct {
 
 // heapOnly disables everything except the heap probe, so its column measures
 // that probe alone.
-const heapOnly = "cpu,threads,memory,syscalls,io,network,futex,signals,lifecycle,security,fd"
+//
+// DERIVED from the subsystem list rather than written out, because a hand-kept
+// copy decays silently and takes the table's meaning with it. #125 added a
+// subsystem; the literal this replaced did not know about it, so the column
+// labelled "heap probe only" would have been measuring heap plus a CPU sampler
+// while still being read — and published — as the heap probe alone. Nothing in
+// the harness would have objected: every arm still ran, every cell still had a
+// number, and the decomposition was simply no longer a decomposition.
+var heapOnly = everySubsystemExcept(collector.SubsystemHeap)
+
+// everySubsystemExcept names every --disable subsystem but one.
+func everySubsystemExcept(keep string) string {
+	all := strings.Split(collector.KnownSubsystems(), ", ")
+	out := make([]string, 0, len(all))
+	for _, name := range all {
+		if name != keep {
+			out = append(out, name)
+		}
+	}
+	return strings.Join(out, ",")
+}
 
 var configs = []config{
 	{name: "no ptop", ptop: false},

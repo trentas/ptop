@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 func TestMedian(t *testing.T) {
@@ -113,6 +115,25 @@ func TestConfigsDecomposeTheCost(t *testing.T) {
 	}
 	if !all || !noHeap || !heapOnly {
 		t.Errorf("configs do not decompose the cost: all=%v noHeap=%v heapOnly=%v", all, noHeap, heapOnly)
+	}
+}
+
+// The shape check above says the three arms exist; this says the heap-only arm
+// actually names everything else. They are different failures: a subsystem
+// added and not listed leaves all three arms present and the column silently
+// measuring two probes, which is a wrong number rather than a missing one.
+func TestHeapOnlyArmDisablesEveryOtherSubsystem(t *testing.T) {
+	for _, name := range strings.Split(collector.KnownSubsystems(), ", ") {
+		if name == collector.SubsystemHeap {
+			if containsWord(heapOnly, name) {
+				t.Errorf("the heap-only arm disables heap: %q", heapOnly)
+			}
+			continue
+		}
+		if !containsWord(heapOnly, name) {
+			t.Errorf("subsystem %q is not disabled by the heap-only arm, so that column measures heap PLUS %s: %q",
+				name, name, heapOnly)
+		}
 	}
 }
 
