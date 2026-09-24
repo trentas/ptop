@@ -104,3 +104,42 @@ func TestNetTupleKeySeparatesLocalPorts(t *testing.T) {
 		t.Error("the key must be stable")
 	}
 }
+
+// Baselining every first sighting is right for a connection that predates the
+// observer and catastrophic for one that does not. A connection that opens,
+// transfers and closes inside one interval is seen exactly ONCE, so it used to
+// contribute nothing at all — measured on 50,000 short connections each writing
+// a byte, the axis reported seven.
+func TestNetTotalsCountAConnectionBornUnderObservation(t *testing.T) {
+	var n netAccumulator
+	t0 := time.Now()
+	n.observe(nil, t0) // attach: nothing in flight
+
+	// One connection lived and died entirely inside this interval.
+	s := n.observe([]netByteReading{{Key: "short", Tx: 900, Rx: 100, Born: true}}, t0.Add(time.Second))
+	if s.TxBytes != 900 || s.RxBytes != 100 {
+		t.Errorf("totals = %d/%d, want 900/100 — a connection seen once still moved bytes", s.TxBytes, s.RxBytes)
+	}
+
+	// And it must not be counted again when it lingers a tick before pruning.
+	s = n.observe([]netByteReading{{Key: "short", Tx: 900, Rx: 100, Born: true}}, t0.Add(2*time.Second))
+	if s.TxBytes != 900 {
+		t.Errorf("totals = %d after re-reading the same counters, want 900", s.TxBytes)
+	}
+}
+
+// The other half of the rule: a connection already running when ptop attached
+// carries history, and counting it would invent volume out of the past.
+func TestNetTotalsStillBaselineAPreExistingConnection(t *testing.T) {
+	var n netAccumulator
+	t0 := time.Now()
+	n.observe(nil, t0)
+	s := n.observe([]netByteReading{{Key: "old", Tx: 1 << 20, Rx: 1 << 20, Born: false}}, t0.Add(time.Second))
+	if s.TxBytes != 0 {
+		t.Errorf("totals = %d, want 0 — that megabyte moved before anyone was watching", s.TxBytes)
+	}
+	s = n.observe([]netByteReading{{Key: "old", Tx: 1<<20 + 500, Rx: 1 << 20, Born: false}}, t0.Add(2*time.Second))
+	if s.TxBytes != 500 {
+		t.Errorf("totals = %d, want the 500 bytes it moved under observation", s.TxBytes)
+	}
+}

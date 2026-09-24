@@ -251,6 +251,15 @@ message NetThroughputSample {
   // sample, which has no interval behind it.
   double tx_bytes_per_s = 3;
   double rx_bytes_per_s = 4;
+  // How many connections the kernel could not record because its connection
+  // map was full, cumulative since attach (#133).
+  //
+  // Non-zero means this axis is blind to that many connections — neither a row
+  // in NetworkSnapshot nor their bytes, since the byte counters hang off the
+  // same entry. It rides here because a volume figure that silently omits
+  // connections is exactly what this field exists to qualify: zero is the
+  // difference between a total and a total known to be complete.
+  uint64 dropped_connections = 5;
 }
 
 // NetErrorEvent is a kernel-observed network failure (#56), correlated to a

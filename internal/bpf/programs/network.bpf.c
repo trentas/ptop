@@ -141,6 +141,37 @@ struct {
     __uint(max_entries, 4096);
 } sock_to_key SEC(".maps");
 
+// net_stats counts what this program could not record (#133).
+//
+// net_conn_map is a fixed-size HASH, and a full one refuses an insert with
+// -E2BIG. The return used to be discarded, so a saturated map meant new
+// connections silently ceased to exist: no row, and no bytes either, since
+// add_bytes needs the entry. Measured, the map filled in twelve seconds under
+// short-lived connections.
+//
+// Userspace now prunes closed entries so it should not fill at all. This
+// counter is what makes that claim checkable rather than assumed — and if the
+// pruning is ever outrun, an axis that says how much it missed beats one that
+// goes quietly blind (#112).
+struct net_stats {
+    __u64 conn_insert_failed;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct net_stats);
+    __uint(max_entries, 1);
+} net_stats SEC(".maps");
+
+static __always_inline void note_insert_failed(void)
+{
+    __u32 k = 0;
+    struct net_stats *st = bpf_map_lookup_elem(&net_stats, &k);
+    if (st)
+        st->conn_insert_failed += 1;
+}
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 18); // 256KB — net errors are low-rate
@@ -185,7 +216,8 @@ int handle_inet_set_state(struct sock_set_state_args *ctx)
         };
         if (ctx->newstate == TCP_SYN_SENT)
             nv.syn_sent_ns = now;
-        bpf_map_update_elem(&net_conn_map, &k, &nv, BPF_ANY);
+        if (bpf_map_update_elem(&net_conn_map, &k, &nv, BPF_ANY) < 0)
+            note_insert_failed();
     } else {
         v->last_seen_ns = now;
         v->state = (__u32)ctx->newstate;

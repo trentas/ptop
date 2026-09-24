@@ -41,6 +41,10 @@ type NetworkEBPFCollector struct {
 	// tput accumulates the target's monotonic byte totals across every
 	// connection the map holds, closed ones included (#128). publishLoop-only.
 	tput netAccumulator
+	// attachedNs is when this collector started, in the same clock the tracer
+	// stamps first_seen_ns with. A connection first seen after it was born
+	// under observation, so its counters are new traffic and not history.
+	attachedNs uint64
 }
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
@@ -72,6 +76,11 @@ func (c *NetworkEBPFCollector) start(t bpf.Target, pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
+	// Same clock the tracer stamps first_seen_ns with, read before the first
+	// publish: anything first seen after this was born under observation.
+	if ns, err := bpf.MonotonicNanos(); err == nil {
+		c.attachedNs = ns
+	}
 	// Synchronous bootstrap: populates the map with TCP connections that
 	// already exist in /proc/<pid>/net/tcp{,6} before the first snapshot.
 	// Without this, processes with keep-alive look empty until some transition.
@@ -216,13 +225,43 @@ func (c *NetworkEBPFCollector) snapshot() ([]NetConn, NetThroughputSample) {
 	}
 
 	readings := make([]netByteReading, 0, len(snaps))
+	var spent []bpf.NetConnKey
 	for _, s := range snaps {
 		readings = append(readings, netByteReading{
 			Key: netTupleKey(s.SAddr.String(), s.SPort, s.DAddr.String(), s.DPort),
 			Tx:  s.TxBytes, Rx: s.RxBytes,
+			Born: s.FirstNs > c.attachedNs,
 		})
+		if s.State == tcpStateCLOSE {
+			spent = append(spent, s.Key)
+		}
 	}
 	tput := c.tput.observe(readings, time.Now())
+
+	// Prune AFTER accumulating, never before (#133).
+	//
+	// The kernel never deletes from net_conn_map, so its 4096 slots fill and
+	// stay full — measured at twelve seconds under short-lived connections,
+	// after which every new connection is refused with -E2BIG and simply does
+	// not exist for ptop. Pruning has to happen here rather than in the BPF
+	// program because only this side knows when an entry has been CONSUMED.
+	//
+	// A closed connection is consumed exactly once: its final bytes went into
+	// the monotonic totals on the line above, which is what lets the row go
+	// without the volume going with it (#128). That ordering is the whole
+	// design — deleting in the program at TCP_CLOSE, the obvious fix, would
+	// throw those bytes away before anyone read them.
+	//
+	// Only TCP_CLOSE, which is terminal: sock_to_key is deleted at that
+	// transition too, so no further byte can be attributed to the entry.
+	if len(spent) > 0 {
+		if err := c.tracer.DeleteConns(spent); err != nil {
+			fmt.Fprintf(os.Stderr, "network: pruning closed connections: %v\n", err)
+		}
+	}
+	if n, err := c.tracer.InsertFailures(); err == nil {
+		tput.DroppedConnections = n
+	}
 
 	out := make([]NetConn, 0, len(snaps))
 	for _, s := range snaps {

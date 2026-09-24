@@ -1353,10 +1353,19 @@ type NetThroughputSample struct {
 	RxBytes uint64 `protobuf:"varint,2,opt,name=rx_bytes,json=rxBytes,proto3" json:"rx_bytes,omitempty"`
 	// Over the interval between the last two observations. Zero on the first
 	// sample, which has no interval behind it.
-	TxBytesPerS   float64 `protobuf:"fixed64,3,opt,name=tx_bytes_per_s,json=txBytesPerS,proto3" json:"tx_bytes_per_s,omitempty"`
-	RxBytesPerS   float64 `protobuf:"fixed64,4,opt,name=rx_bytes_per_s,json=rxBytesPerS,proto3" json:"rx_bytes_per_s,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	TxBytesPerS float64 `protobuf:"fixed64,3,opt,name=tx_bytes_per_s,json=txBytesPerS,proto3" json:"tx_bytes_per_s,omitempty"`
+	RxBytesPerS float64 `protobuf:"fixed64,4,opt,name=rx_bytes_per_s,json=rxBytesPerS,proto3" json:"rx_bytes_per_s,omitempty"`
+	// How many connections the kernel could not record because its connection
+	// map was full, cumulative since attach (#133).
+	//
+	// Non-zero means this axis is blind to that many connections — neither a row
+	// in NetworkSnapshot nor their bytes, since the byte counters hang off the
+	// same entry. It rides here because a volume figure that silently omits
+	// connections is exactly what this field exists to qualify: zero is the
+	// difference between a total and a total known to be complete.
+	DroppedConnections uint64 `protobuf:"varint,5,opt,name=dropped_connections,json=droppedConnections,proto3" json:"dropped_connections,omitempty"`
+	unknownFields      protoimpl.UnknownFields
+	sizeCache          protoimpl.SizeCache
 }
 
 func (x *NetThroughputSample) Reset() {
@@ -1413,6 +1422,13 @@ func (x *NetThroughputSample) GetTxBytesPerS() float64 {
 func (x *NetThroughputSample) GetRxBytesPerS() float64 {
 	if x != nil {
 		return x.RxBytesPerS
+	}
+	return 0
+}
+
+func (x *NetThroughputSample) GetDroppedConnections() uint64 {
+	if x != nil {
+		return x.DroppedConnections
 	}
 	return 0
 }
@@ -3635,12 +3651,13 @@ const file_event_proto_rawDesc = "" +
 	"\btx_bytes\x18\a \x01(\x04R\atxBytes\x12\x19\n" +
 	"\brx_bytes\x18\b \x01(\x04R\arxBytes\"9\n" +
 	"\x0fNetworkSnapshot\x12&\n" +
-	"\x05conns\x18\x01 \x03(\v2\x10.ptop.v1.NetConnR\x05conns\"\x95\x01\n" +
+	"\x05conns\x18\x01 \x03(\v2\x10.ptop.v1.NetConnR\x05conns\"\xc6\x01\n" +
 	"\x13NetThroughputSample\x12\x19\n" +
 	"\btx_bytes\x18\x01 \x01(\x04R\atxBytes\x12\x19\n" +
 	"\brx_bytes\x18\x02 \x01(\x04R\arxBytes\x12#\n" +
 	"\x0etx_bytes_per_s\x18\x03 \x01(\x01R\vtxBytesPerS\x12#\n" +
-	"\x0erx_bytes_per_s\x18\x04 \x01(\x01R\vrxBytesPerS\"z\n" +
+	"\x0erx_bytes_per_s\x18\x04 \x01(\x01R\vrxBytesPerS\x12/\n" +
+	"\x13dropped_connections\x18\x05 \x01(\x04R\x12droppedConnections\"z\n" +
 	"\rNetErrorEvent\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x16\n" +
 	"\x06remote\x18\x02 \x01(\tR\x06remote\x12 \n" +

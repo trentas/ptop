@@ -72,10 +72,11 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = pb.Category_CATEGORY_NETWORK
 		ev.Payload = &pb.Event_NetThroughput{NetThroughput: &pb.NetThroughputSample{
-			TxBytes:     x.TxBytes,
-			RxBytes:     x.RxBytes,
-			TxBytesPerS: x.TxBytesPerS,
-			RxBytesPerS: x.RxBytesPerS,
+			TxBytes:            x.TxBytes,
+			RxBytes:            x.RxBytes,
+			TxBytesPerS:        x.TxBytesPerS,
+			RxBytesPerS:        x.RxBytesPerS,
+			DroppedConnections: x.DroppedConnections,
 		}}
 
 	case collector.NetError:

@@ -19,11 +19,23 @@ import "time"
 //   - CONNECTIONS DISAPPEAR. So it sums per-connection INCREASES rather than
 //     differencing a grand total, which cannot go backwards when one entry
 //     leaves.
+//
 //   - A CONNECTION CAN BE OLDER THAN THE OBSERVER, arriving with a large
 //     cumulative count on its first sighting — every connection bootstrapped
-//     from /proc at startup is one. Counting that as traffic invents volume out
-//     of history, so a first sighting sets a baseline and contributes nothing:
-//     the discipline the CPU collector uses at Start.
+//     from /proc at startup is one. Counting that as traffic would invent
+//     volume out of history.
+//
+//     But baselining EVERY first sighting is the opposite error, and a worse
+//     one for the traffic people actually have. A connection that opens and
+//     closes between two reads is seen exactly once, so it contributed nothing
+//     at all: measured on 50,000 short connections each writing a byte, the
+//     axis reported SEVEN bytes. That is every HTTP request.
+//
+//     So the two cases are told apart rather than lumped: Born says whether the
+//     tracer first saw the connection after it attached. A connection born
+//     under observation has no history to invent, so its counters are new bytes
+//     in full; one that predates the observer is baselined as before.
+//
 //   - THERE IS NO CONNECTION ID. The kernel keys its map by the 4-tuple, so
 //     that is the identity here too — and a key's counter going backwards means
 //     the tuple was reused by a new connection, not that bytes were un-sent.
@@ -40,6 +52,7 @@ type netAccumulator struct {
 
 type netCounters struct {
 	tx, rx uint64
+	born   bool
 }
 
 // observe folds one reading of every connection — closed ones included — into
@@ -59,6 +72,7 @@ func (n *netAccumulator) observe(readings []netByteReading, now time.Time) NetTh
 		e := cur[r.Key]
 		e.tx += r.Tx
 		e.rx += r.Rx
+		e.born = e.born || r.Born
 		cur[r.Key] = e
 	}
 
@@ -67,20 +81,27 @@ func (n *netAccumulator) observe(readings []netByteReading, now time.Time) NetTh
 		for k, now := range cur {
 			prev, seen := n.last[k]
 			switch {
-			case !seen:
-				// First sighting: baseline only. Whatever it had already moved
-				// happened before anyone was watching.
-			case now.tx >= prev.tx:
-				dTx += now.tx - prev.tx
-			default:
-				dTx += now.tx // the tuple now names a different connection
-			}
-			switch {
-			case !seen:
-			case now.rx >= prev.rx:
-				dRx += now.rx - prev.rx
-			default:
+			case !seen && now.born:
+				// Born under observation: nothing it carries predates us, so
+				// all of it is new — including a connection that opened, moved
+				// its bytes and closed inside one interval, which is every HTTP
+				// request and is seen exactly once.
+				dTx += now.tx
 				dRx += now.rx
+			case !seen:
+				// Older than the observer: baseline only. Whatever it had
+				// already moved happened before anyone was watching.
+			default:
+				if now.tx >= prev.tx {
+					dTx += now.tx - prev.tx
+				} else {
+					dTx += now.tx // the tuple now names a different connection
+				}
+				if now.rx >= prev.rx {
+					dRx += now.rx - prev.rx
+				} else {
+					dRx += now.rx
+				}
 			}
 		}
 	}
@@ -109,6 +130,9 @@ func (n *netAccumulator) observe(readings []netByteReading, now time.Time) NetTh
 type netByteReading struct {
 	Key    string
 	Tx, Rx uint64
+	// Born is true when the tracer first saw this connection after attaching,
+	// which is what makes its counters new traffic rather than history.
+	Born bool
 }
 
 // netTupleKey identifies a connection by the 4-tuple the kernel keys its own
