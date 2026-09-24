@@ -247,7 +247,9 @@ func main() {
 
 		opts := serve.Options{TLS: serveTLS}
 		if *export {
-			opts.JSONLPath = fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405"))
+			// Absolute, because a --serve process rarely shares a working
+			// directory with whoever will go looking for the file.
+			opts.JSONLPath = tui.AbsPath(fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405")))
 		}
 		// No --pid and no --cgroup: serve whatever pid each subscriber asks
 		// for, starting and stopping collectors with its subscribers (#72).

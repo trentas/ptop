@@ -143,9 +143,13 @@ type Model struct {
 	StartedAt   time.Time
 
 	// Collected data
-	CPUHistory     []float64
-	NetTxHist      []float64 // network throughput trend, bytes/s (#125 follow-up)
-	NetRxHist      []float64
+	CPUHistory []float64
+	NetTxHist  []float64 // network throughput trend, bytes/s (#128)
+	NetRxHist  []float64
+	// NetThroughput is the last published sample: monotonic byte totals plus
+	// the current rate (#128). Kept because the TOTALS are the diffable part
+	// and cannot be recovered from the rate histories the panel draws.
+	NetThroughput  collector.NetThroughputSample
 	SyscallCounts  map[string]uint64
 	NetConns       []collector.NetConn
 	NetErrors      []collector.NetError // eBPF RST/retransmit anomalies (#56), newest-first
@@ -356,7 +360,7 @@ func NewModel(cfg Config) Model {
 	if cfg.Export {
 		if f, err := openExportFile(); err == nil {
 			m.exportFile = f
-			m.toast = fmt.Sprintf("✓ export: %s", f.Name())
+			m.toast = fmt.Sprintf("✓ export: %s", AbsPath(f.Name()))
 		} else {
 			fmt.Fprintf(os.Stderr, "warning: --export failed: %v\n", err)
 		}
@@ -531,6 +535,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitBus()
 
 	case NetThroughputMsg:
+		m.NetThroughput = collector.NetThroughputSample(v)
 		// Published, not derived (#128). The trend cannot be recovered from
 		// NetConns: a connection leaves that list the moment it closes and its
 		// bytes leave with it, so a total summed here sawtoothed back to zero

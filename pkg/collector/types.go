@@ -27,14 +27,14 @@ type CPUSite struct {
 	// Addr is the instruction pointer of the DOMINANT sample in this bucket —
 	// representative, not exhaustive. Line is that sample's line, so it is the
 	// HOTTEST line inside Func rather than the function's declaration.
-	Addr    uint64
-	AddrHex string // "0x…" raw-address fallback
-	Func    string // resolved function name ("" when only the module resolved)
-	File    string // source file ("" when the module carries no line info)
-	Line    int    // hottest line within Func (0 if unknown)
-	Module  string // backing module basename ("" if unresolved)
-	Offset  uint64 // module-relative offset — comparable across runs/ASLR
-	StackID int32  // kernel stack-map id (<0 unknown); resolves to full frames
+	Addr    uint64 `json:"addr"`
+	AddrHex string `json:"addr_hex"` // "0x…" raw-address fallback
+	Func    string `json:"func"`     // resolved function name ("" when only the module resolved)
+	File    string `json:"file"`     // source file ("" when the module carries no line info)
+	Line    int    `json:"line"`     // hottest line within Func (0 if unknown)
+	Module  string `json:"module"`   // backing module basename ("" if unresolved)
+	Offset  uint64 `json:"offset"`   // module-relative offset — comparable across runs/ASLR
+	StackID int32  `json:"stack_id"` // kernel stack-map id (<0 unknown); resolves to full frames
 
 	// Samples is how many samples landed in this function during the window,
 	// and SharePct its share of CPUProfile.TotalSamples.
@@ -44,8 +44,8 @@ type CPUSite struct {
 	// for a rough top-N and NOT enough to assert that a function went from 12%
 	// to 18%. Without the count a consumer reports sampling noise as a
 	// behavioural regression.
-	Samples  uint64
-	SharePct float64
+	Samples  uint64  `json:"samples"`
+	SharePct float64 `json:"share_pct"`
 }
 
 // CPUProfile is the periodic per-function CPU attribution snapshot (#125) —
@@ -57,14 +57,14 @@ type CPUSite struct {
 // itself — and inherits this axis's sampling uncertainty by doing so, which is
 // why ptop does not do that multiplication anywhere.
 type CPUProfile struct {
-	Timestamp time.Time
-	Sites     []CPUSite
+	Timestamp time.Time `json:"timestamp"`
+	Sites     []CPUSite `json:"sites"`
 
 	// TotalSamples is every sample that caught the target on-CPU in this
 	// window, INCLUDING the unresolved ones. It is the denominator of every
 	// SharePct and the ruler a consumer uses to decide what the profile can
 	// carry.
-	TotalSamples uint64
+	TotalSamples uint64 `json:"total_samples"`
 
 	// UnresolvedSamples is the samples whose leaf could not be established at
 	// all — bpf_get_stackid failed, or nothing symbolized the address. They are
@@ -80,12 +80,12 @@ type CPUProfile struct {
 	//
 	// Because they are in TotalSamples but not in Sites, the SharePct values
 	// sum to LESS than 100 and the shortfall is exactly the blind fraction.
-	UnresolvedSamples uint64
+	UnresolvedSamples uint64 `json:"unresolved_samples"`
 
 	// WindowMs is the wall time this window covers. Sites are per-window, not
 	// cumulative: a share over the whole capture hides a regression that
 	// started a minute ago.
-	WindowMs uint64
+	WindowMs uint64 `json:"window_ms"`
 
 	// SampleRateHz is what the kernel ACTUALLY delivered, per CPU, measured
 	// over this window; RequestedRateHz is what was asked for. #108 measured
@@ -93,16 +93,16 @@ type CPUProfile struct {
 	// period is re-derived at scheduler ticks, which do not run on an idle
 	// CPU. Nothing here divides by the requested rate; it is published so the
 	// gap is visible rather than assumed away.
-	SampleRateHz    float64
-	RequestedRateHz float64
+	SampleRateHz    float64 `json:"sample_rate_hz"`
+	RequestedRateHz float64 `json:"requested_rate_hz"`
 
 	// TotalSites is how many distinct functions this window saw before Sites
 	// was cut to the largest few, and OmittedSamples the volume the cut left
 	// out. Equal counts mean the list is a census and a function's absence
 	// means it took no samples; otherwise OmittedSamples bounds what any one
 	// missing function can account for. Same contract as HeapStats (#109).
-	TotalSites     uint32
-	OmittedSamples uint64
+	TotalSites     uint32 `json:"total_sites"`
+	OmittedSamples uint64 `json:"omitted_samples"`
 }
 
 // ─── Syscalls ─────────────────────────────────────────────────────────────────
@@ -143,17 +143,17 @@ type NetConn struct {
 type NetThroughputSample struct {
 	// TxBytes and RxBytes are cumulative since Start, across every connection
 	// the target has had — including the ones that have since closed.
-	TxBytes uint64
-	RxBytes uint64
+	TxBytes uint64 `json:"tx_bytes"`
+	RxBytes uint64 `json:"rx_bytes"`
 
 	// TxBytesPerS and RxBytesPerS are the rate over the interval between the
 	// last two observations. Derived here rather than by each consumer: the
 	// derivation needs the closed connections, which are exactly what the
 	// published list does not have.
-	TxBytesPerS float64
-	RxBytesPerS float64
+	TxBytesPerS float64 `json:"tx_bytes_per_s"`
+	RxBytesPerS float64 `json:"rx_bytes_per_s"`
 
-	Timestamp time.Time
+	Timestamp time.Time `json:"timestamp"`
 }
 
 // NetError is a kernel-observed network failure (#56), correlated to a

@@ -163,3 +163,29 @@ func TestCPUProfileIsShedAsASnapshot(t *testing.T) {
 		t.Error("CPUProfile is a periodic snapshot; classing it per-occurrence lets a flood shed it")
 	}
 }
+
+// A frame with neither a function nor a module is not a site: nothing can name
+// it. Letting it into the ranking published a lie — measured on a real capture,
+// three samples at a bare 0xfa5ac80bb7d0 sat in the list as a row with no name
+// while unresolved_samples read 0, so the axis claimed to have named everything
+// it saw.
+func TestFoldCPUSitesTreatsANamelessAddressAsUnresolved(t *testing.T) {
+	sites, unresolved := foldCPUSites([]rawCPUSite{
+		rawAt(0x1000, "main.hot", "app", 10, 1, 500),
+		{Addr: 0xfa5ac80bb7d0, StackID: 7, Samples: 3}, // outside every mapped module
+		{Addr: 0, StackID: -14, Samples: 2},            // the walk failed outright
+	})
+	if unresolved != 5 {
+		t.Errorf("unresolved = %d, want 5 — a nameless address is not a named site", unresolved)
+	}
+	if len(sites) != 1 || sites[0].Func != "main.hot" {
+		t.Fatalf("only the named function belongs in the list, got %+v", sites)
+	}
+	// And it must still be a site when the module alone is known.
+	sites, unresolved = foldCPUSites([]rawCPUSite{
+		rawAt(0x7f00, "", "libfoo.so", 0, 1, 9),
+	})
+	if unresolved != 0 || len(sites) != 1 || sites[0].Module != "libfoo.so" {
+		t.Errorf("a module without a symbol is still an answer: sites=%+v unresolved=%d", sites, unresolved)
+	}
+}

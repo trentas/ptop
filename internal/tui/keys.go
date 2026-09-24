@@ -135,7 +135,7 @@ func (m Model) handleKey(msg tea.KeyMsg) (Model, tea.Cmd) {
 			return m, clearToastAfter(toastTTL)
 		}
 		m.exportFile = f
-		m.toast = fmtToast("✓ export: %s", f.Name())
+		m.toast = fmtToast("✓ export: %s", AbsPath(f.Name()))
 		return m, tea.Batch(exportTick(), clearToastAfter(toastTTL))
 	}
 	return m, nil

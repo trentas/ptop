@@ -36,8 +36,9 @@ type rawCPUSite struct {
 // mapped image but no symbol — "the time is in libfoo.so, function unknown" is
 // true, useful and keeps the list rankable, where folding a stripped binary by
 // instruction offset would fragment it exactly the way folding by address does.
-// By address only when even the module is unknown, which means /proc/<pid>/maps
-// did not cover it and there is no coarser identity available to honestly use.
+// There is no third branch. An address with neither a function nor a module is
+// not a site at all — nothing can name it — so foldCPUSites routes it to the
+// unresolved count before reaching here.
 func cpuFoldKey(r rawCPUSite) string { return cpuSiteOf(r).Key() }
 
 // Key is the identity two samples must share to be the same site — see
@@ -60,6 +61,9 @@ func (s CPUSite) Key() string {
 	case s.Module != "":
 		return "m\x00" + s.Module
 	default:
+		// Unreachable from foldCPUSites, which sends a frame with neither name
+		// to the unresolved count. Kept as a total function for any other
+		// caller, keyed so two such frames never merge.
 		return fmt.Sprintf("a\x00%x", s.Addr)
 	}
 }
@@ -85,7 +89,16 @@ func foldCPUSites(raw []rawCPUSite) (sites []CPUSite, unresolved uint64) {
 	order := make([]string, 0, len(raw))
 	by := make(map[string]*acc, len(raw))
 	for _, r := range raw {
-		if r.Addr == 0 {
+		// No address, or an address that fell outside every mapped module: in
+		// both cases nothing can name it, and in both cases it belongs in the
+		// unresolved count rather than in the ranking.
+		//
+		// Letting the second kind through was measured to publish a lie: a
+		// capture with three samples at a bare 0xfa5ac80bb7d0 reported
+		// unresolved_samples 0 while that address sat in the list as a site,
+		// so the axis claimed to have named everything it saw and then showed
+		// a row with no name on it.
+		if r.Addr == 0 || (r.Frame.Func == "" && r.Frame.Module == "") {
 			unresolved += r.Samples
 			continue
 		}

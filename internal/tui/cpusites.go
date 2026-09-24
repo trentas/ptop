@@ -50,8 +50,9 @@ type cpuSiteSummary struct {
 	Requested  float64 // the rate that was asked for
 
 	// Omitted is the samples the COLLECTOR's own top-N cut left out, summed
-	// over the window, and TotalSites the largest number of distinct functions
-	// any one profile saw.
+	// over the window, and TotalSites how many distinct functions the window
+	// holds — a LOWER BOUND when Omitted is non-zero, since the cut removed
+	// rows whose identities never arrived.
 	//
 	// Carried so the panel can say the list is a selection rather than a
 	// census. Without it a reader watching a function drop out cannot tell "it
@@ -144,6 +145,16 @@ func (w cpuSiteWindow) fold() cpuSiteSummary {
 	}
 	if out.WindowMs > 0 {
 		out.RateHz = firedWeighted / float64(out.WindowMs)
+	}
+
+	// The window's own distinct-site count, not the largest any single profile
+	// reported. Those are different numbers: each profile counts what it saw in
+	// one second, and the union over thirty of them is larger. Taking the max
+	// published total_sites=4 beside a list of FIVE — a count smaller than the
+	// thing it counts, which reads as nonsense to anyone comparing the two to
+	// decide whether the list is a census.
+	if len(by) > int(out.TotalSites) {
+		out.TotalSites = uint32(len(by))
 	}
 
 	out.Sites = make([]collector.CPUSite, 0, len(order))
