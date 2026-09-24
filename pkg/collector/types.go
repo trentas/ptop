@@ -30,6 +30,36 @@ type NetConn struct {
 	RxBytes   uint64
 }
 
+// NetThroughputSample is the target's network volume: monotonic byte totals
+// since the collector attached, and the rate over the last interval (#128).
+//
+// It exists because the connection list cannot carry this. A connection is
+// dropped from the list the moment it closes — correctly, it is not active —
+// and its bytes left with it, so the totals summed over a snapshot SAWTOOTHED
+// back to zero every time a transfer finished. Measured on a loopback workload:
+// 0 → 2.5MB → 0 → 3.3MB → 0. A typical HTTP connection lives under a second, so
+// for anything speaking HTTP most of the bytes were visible only while in
+// flight and then vanished, which reads as traffic stopping rather than as a
+// connection closing.
+//
+// These totals only grow. A closed connection's final bytes are counted once
+// and stay counted.
+type NetThroughputSample struct {
+	// TxBytes and RxBytes are cumulative since Start, across every connection
+	// the target has had — including the ones that have since closed.
+	TxBytes uint64
+	RxBytes uint64
+
+	// TxBytesPerS and RxBytesPerS are the rate over the interval between the
+	// last two observations. Derived here rather than by each consumer: the
+	// derivation needs the closed connections, which are exactly what the
+	// published list does not have.
+	TxBytesPerS float64
+	RxBytesPerS float64
+
+	Timestamp time.Time
+}
+
 // NetError is a kernel-observed network failure (#56), correlated to a
 // connection by its peer 5-tuple. Kind is "refused" (RST while still
 // connecting), "reset" (RST mid-stream), or "retransmit" (a tcp_retransmit_skb

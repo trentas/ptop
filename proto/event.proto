@@ -95,6 +95,7 @@ message Event {
     ProcContext proc_context = 28; // #60 — periodic namespace/cgroup/identity snapshot
     ProcLifecycleEvent proc_lifecycle = 29; // #60 — exec lineage (fork/exec/exit)
     SecurityEvent security = 30; // #59 — LSM decision / runtime executable mapping
+    NetThroughputSample net_throughput = 31; // #128 — monotonic network volume + rate
   }
 }
 
@@ -126,6 +127,34 @@ message NetConn {
 }
 message NetworkSnapshot {
   repeated NetConn conns = 1;
+}
+
+// NetThroughputSample is the target's network VOLUME: byte totals that only
+// grow, and the rate over the last interval (#128).
+//
+// It exists because NetworkSnapshot cannot carry this. A connection leaves that
+// list the moment it closes — correctly, it is no longer active — and its bytes
+// left with it, so totals summed over the list sawtoothed back to zero every
+// time a transfer finished: measured, 0 → 2.5MB → 0 → 3.3MB → 0. A typical HTTP
+// connection lives under a second, so for anything speaking HTTP most of the
+// volume was visible only while in flight, and its disappearance reads as
+// traffic stopping rather than as a connection closing.
+//
+// Do NOT derive these by summing NetworkSnapshot.conns; that is the bug. The
+// derivation needs the closed connections, which only the collector sees.
+message NetThroughputSample {
+  // Cumulative since the collector attached, across every connection the
+  // target has had, closed ones included. These only ever grow.
+  //
+  // They start at zero at attach rather than carrying whatever a connection had
+  // already moved beforehand: a connection older than the observer would
+  // otherwise invent volume out of history on the first sample.
+  uint64 tx_bytes = 1;
+  uint64 rx_bytes = 2;
+  // Over the interval between the last two observations. Zero on the first
+  // sample, which has no interval behind it.
+  double tx_bytes_per_s = 3;
+  double rx_bytes_per_s = 4;
 }
 
 // NetErrorEvent is a kernel-observed network failure (#56), correlated to a

@@ -37,6 +37,10 @@ type NetworkEBPFCollector struct {
 	resolver *SocketResolver
 	ch       chan interface{}
 	stop     chan struct{}
+
+	// tput accumulates the target's monotonic byte totals across every
+	// connection the map holds, closed ones included (#128). publishLoop-only.
+	tput netAccumulator
 }
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
@@ -108,8 +112,9 @@ func (c *NetworkEBPFCollector) publishLoop() {
 			if tick%reseedEvery == 0 {
 				c.bootstrapFromProc()
 			}
-			conns := c.snapshot()
+			conns, tput := c.snapshot()
 			publish(c.ch, conns)
+			publish(c.ch, tput)
 		}
 	}
 }
@@ -194,14 +199,31 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 // snapshot reads the map and converts each entry into a NetConn. Filters
 // out CLOSE (7) — closed connections aren't relevant to the "Active
 // Connections" view. Sorts by most recent activity first.
-func (c *NetworkEBPFCollector) snapshot() []NetConn {
+// snapshot returns the ACTIVE connections and the target's cumulative volume.
+//
+// The two come from one read of the map on purpose. The list drops closed
+// connections, which is right — the panel is called Active Connections — but
+// their bytes must not drop with them, and by the time a caller has the list
+// they are gone. So the accumulator is fed here, from every entry the map
+// holds, before the filter (#128).
+func (c *NetworkEBPFCollector) snapshot() ([]NetConn, NetThroughputSample) {
 	if c.tracer == nil {
-		return nil
+		return nil, NetThroughputSample{}
 	}
 	snaps, err := c.tracer.Stats()
 	if err != nil {
-		return nil
+		return nil, NetThroughputSample{}
 	}
+
+	readings := make([]netByteReading, 0, len(snaps))
+	for _, s := range snaps {
+		readings = append(readings, netByteReading{
+			Key: netTupleKey(s.SAddr.String(), s.SPort, s.DAddr.String(), s.DPort),
+			Tx:  s.TxBytes, Rx: s.RxBytes,
+		})
+	}
+	tput := c.tput.observe(readings, time.Now())
+
 	out := make([]NetConn, 0, len(snaps))
 	for _, s := range snaps {
 		if s.State == tcpStateCLOSE {
@@ -222,7 +244,7 @@ func (c *NetworkEBPFCollector) snapshot() []NetConn {
 	sort.SliceStable(out, func(i, j int) bool {
 		return snaps[i].LastNs > snaps[j].LastNs
 	})
-	return out
+	return out, tput
 }
 
 // Kernel TCP states (linux/tcp.h) — also used in sockets.go for the
