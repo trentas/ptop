@@ -31,7 +31,12 @@ import (
 // reason. The corresponding view then simulates, as it does for any subsystem
 // with no collector behind it.
 const (
-	SubsystemCPU       = "cpu"
+	SubsystemCPU = "cpu"
+	// SubsystemCPUProf is the sampled per-function attribution axis (#125),
+	// separate from SubsystemCPU on purpose: it is a second probe with its own
+	// cost, answering WHERE rather than HOW MUCH, and an operator has to be
+	// able to switch one off without losing the other.
+	SubsystemCPUProf   = "cpuprof"
 	SubsystemThreads   = "threads"
 	SubsystemMemory    = "memory"
 	SubsystemHeap      = "heap"
@@ -50,7 +55,7 @@ const (
 // silently disable nothing — the failure mode of a misspelled --disable is a
 // benchmark that measures the wrong configuration and reports it confidently.
 var knownSubsystems = map[string]bool{
-	SubsystemCPU: true, SubsystemThreads: true, SubsystemMemory: true,
+	SubsystemCPU: true, SubsystemCPUProf: true, SubsystemThreads: true, SubsystemMemory: true,
 	SubsystemHeap: true, SubsystemSyscalls: true, SubsystemIO: true,
 	SubsystemNetwork: true, SubsystemFutex: true, SubsystemSignals: true,
 	SubsystemLifecycle: true, SubsystemSecurity: true, SubsystemTLS: true,

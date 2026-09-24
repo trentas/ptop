@@ -76,6 +76,7 @@ ptop/
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
+│   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
 │   │   │   ├── io.bpf.c           VFS read/write/fsync
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes
 │   │   │   ├── threads.bpf.c      sched_switch
@@ -99,6 +100,8 @@ ptop/
 │   │   ├── caps_stub.go           non-Linux stub
 │   │   ├── caps_test.go, capgates_test.go
 │   │   ├── cpu.go                 on-CPU time tracer (sched_switch)
+│   │   ├── cpuprof.go             perf_event stack sampler loader (#125)
+│   │   ├── cpuprof_spec.go        sampling-rate policy (build-tag-free, #125)
 │   │   ├── syscalls.go            raw_syscalls tracepoint loader
 │   │   ├── network.go             sock tracepoints + connection seeding
 │   │   ├── io.go                  VFS syscall tracker loader
@@ -839,13 +842,26 @@ and only the first looks like a capability question:
 - **A tracepoint** resolves its numeric event id from
   `<tracefs>/events/<group>/<name>/id`, so an unreadable tracefs takes out every
   tracepoint collector at once.
+- **A perf_event program** (`cpuprof`, #125) does neither of those two reads. It
+  loads as `BPF_PROG_TYPE_PERF_EVENT`, and cilium/ebpf stamps the kernel version
+  only into a `Kprobe`-type program (`prog.go`), so `/proc/self/mem` is never
+  opened; and `perf_event_open(PERF_TYPE_SOFTWARE)` resolves no event id, so
+  tracefs is never read. Its gate is `CAP_PERFMON` for a CPU-wide event, which
+  is fatal-tier and therefore always held. **Consequence worth knowing: on a
+  host provisioned with the old `cap_bpf,cap_perfmon`, `cpuprof` is the only
+  axis that still resolves code addresses** — `heap`, the other one carrying
+  `func` and `file:line`, needs three more capabilities before it attaches at
+  all. `TestOutlookPerfEventSamplerSurvivesTheOldSetcap` pins that, including
+  the reason: adding a tracepoint or kprobe to `cpuprof.bpf.c` would move it
+  under `CAP_DAC_READ_SEARCH` and take the property away.
 - **Any pid-mode collector** stats `/proc/<pid>/ns/pid` to resolve the target's
   namespace (`resolvePIDTarget`, `target.go`), which is a ptrace-mode read. For
   a target owned by another user that needs `CAP_SYS_PTRACE`, and it takes out
   *everything*, not just the two lanes that read the target's maps.
 
-And the part that catches people: **the `setcap` is itself what breaks the last
-two.** The kernel sets `secureexec` — and with `fs.suid_dumpable=2`, marks the
+And the part that catches people: **the `setcap` is itself what breaks the
+`/proc/self/mem` read and the tracefs read** (named rather than counted, since
+a fourth mechanism has since been added above). The kernel sets `secureexec` — and with `fs.suid_dumpable=2`, marks the
 process non-dumpable — whenever an `exec` gains credentials the parent did not
 have. `task_dump_owner()` then hands that process's own `/proc/self/*` to root,
 so ptop as uid 1000 can no longer read its own `/proc/self/mem` (mode 0600).

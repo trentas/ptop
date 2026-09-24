@@ -35,6 +35,19 @@ import (
 //     <tracefs>/events/<group>/<name>/id, so an unreadable tracefs takes out
 //     every tracepoint collector at once.
 //
+//   - A PERF_EVENT program (#125's sampler) does neither. It loads as
+//     BPF_PROG_TYPE_PERF_EVENT, and cilium/ebpf stamps the kernel version only
+//     into a Kprobe-type program (prog.go), so it never opens
+//     /proc/self/mem; and perf_event_open(PERF_TYPE_SOFTWARE) resolves no
+//     event id, so it never reads tracefs. What it needs is CAP_PERFMON for a
+//     CPU-wide event, which is fatal-tier and therefore always held.
+//
+//     That has a consequence worth stating plainly: on a host provisioned with
+//     the `cap_bpf,cap_perfmon` this README taught for two years, `cpuprof` is
+//     the ONLY axis that still resolves code addresses — `heap`, the other one
+//     carrying func and file:line, needs three more capabilities before it
+//     attaches at all.
+//
 // And here is the part that catches people: the setcap the README recommended
 // is itself what breaks the last two. A binary that gains privilege from a
 // file capability becomes non-dumpable, and a non-dumpable process's own
@@ -157,6 +170,7 @@ const (
 	attachTracepoint attachMechanism = 1 << iota
 	attachKprobe
 	attachUprobe
+	attachPerfEvent
 )
 
 // ebpfCollectors is every collector that attaches something, with how it
@@ -169,6 +183,7 @@ var ebpfCollectors = []struct {
 	procFallback bool
 }{
 	{"cpu", attachTracepoint, true},
+	{"cpuprof", attachPerfEvent, false},
 	{"threads", attachTracepoint, true},
 	{"memory", attachTracepoint | attachKprobe, true},
 	{"io", attachTracepoint, true},

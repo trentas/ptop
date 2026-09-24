@@ -114,6 +114,38 @@ func TestOutlookDACAloneLeavesJustTheUprobePMU(t *testing.T) {
 	}
 }
 
+// The CPU attribution sampler (#125) attaches through neither of the two
+// mechanisms the README's old setcap breaks: SEC("perf_event") loads as
+// BPF_PROG_TYPE_PERF_EVENT, so cilium/ebpf does not stamp the kernel version
+// into it and never opens /proc/self/mem, and perf_event_open(PERF_TYPE_SOFTWARE)
+// resolves no event id, so it never reads tracefs.
+//
+// That makes it the only axis carrying func/file:line that survives a host
+// provisioned the old way — heap, the other one, needs three more capabilities.
+// Pinned on its own rather than left to the exact-set assertion above, because
+// the reason is the point: adding a tracepoint or a kprobe to cpuprof.bpf.c
+// would move it under CAP_DAC_READ_SEARCH and quietly take that property away.
+func TestOutlookPerfEventSamplerSurvivesTheOldSetcap(t *testing.T) {
+	m := outlookFor(t, readmeSetcap())
+	if !m["cpuprof"].WillRun {
+		t.Fatalf("cpuprof should run under cap_bpf,cap_perfmon alone: %s", m["cpuprof"].Blocker)
+	}
+	// The premise: this is the grant under which heap — the other axis with
+	// func and file:line — is gone.
+	if m["heap"].WillRun {
+		t.Fatal("premise broken: heap is supposed to be blocked by this grant")
+	}
+	for _, c := range ebpfCollectors {
+		if c.name != "cpuprof" {
+			continue
+		}
+		if c.how&(attachKprobe|attachUprobe|attachTracepoint) != 0 {
+			t.Errorf("cpuprof attaches %s: it no longer escapes the reads the old setcap breaks",
+				mechanismString(c.how))
+		}
+	}
+}
+
 func TestOutlookUnreadableTracefsTakesOutEveryTracepointCollector(t *testing.T) {
 	s := fullyPrivileged()
 	s.TracefsReadable = false // everything else in place, so tracefs is the only fault
@@ -287,12 +319,13 @@ func TestGatesCarryScopeAndMechanism(t *testing.T) {
 	}
 }
 
-var secRE = regexp.MustCompile(`SEC\("(kprobe|kretprobe|uprobe|uretprobe|tracepoint)`)
+var secRE = regexp.MustCompile(`SEC\("(kprobe|kretprobe|uprobe|uretprobe|tracepoint|perf_event)`)
 
 // programToCollector maps a BPF object to the subsystem name --disable uses.
 // Two objects feed heap: the libc allocator lane and the Go one.
 var programToCollector = map[string]string{
-	"cpu.bpf.c": "cpu", "threads.bpf.c": "threads", "memory.bpf.c": "memory",
+	"cpu.bpf.c": "cpu", "cpuprof.bpf.c": "cpuprof",
+	"threads.bpf.c": "threads", "memory.bpf.c": "memory",
 	"io.bpf.c": "io", "network.bpf.c": "network", "syscalls.bpf.c": "syscalls",
 	"futex.bpf.c": "futex", "security.bpf.c": "security", "proc.bpf.c": "lifecycle",
 	"signal.bpf.c": "signals", "heap.bpf.c": "heap", "goalloc.bpf.c": "heap",
@@ -328,6 +361,8 @@ func TestEBPFCollectorsMatchPrograms(t *testing.T) {
 				fromSource[name] |= attachKprobe
 			case "uprobe", "uretprobe":
 				fromSource[name] |= attachUprobe
+			case "perf_event":
+				fromSource[name] |= attachPerfEvent
 			}
 		}
 	}
@@ -361,6 +396,9 @@ func mechanismString(m attachMechanism) string {
 	}
 	if m&attachUprobe != 0 {
 		parts = append(parts, "uprobe")
+	}
+	if m&attachPerfEvent != 0 {
+		parts = append(parts, "perf_event")
 	}
 	if len(parts) == 0 {
 		return "nothing"

@@ -10,6 +10,7 @@ package bpf
 // object into a Start error, which is what the caller already handles.
 
 var cpuBPFObj []byte
+var cpuprofBPFObj []byte
 var futexBPFObj []byte
 var goallocBPFObj []byte
 var heapBPFObj []byte
