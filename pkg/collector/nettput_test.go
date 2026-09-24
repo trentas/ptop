@@ -5,86 +5,102 @@ import (
 	"time"
 )
 
-func conn(remote string, tx, rx uint64) NetConn {
-	return NetConn{Type: "TCP", Remote: remote, TxBytes: tx, RxBytes: rx}
+func rd(key string, tx, rx uint64) netByteReading {
+	return netByteReading{Key: key, Tx: tx, Rx: rx}
 }
 
-func TestNetThroughputFirstSnapshotIsABaseline(t *testing.T) {
-	var n NetThroughput
+func TestNetTotalsFirstReadingIsABaseline(t *testing.T) {
+	var n netAccumulator
 	t0 := time.Now()
-	// A connection that has already moved a megabyte before ptop attached.
-	tx, rx := n.Observe([]NetConn{conn("a:1", 1<<20, 1<<20)}, t0)
-	if tx != 0 || rx != 0 {
-		t.Errorf("first snapshot reported %v/%v — it invented traffic out of history", tx, rx)
+	// A connection that already moved a megabyte before ptop attached — every
+	// connection bootstrapped from /proc looks like this.
+	s := n.observe([]netByteReading{rd("a", 1<<20, 1<<20)}, t0)
+	if s.TxBytes != 0 || s.RxBytes != 0 || s.TxBytesPerS != 0 {
+		t.Errorf("first reading reported %+v — it invented volume out of history", s)
 	}
-	tx, rx = n.Observe([]NetConn{conn("a:1", 1<<20+1000, 1<<20+2000)}, t0.Add(time.Second))
-	if tx != 1000 || rx != 2000 {
-		t.Errorf("got %v/%v, want 1000/2000 bytes per second", tx, rx)
+	s = n.observe([]netByteReading{rd("a", 1<<20+1000, 1<<20+2000)}, t0.Add(time.Second))
+	if s.TxBytes != 1000 || s.RxBytes != 2000 {
+		t.Errorf("totals = %d/%d, want 1000/2000", s.TxBytes, s.RxBytes)
 	}
-}
-
-// The defect this exists for: the snapshot drops closed connections, so a sum
-// over all of them FALLS when a transfer finishes, and a rate differenced from
-// that total goes negative exactly when the network was busiest.
-func TestNetThroughputSurvivesAClosedConnection(t *testing.T) {
-	var n NetThroughput
-	t0 := time.Now()
-	n.Observe([]NetConn{conn("a:1", 1000, 0), conn("b:2", 500_000, 0)}, t0)
-	// b finished and left the snapshot; a moved 200 more bytes.
-	tx, _ := n.Observe([]NetConn{conn("a:1", 1200, 0)}, t0.Add(time.Second))
-	if tx < 0 {
-		t.Fatalf("negative throughput: %v", tx)
-	}
-	if tx != 200 {
-		t.Errorf("got %v B/s, want 200 — differencing the TOTAL would have said -499800", tx)
+	if s.TxBytesPerS != 1000 || s.RxBytesPerS != 2000 {
+		t.Errorf("rates = %v/%v, want 1000/2000 per second", s.TxBytesPerS, s.RxBytesPerS)
 	}
 }
 
-// A key whose counter went backwards is a reused peer address, not negative
-// traffic.
-func TestNetThroughputTreatsABackwardsCounterAsAReset(t *testing.T) {
-	var n NetThroughput
+// The defect this exists for, stated as a test: a connection that finishes and
+// leaves must not take its bytes with it. The published list sawtoothed to zero
+// every time a transfer completed — 0 → 2.5MB → 0 — which reads as traffic
+// stopping rather than as a connection closing.
+func TestNetTotalsSurviveAConnectionLeaving(t *testing.T) {
+	var n netAccumulator
 	t0 := time.Now()
-	n.Observe([]NetConn{conn("a:1", 900_000, 0)}, t0)
-	tx, _ := n.Observe([]NetConn{conn("a:1", 300, 0)}, t0.Add(time.Second))
-	if tx != 300 {
-		t.Errorf("got %v, want the new connection's 300 bytes", tx)
+	n.observe([]netByteReading{rd("keep", 0, 0), rd("transfer", 0, 0)}, t0)
+	s := n.observe([]netByteReading{rd("keep", 100, 0), rd("transfer", 2_500_000, 0)}, t0.Add(time.Second))
+	if s.TxBytes != 2_500_100 {
+		t.Fatalf("totals = %d, want 2500100", s.TxBytes)
+	}
+	// "transfer" closed and was recycled out of the map.
+	s = n.observe([]netByteReading{rd("keep", 200, 0)}, t0.Add(2*time.Second))
+	if s.TxBytes != 2_500_200 {
+		t.Errorf("totals = %d after a connection left, want 2500200 — they must not go back", s.TxBytes)
+	}
+	if s.TxBytesPerS != 100 {
+		t.Errorf("rate = %v, want 100; differencing the grand total would report -2499900", s.TxBytesPerS)
 	}
 }
 
-// Several connections to one peer fold under one key, and their bytes must sum
-// rather than the last one seen replacing the others.
-func TestNetThroughputSumsConnectionsSharingAKey(t *testing.T) {
-	var n NetThroughput
+// Monotonic is the contract. Nothing a connection does may make the totals fall.
+func TestNetTotalsNeverDecrease(t *testing.T) {
+	var n netAccumulator
 	t0 := time.Now()
-	n.Observe([]NetConn{conn("a:1", 100, 0), conn("a:1", 200, 0)}, t0)
-	tx, _ := n.Observe([]NetConn{conn("a:1", 150, 0), conn("a:1", 400, 0)}, t0.Add(time.Second))
-	if tx != 250 {
-		t.Errorf("got %v, want 250 (300 → 550); taking one connection alone would say 200", tx)
+	prev := uint64(0)
+	readings := [][]netByteReading{
+		{rd("a", 0, 0)},
+		{rd("a", 5000, 0), rd("b", 9000, 0)},
+		{rd("a", 5000, 0)}, // b left
+		{},                 // everything left
+		{rd("c", 700, 0)},  // a fresh tuple
+		{rd("c", 10, 0)},   // the tuple was reused by a new connection
+	}
+	for i, r := range readings {
+		s := n.observe(r, t0.Add(time.Duration(i)*time.Second))
+		if s.TxBytes < prev {
+			t.Fatalf("step %d: totals fell from %d to %d", i, prev, s.TxBytes)
+		}
+		if s.TxBytesPerS < 0 {
+			t.Fatalf("step %d: negative rate %v", i, s.TxBytesPerS)
+		}
+		prev = s.TxBytes
 	}
 }
 
-func TestNetThroughputDividesByTheRealInterval(t *testing.T) {
-	var n NetThroughput
+func TestNetTotalsDivideByTheRealInterval(t *testing.T) {
+	var n netAccumulator
 	t0 := time.Now()
-	n.Observe([]NetConn{conn("a:1", 0, 0)}, t0)
-	tx, _ := n.Observe([]NetConn{conn("a:1", 1000, 0)}, t0.Add(4*time.Second))
-	if tx != 250 {
-		t.Errorf("got %v B/s over 4s, want 250", tx)
+	n.observe([]netByteReading{rd("a", 0, 0)}, t0)
+	s := n.observe([]netByteReading{rd("a", 1000, 0)}, t0.Add(4*time.Second))
+	if s.TxBytesPerS != 250 {
+		t.Errorf("rate = %v over 4s, want 250", s.TxBytesPerS)
 	}
-	// A repeated timestamp must not divide by zero.
-	tx2, _ := n.Observe([]NetConn{conn("a:1", 2000, 0)}, t0.Add(4*time.Second))
-	if tx2 != 0 {
-		t.Errorf("a zero interval should report 0, got %v", tx2)
+	// A repeated timestamp must not divide by zero, and must not lose the bytes.
+	s = n.observe([]netByteReading{rd("a", 3000, 0)}, t0.Add(4*time.Second))
+	if s.TxBytesPerS != 0 {
+		t.Errorf("a zero interval has no rate, got %v", s.TxBytesPerS)
+	}
+	if s.TxBytes != 3000 {
+		t.Errorf("the bytes must still be counted, got %d", s.TxBytes)
 	}
 }
 
-func TestNetThroughputEmptySnapshotIsQuietNotNegative(t *testing.T) {
-	var n NetThroughput
-	t0 := time.Now()
-	n.Observe([]NetConn{conn("a:1", 5000, 5000)}, t0)
-	tx, rx := n.Observe(nil, t0.Add(time.Second))
-	if tx != 0 || rx != 0 {
-		t.Errorf("every connection closing should read as 0, got %v/%v", tx, rx)
+// The 4-tuple is the key because NetConn's peer address alone is not unique:
+// two connections to one peer differ only in the local port.
+func TestNetTupleKeySeparatesLocalPorts(t *testing.T) {
+	a := netTupleKey("10.0.0.1", 5000, "10.0.0.2", 443)
+	b := netTupleKey("10.0.0.1", 5001, "10.0.0.2", 443)
+	if a == b {
+		t.Error("two connections to one peer from different local ports are not one connection")
+	}
+	if a != netTupleKey("10.0.0.1", 5000, "10.0.0.2", 443) {
+		t.Error("the key must be stable")
 	}
 }

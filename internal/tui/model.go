@@ -106,6 +106,9 @@ type HeapMsg collector.HeapStats
 // Separate from CpuMsg on purpose: one is exact scheduler-accounted time, the
 // other an estimate from samples, and the panel presents them as such.
 type CPUProfileMsg collector.CPUProfile
+
+// NetThroughputMsg carries the target's network volume and rate (#128).
+type NetThroughputMsg collector.NetThroughputSample
 type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
@@ -252,7 +255,6 @@ type Model struct {
 
 	// IO maxima with slow decay — avoids rescaling sparklines every tick.
 	ioMaxRead  float64
-	netTput    collector.NetThroughput // derives tx/rx rates from cumulative counters
 	netMaxTx   float64
 	netMaxRx   float64
 	ioMaxWrite float64
@@ -500,12 +502,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case NetMsg:
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
-		// The snapshot carries cumulative per-connection counters, so the trend
-		// is derived rather than published. collector.NetThroughput owns that
-		// arithmetic because it is not the subtraction it looks like — see its
-		// doc comment for the three ways a naive total lies.
-		tx, rx := m.netTput.Observe(m.NetConns, time.Now())
-		m.recordNetThroughput(tx, rx)
+		return m, m.waitBus()
+
+	case NetThroughputMsg:
+		// Published, not derived (#128). The trend cannot be recovered from
+		// NetConns: a connection leaves that list the moment it closes and its
+		// bytes leave with it, so a total summed here sawtoothed back to zero
+		// every time a transfer finished. Only the collector sees the closed
+		// connections.
+		m.recordNetThroughput(v.TxBytesPerS, v.RxBytesPerS)
 		return m, m.waitBus()
 
 	case NetErrorMsg:
@@ -1346,6 +1351,8 @@ func busMsg(v interface{}) tea.Msg {
 		return HeapMsg(t)
 	case collector.CPUProfile:
 		return CPUProfileMsg(t)
+	case collector.NetThroughputSample:
+		return NetThroughputMsg(t)
 	case collector.IOWaitSample:
 		return IOWaitMsg(t)
 	case collector.IOThroughputSample:
