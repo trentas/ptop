@@ -64,6 +64,10 @@ type NetErrorRecord struct {
 // NetSnapshot is the user-friendly format returned by Stats() — the 5-tuple
 // already decoded into net.IP + ports in host order, with RTT computed.
 type NetSnapshot struct {
+	// Key is the map key this entry came from, so a caller can delete exactly
+	// what it has finished with (#133). Carried rather than rebuilt: the
+	// decoded address/port fields lose the padding and byte order the key has.
+	Key     NetConnKey
 	Family  uint16 // 2=IPv4, 10=IPv6
 	SAddr   net.IP
 	DAddr   net.IP
@@ -74,16 +78,22 @@ type NetSnapshot struct {
 	TxBytes uint64
 	RxBytes uint64
 	LastNs  uint64
+	// FirstNs is when the tracer first saw this connection, in the
+	// bpf_ktime_get_ns domain. It is what tells a connection born under
+	// observation from one that was already running when ptop attached (#128)
+	// — the two need opposite treatment on their first sighting.
+	FirstNs uint64
 }
 
 // NetTracer loads network.bpf.o, attaches the sock:inet_sock_set_state
 // tracepoint + kprobes on tcp_sendmsg/tcp_cleanup_rbuf, and exposes Stats()
 // to read the map.
 type NetTracer struct {
-	coll  *ebpf.Collection
-	links []link.Link
-	cmap  *ebpf.Map
-	rb    *ringbuf.Reader // #56 — net_error_events channel
+	coll     *ebpf.Collection
+	links    []link.Link
+	cmap     *ebpf.Map
+	statsMap *ebpf.Map       // net_stats: what the map refused to hold (#133)
+	rb       *ringbuf.Reader // #56 — net_error_events channel
 }
 
 func OpenNetTracer(target Target) (*NetTracer, error) {
@@ -119,6 +129,7 @@ func OpenNetTracer(target Target) (*NetTracer, error) {
 		return nil, fmt.Errorf("set net_target_pid: %w", err)
 	}
 
+	t.statsMap = coll.Maps["net_stats"]
 	t.cmap = coll.Maps["net_conn_map"]
 	if t.cmap == nil {
 		t.Close()
@@ -258,6 +269,7 @@ func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 	iter := t.cmap.Iterate()
 	for iter.Next(&k, &v) {
 		out = append(out, NetSnapshot{
+			Key:     k,
 			Family:  k.Family,
 			SAddr:   ipFromKey(k.SAddr, k.Family),
 			DAddr:   ipFromKey(k.DAddr, k.Family),
@@ -268,12 +280,66 @@ func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 			TxBytes: v.TxBytes,
 			RxBytes: v.RxBytes,
 			LastNs:  v.LastSeenNs,
+			FirstNs: v.FirstSeenNs,
 		})
 	}
 	if err := iter.Err(); err != nil {
 		return out, err
 	}
 	return out, nil
+}
+
+// DeleteConns removes entries the caller has finished with.
+//
+// net_conn_map has no eviction of its own: the BPF side never deletes, so a
+// fixed 4096 slots fill and stay full — measured at twelve seconds under
+// short-lived connections, after which the map refuses every new connection
+// with -E2BIG (#133). Pruning belongs here rather than in the program because
+// only userspace knows when an entry has been CONSUMED: the collector folds a
+// closed connection's final bytes into its monotonic totals first, and deletes
+// afterwards, so the volume survives the row (#128).
+//
+// A key that is already gone is not an error — something else may have removed
+// it, or the entry may never have existed.
+func (t *NetTracer) DeleteConns(keys []NetConnKey) error {
+	if t == nil || t.cmap == nil {
+		return errors.New("tracer not initialized")
+	}
+	for i := range keys {
+		if err := t.cmap.Delete(&keys[i]); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+// InsertFailures is how many connections the kernel could not record because
+// net_conn_map was full, summed over CPUs since attach.
+//
+// Non-zero means the axis is blind to that many connections — no row and no
+// bytes, since add_bytes needs the entry. It should stay at zero now that
+// closed entries are pruned; publishing it is what makes that a checkable
+// claim rather than an assumption, and what keeps a saturated map from going
+// quietly blind if the pruning is ever outrun (#112).
+func (t *NetTracer) InsertFailures() (uint64, error) {
+	if t == nil || t.statsMap == nil {
+		return 0, errors.New("tracer not initialized")
+	}
+	var key uint32
+	var perCPU []netStatsRaw
+	if err := t.statsMap.Lookup(&key, &perCPU); err != nil {
+		return 0, err
+	}
+	var total uint64
+	for _, s := range perCPU {
+		total += s.ConnInsertFailed
+	}
+	return total, nil
+}
+
+// netStatsRaw mirrors struct net_stats. Keep byte-for-byte.
+type netStatsRaw struct {
+	ConnInsertFailed uint64
 }
 
 // ipFromKey converts the addr bytes (already in network order) to net.IP.

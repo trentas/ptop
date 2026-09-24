@@ -153,6 +153,17 @@ type NetThroughputSample struct {
 	TxBytesPerS float64 `json:"tx_bytes_per_s"`
 	RxBytesPerS float64 `json:"rx_bytes_per_s"`
 
+	// DroppedConnections is how many connections the kernel could not record
+	// because its connection map was full, cumulative since attach (#133).
+	//
+	// Non-zero means the network axis is blind to that many connections —
+	// neither a row nor their bytes, since the byte counters hang off the same
+	// entry. It rides here because this is the only periodic network payload,
+	// and because a volume figure that silently omits connections is exactly
+	// the kind of number this field exists to qualify: zero is the difference
+	// between a total and a total known to be complete.
+	DroppedConnections uint64 `json:"dropped_connections"`
+
 	Timestamp time.Time `json:"timestamp"`
 }
 

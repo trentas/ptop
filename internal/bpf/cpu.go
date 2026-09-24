@@ -176,6 +176,11 @@ func monotonicNanos() (uint64, error) {
 	return uint64(ts.Sec)*1e9 + uint64(ts.Nsec), nil
 }
 
+// MonotonicNanos is the clock bpf_ktime_get_ns() is based on, for callers that
+// need to compare against a timestamp a BPF program wrote — such as deciding
+// whether a connection was first seen before or after a collector attached.
+func MonotonicNanos() (uint64, error) { return monotonicNanos() }
+
 // NumCPU returns how many CPUs are online — the ceiling the collector clamps
 // its percentage to.
 func (t *CPUTracer) NumCPU() int {
