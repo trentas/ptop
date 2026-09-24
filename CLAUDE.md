@@ -387,6 +387,58 @@ for *how much*, whenever the kernel already accounts the quantity exactly.
 Before adding a counter that has to be divided by an assumed rate, check
 whether something already counts the thing itself.
 
+### …and *where* it went is a second axis, not a second field (#125)
+
+The other half of that rule is that the CPU axis then had a magnitude and no
+address: a hot loop read as "p99 CPU rose" and never named the function, while
+every other axis carried one (heap has `func`/`file:line`, locks have a
+symbolized acquire site, syscalls have a name).
+
+So `cpuprof.bpf.c` samples the target's user stacks through a `perf_event` on
+every online CPU and publishes `CPUProfile` — top-N functions with a sample
+count and a share — **beside** `CpuSample`, never inside it. Both are
+`CATEGORY_CPU`; a consumer separates them by payload type, and nothing in ptop
+multiplies one by the other. A consumer that wants time-in-function multiplies
+`share_pct` by the on-CPU nanoseconds itself, and inherits the sampling
+uncertainty by doing so.
+
+Four things are load-bearing:
+
+- **The sample COUNT ships with the share.** A share alone cannot be refused. A
+  process at 2.5% of a core draws ~150 samples a minute — enough for a rough
+  top-N, not enough to assert a function went from 12% to 18%. Without the
+  count a consumer reports sampling noise as a behavioural regression.
+- **The rate is measured, never the requested one.** `cpuprof_rate` counts every
+  sample the PMU delivers, so `sample_rate_hz` is what the kernel actually ran
+  at and `requested_rate_hz` is what was asked for. Dividing by the requested
+  rate was half of what made the pre-#108 axis wrong.
+- **99Hz, not 100** (`--cpu-sample-hz`, `NormalizeCPUProfHz`) — insurance, and
+  labelled as such. A sampler whose period divides a periodic workload's would
+  land at the same point of every cycle, which is the time-domain shape of the
+  fixed-threshold aliasing above. It could not be reproduced here: an 8ms/2ms
+  duty cycle sampled at exactly 100Hz measured 80/77/79/85 against a true 80,
+  because perf freq mode re-derives its period from the observed rate and the
+  phase dithers. Kept because it costs nothing and a fixed-period sampler would
+  lock — but the repo does not claim a measured defect it did not find.
+- **Sites fold by FUNCTION, not by address.** This is where `foldCallSites`
+  (#109) does *not* transfer: an allocation call site is one call instruction,
+  but a CPU sample lands wherever the PC happened to be, so folding by address
+  shatters one hot function into an entry per sampled instruction. An address
+  that resolved to a module but no symbol folds by *module*; a sample with no
+  usable leaf goes to `unresolved_samples` and never takes a list slot, so the
+  shares sum to less than 100 and the shortfall is the blind fraction. That last
+  bucket is **not** the frame-pointer case, which is the natural guess and is
+  wrong: the leaf comes from the interrupted registers, so a target built
+  without frame pointers is still named and only loses the depth `ResolveStack`
+  returns (measured — one C target built both ways differed by one frame and
+  reported zero unresolved in both arms).
+
+It is **pid-mode only** — not because the kernel filter cannot span a subtree,
+but because folding by function resolves against one process's memory map, so
+across a subtree the same address names a different function in every process.
+That would be a confident wrong answer rather than a gap, which is why it is in
+`cgroupUnsupported` rather than simply left unresolved.
+
 ### The observer's cost is charged to the target
 
 A uprobe runs on the thread that tripped it, so its cost lands in the TARGET's
@@ -583,6 +635,7 @@ ptop --pid <PID> --symbol-cache /srv/symbols   symbols for a STRIPPED module fro
 ptop --pid <PID> --debuginfod            also query $DEBUGINFOD_URLS — network lookup is opt-in
 ptop --pid <PID> --debuginfod-urls https://debuginfod.example   name the servers outright
 ptop --pid <PID> --heap-sample-bytes 0   record EVERY Go allocation (exact per site, very expensive)
+ptop --pid <PID> --cpu-sample-hz 250   CPU attribution: stack samples/s/CPU (default 99, #125)
 ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
 ptop --caps                 which capabilities this binary holds, and which collectors they run

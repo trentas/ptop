@@ -104,6 +104,17 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		statusRowMaybeNA("syscalls", syscallsUnavailable, "no public per-syscall trace on macOS (see #22)",
 			m.usingMockSyscalls, m.syscallsSource),
 		statusRow("cpu", m.usingMockCPU, m.cpuSource),
+		// CPU attribution (#125) is eBPF-only and never simulated: "real via
+		// eBPF" when the sampler attached, else genuinely unavailable (macOS,
+		// --no-ebpf, or attach failure) — never "mock". Listed even though no
+		// panel shows it yet: an overlay that omits a running probe is the same
+		// lie as one that misnames its source.
+		func() string {
+			if m.cpuProfSource != "" {
+				return statusRow("cpu-sites", false, m.cpuProfSource)
+			}
+			return statusRowNA("cpu-sites", "needs eBPF (perf_event stack sampler)")
+		}(),
 		statusRowMaybeNA("io-files", ioFilesUnavailable, "no public per-file VFS hook on macOS (see #22)",
 			m.usingMockIOFiles, m.ioFilesSource),
 		statusRow("network", m.usingMockNet, m.netSource),

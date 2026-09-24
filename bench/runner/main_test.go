@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 func TestMedian(t *testing.T) {
@@ -94,25 +96,60 @@ func TestProcessCPUSecondsOnSelf(t *testing.T) {
 // it ever stopped being the un-instrumented one, every number in the table
 // would be wrong in a way nothing else would catch.
 func TestConfigsDecomposeTheCost(t *testing.T) {
-	// The table is only a decomposition if the three instrumented arms are
-	// "everything", "everything but heap" and "heap alone". Losing one of them
-	// turns the result back into a single unactionable number.
-	var all, noHeap, heapOnly bool
+	// The table is only a decomposition if the instrumented arms are
+	// "everything", "everything but heap", "heap alone" and "the cpu sampler
+	// alone". Losing one of them turns the result back into a single
+	// unactionable number.
+	var all, noHeap, heapArm, cpuprofArm bool
 	for _, c := range configs[1:] {
-		switch {
-		case c.disable == "":
+		switch c.disable {
+		case "":
 			all = true
-		case c.disable == "heap":
+		case collector.SubsystemHeap:
 			noHeap = true
-		default:
-			heapOnly = true
-			if containsWord(c.disable, "heap") {
+		case heapOnly:
+			heapArm = true
+			if containsWord(c.disable, collector.SubsystemHeap) {
 				t.Errorf("the heap-only arm disables heap: %q", c.disable)
 			}
+		case cpuprofOnly:
+			cpuprofArm = true
+			if containsWord(c.disable, collector.SubsystemCPUProf) {
+				t.Errorf("the cpuprof-only arm disables cpuprof: %q", c.disable)
+			}
+		default:
+			t.Errorf("config %q disables a set that is none of the named arms: %q", c.name, c.disable)
 		}
 	}
-	if !all || !noHeap || !heapOnly {
-		t.Errorf("configs do not decompose the cost: all=%v noHeap=%v heapOnly=%v", all, noHeap, heapOnly)
+	if !all || !noHeap || !heapArm || !cpuprofArm {
+		t.Errorf("configs do not decompose the cost: all=%v noHeap=%v heapOnly=%v cpuprofOnly=%v",
+			all, noHeap, heapArm, cpuprofArm)
+	}
+}
+
+// The shape check above says the three arms exist; this says the heap-only arm
+// actually names everything else. They are different failures: a subsystem
+// added and not listed leaves all three arms present and the column silently
+// measuring two probes, which is a wrong number rather than a missing one.
+func TestIsolatingArmsDisableEveryOtherSubsystem(t *testing.T) {
+	for _, arm := range []struct {
+		keep, disable string
+	}{
+		{collector.SubsystemHeap, heapOnly},
+		{collector.SubsystemCPUProf, cpuprofOnly},
+	} {
+		for _, name := range strings.Split(collector.KnownSubsystems(), ", ") {
+			if name == arm.keep {
+				if containsWord(arm.disable, name) {
+					t.Errorf("the %s-only arm disables %s: %q", arm.keep, name, arm.disable)
+				}
+				continue
+			}
+			if !containsWord(arm.disable, name) {
+				t.Errorf("subsystem %q is not disabled by the %s-only arm, so that column measures %s PLUS %s: %q",
+					name, arm.keep, arm.keep, name, arm.disable)
+			}
+		}
 	}
 }
 

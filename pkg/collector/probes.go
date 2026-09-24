@@ -119,7 +119,7 @@ func (l *probeLog) statuses() []ProbeStatus {
 // mode still produces io events — reporting it disabled would be the same lie
 // this file exists to stop telling.
 var ebpfOnlySubsystems = []string{
-	SubsystemSyscalls, SubsystemNetwork, SubsystemFutex,
+	SubsystemCPUProf, SubsystemSyscalls, SubsystemNetwork, SubsystemFutex,
 	SubsystemHeap, SubsystemSignals, SubsystemLifecycle, SubsystemSecurity,
 	SubsystemTLS,
 }
@@ -137,6 +137,11 @@ var cgroupUnsupported = map[string]string{
 	SubsystemSignals:   "cgroup scope: the signal probe filters on a global pid of its own",
 	SubsystemLifecycle: "cgroup scope: the exec-lineage probe filters on a global pid of its own",
 	SubsystemFD:        "cgroup scope: fd enumeration comes from /proc/<pid>/fd and a subtree has no single pid",
+	// Not merely unresolved — WRONG. Sites are folded by function, resolved
+	// against one process's memory map, so across a subtree the same address
+	// names a different function in every process and folding them would
+	// produce a confident lie rather than a gap (#125).
+	SubsystemCPUProf: "cgroup scope: sample sites are folded per function against one process's memory map",
 }
 
 // cgroupSubsystems are the ones startCgroup can run — the subtree-capable set,

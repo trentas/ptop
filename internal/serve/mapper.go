@@ -26,6 +26,23 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		ev.Category = pb.Category_CATEGORY_CPU
 		ev.Payload = &pb.Event_Cpu{Cpu: &pb.CpuSample{UsagePct: x.UsagePct}}
 
+	case collector.CPUProfile:
+		// CATEGORY_CPU, the same category as CpuSample: one subsystem, two
+		// questions. A consumer separates them by payload type, never by
+		// category — and nothing maps one onto the other (#125).
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_CPU
+		ev.Payload = &pb.Event_CpuProfile{CpuProfile: &pb.CpuProfile{
+			Sites:             cpuSites(x.Sites),
+			TotalSamples:      x.TotalSamples,
+			UnresolvedSamples: x.UnresolvedSamples,
+			WindowMs:          x.WindowMs,
+			SampleRateHz:      x.SampleRateHz,
+			RequestedRateHz:   x.RequestedRateHz,
+			TotalSites:        x.TotalSites,
+			OmittedSamples:    x.OmittedSamples,
+		}}
+
 	case map[string]uint64: // syscall counts
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_SYSCALL
@@ -238,6 +255,21 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 			AllocCount: s.AllocCount, AvgLifetimeMs: s.AvgLifetimeMs, Suspected: s.Suspected,
 			Func: s.Func, File: s.File, Line: int32(s.Line), Module: s.Module, Offset: s.Offset,
 			StackId: taggedStackID(StackSourceHeap, s.StackID),
+		}
+	}
+	return out
+}
+
+func cpuSites(in []collector.CPUSite) []*pb.CpuSite {
+	out := make([]*pb.CpuSite, len(in))
+	for i, s := range in {
+		out[i] = &pb.CpuSite{
+			Addr: s.Addr, AddrHex: s.AddrHex,
+			Func: s.Func, File: s.File, Line: int32(s.Line),
+			Module: s.Module, Offset: s.Offset,
+			StackId:  taggedStackID(StackSourceCPUProf, s.StackID),
+			Samples:  s.Samples,
+			SharePct: s.SharePct,
 		}
 	}
 	return out

@@ -1,0 +1,75 @@
+Host
+----
+arch          aarch64 (ARM), 2 cores
+kernel        7.0.0-31-generic
+container     ubuntu:26.04, --privileged, debugfs+tracefs mounted
+ptop          feat/125-cpu-attribution-wire, eBPF build (CGO_ENABLED=0, -tags=ebpf)
+target        Go workload, pure arithmetic duty cycle (allocates almost nothing)
+command       make probe-cost PROBECOST_ARGS="-window 30s"
+
+This run exists because `make bench` could not answer the question #125 raised,
+and could never have. That harness measures a probe by the increase it causes
+in the target's CPU time per unit of work, and its floor is this host's noise —
+±13% to ±35% across three attempts here, ±1.8% at the best this repository has
+ever recorded. The CPU attribution sampler costs about a hundredth of one
+percent of a core. Two orders of magnitude separate the effect from the ruler,
+so the attempts produced negative overheads and no answer.
+
+The kernel counts program run time exactly. These are two snapshots of
+run_time_ns / run_cnt, thirty seconds apart, subtracted.
+
+program              type             runs/s    ns/run   % of a core
+handle_sys_exit      TracePoint        11477        34        0.039%
+handle_sys_ente      TracePoint        11481        31        0.036%
+handle_sched_sw      TracePoint         1573       124        0.019%
+handle_sched_sw      TracePoint         1573       121        0.019%
+handle_exit_fut      TracePoint          450       143        0.006%
+handle_enter_fu      TracePoint          450       139        0.006%
+handle_exit_ope      TracePoint         1597        35        0.006%
+handle_cpu_samp      PerfEvent           198       279        0.006%
+handle_enter_op      TracePoint         1597        31        0.005%
+handle_signal_g      TracePoint           51       823        0.004%
+kp_handle_mm_fa      Kprobe             1055        35        0.004%
+handle_enter_re      TracePoint          521        43        0.002%
+handle_exit_rea      TracePoint          521        42        0.002%
+handle_enter_wr      TracePoint          239        53        0.001%
+handle_exit_wri      TracePoint          239        45        0.001%
+tp_sys_enter_mm      TracePoint          164        45        0.001%
+tp_sys_enter_mm      TracePoint          164        37        0.001%
+tp_sys_enter_mp      TracePoint           94        59        0.001%
+tp_sys_enter_mu      TracePoint           74        48        0.000%
+(18 further programs below 0.0005%)
+TOTAL                                               0.159%
+
+Reading it
+----------
+
+handle_cpu_samp is the #125 sampler: 198 runs per second, which is exactly the
+requested 99Hz times this host's two CPUs, at 279ns per run, for 0.006% of a
+core. An earlier ad-hoc measurement of the same build put it at 533ns/run and
+0.011%; the per-run figure moves with cache state between runs, the order of
+magnitude does not.
+
+It is not the most expensive probe and it is not close. The syscall tracepoints
+cost six times more between them, purely because they fire sixty times as
+often — 11.5k/s against 198/s — while costing a tenth as much per firing. That
+is the shape of the whole table: what a probe costs is dominated by how often
+the target makes it fire, not by what it does when it does.
+
+The heap uprobe does not appear because this workload allocates almost nothing,
+so it never fired. That is the probe `make bench` exists for, and the one this
+tool is worst at: its cost lives entirely in how often the target allocates,
+which is a property of the target, not of the probe.
+
+Caveats
+-------
+
+  - These count time INSIDE each program. The trap, interrupt and tracepoint
+    machinery that reaches the program is not counted, nor is the cache and
+    branch-predictor disturbance left behind for the target. Each figure is a
+    floor on the true cost.
+  - Enabling the statistics costs a timestamp pair per run, charged to the
+    program, so the numbers overstate slightly.
+  - The kernel truncates program names to 15 characters, which is why two
+    sched_switch handlers both read "handle_sched_sw". They are separate rows:
+    the tool keys on program id, not on name.

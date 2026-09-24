@@ -15,6 +15,32 @@ target allocates**, not with wall time. No single percentage can be true for
 both an idle service and one allocating a million times a second, so what this
 produces is a table across allocation rates rather than a number.
 
+## Two instruments, and which question each one answers
+
+There are two harnesses here, because "what does a probe cost" is two questions
+with two different right answers.
+
+| | `make bench` (`runner/`) | `make probe-cost` (`probecost/`) |
+|---|---|---|
+| measures | the increase in the TARGET's CPU time per unit of work | the time the KERNEL spends in each BPF program |
+| source | a benchmark delta against an un-instrumented baseline | the kernel's own `run_time_ns` / `run_cnt` per program |
+| good for | probes that fire on something the target does | probes that fire at a fixed rate |
+| floor | this host's noise, published with every run (±1.8% at best here) | none — it is a counter, not a difference |
+| misses | nothing, but cannot resolve small effects | the trap/interrupt machinery around the program, and cache disturbance |
+
+**Use the second one for anything that does not fire per event.** The CPU
+attribution sampler (#125) runs 99 times a second per CPU and costs about a
+hundredth of one percent of a core. The benchmark's best floor in this
+repository is ±1.8% — more than two orders of magnitude too coarse — and three
+attempts to measure that sampler with it produced floors of ±13%, ±20% and
+±35%, several cells reading *negative* overhead, and no answer. That was not a
+noisy machine; it was the wrong ruler. No number of repeats, no longer runs and
+no quieter host would have closed a 160x gap.
+
+It is worth naming the general shape, because this repository has met it before
+(#108): **before inferring a quantity from a noisy delta, check whether
+something already counts the thing itself.** Here the kernel does.
+
 ## Running it
 
 eBPF needs privileges. Either run as root, or use a privileged container, which
@@ -25,6 +51,21 @@ probe attaches at all (`ptop --caps` says so; see README → Permissions):
 ```
 make bench
 ```
+
+`make probe-cost` is the other one. It starts nothing — run it while ptop is
+already attached, from any container on the host, since BPF programs are
+global:
+
+```
+sudo ./bin/ptop --pid $PID --serve unix:///run/ptop.sock &
+make probe-cost PROBECOST_ARGS="-window 30s"
+```
+
+Statistics are enabled through `bpf(BPF_ENABLE_STATS)`, scoped to the tool's
+own lifetime, so nothing is left switched on for the host — deliberately not
+the global `kernel.bpf_stats_enabled` sysctl, which stays on until someone
+remembers to clear it. Enabling them costs a timestamp pair per program run,
+charged to the program, so the figures overstate slightly: the safe direction.
 
 The raw form, if you want to drive it yourself:
 
@@ -87,6 +128,14 @@ what separates *"ptop costs something"* from *"ptop costs something here"*.
 | ptop, no heap probe | everything except the allocator uprobe (`--disable heap`) |
 | ptop, heap probe only | the allocator uprobe alone, sampled (the default) |
 | ptop, heap probe unsampled | the same probe walking a stack on EVERY allocation (`--heap-sample-bytes 0`) |
+| ptop, cpu sampler only | the CPU attribution sampler alone (#125) |
+
+Read the last column differently from the heap ones. The heap probe fires once
+per allocation, so its cost scales with the axis this table sweeps. The CPU
+sampler fires at a fixed rate per CPU whatever the target does, so its cost per
+unit of the target's CPU time should be roughly constant down the column — and
+the control row, which allocates nothing, is where it is least contaminated by
+anything else.
 
 The decomposition is the actionable part. *"ptop costs N%"* leaves an operator
 with nothing to do; *"the heap probe is N% of it and you can turn it off with

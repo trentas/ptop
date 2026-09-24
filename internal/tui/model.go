@@ -77,6 +77,10 @@ type Config struct {
 	// HeapSampleBytes is the Go allocation lane's sampling rate; see
 	// collector.SetConfig.
 	HeapSampleBytes uint64
+
+	// CPUProfHz is the CPU attribution axis's per-CPU sampling rate; see
+	// collector.SetConfig.CPUProfHz. 0 takes the default.
+	CPUProfHz int
 	// Symbols names the optional off-ELF symbol sources (#119); see
 	// collector.SetConfig.
 	Symbols symbol.Options
@@ -223,6 +227,7 @@ type Model struct {
 	threadsSource   string
 	memSource       string
 	heapSource      string
+	cpuProfSource   string
 	locksSource     string
 	signalsSource   string
 	tlsSource       string
@@ -299,7 +304,8 @@ func NewModel(cfg Config) Model {
 		m.feed = collector.StartFeed(ctx, collector.SetConfig{
 			PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
 			Disable: cfg.Disable, HeapSampleBytes: cfg.HeapSampleBytes,
-			Symbols: cfg.Symbols,
+			CPUProfHz: cfg.CPUProfHz,
+			Symbols:   cfg.Symbols,
 		})
 	}
 	m.collectors = m.feed.Set
@@ -311,6 +317,7 @@ func NewModel(cfg Config) Model {
 	m.threadsSource = m.collectors.Sources.Threads
 	m.memSource = m.collectors.Sources.Mem
 	m.heapSource = m.collectors.Sources.Heap
+	m.cpuProfSource = m.collectors.Sources.CPUProf
 	m.syscallsSource = m.collectors.Sources.Syscalls
 	m.ioFilesSource = m.collectors.Sources.IOFiles
 	m.netSource = m.collectors.Sources.Net

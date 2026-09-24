@@ -147,6 +147,11 @@ sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --expo
 sudo ./bin/ptop --pid <PID> --disable heap
 sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
 
+# Name the functions the CPU is going into — sampled, beside the exact ns
+sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock   # on by default
+sudo ./bin/ptop --pid <PID> --cpu-sample-hz 250             # finer, costs more
+sudo ./bin/ptop --pid <PID> --disable cpuprof               # off
+
 # Which collectors will run with the privileges you actually have (no PID needed)
 ./bin/ptop --caps
 
@@ -154,6 +159,22 @@ sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
 sudo ./bin/ptop --pid <PID> --symbol-cache /srv/symbols   # a bundle on disk, no network
 sudo ./bin/ptop --pid <PID> --debuginfod                  # servers from $DEBUGINFOD_URLS
 ```
+
+> **CPU attribution** (`--cpu-sample-hz`, #125): the CPU axis reports two
+> different things and keeps them apart. `cpu` is *how much* — nanoseconds the
+> scheduler actually accounted, exact. `cpu_profile` is *where* — the functions
+> a stack sampler caught the target running in, with a sample count and a share.
+> Sampling is the only affordable way to get the second and the wrong way to get
+> the first, so the two are separate payloads and ptop never multiplies one by
+> the other. **The sample count is published with every share on purpose**: a
+> process at 2.5% of a core draws ~150 samples a minute, which is enough for a
+> rough top-N and not enough to claim a function went from 12% to 18%. The
+> profile also reports the rate the kernel *actually* delivered next to the one
+> requested — those differ by 10-20% on a quiet host — and how many samples it
+> could not name at all. (That last one is *not* about frame pointers: a
+> sample's leaf comes from the interrupted registers, not from unwinding, so a
+> target built without them still gets named. What it loses is the depth of the
+> stack `ResolveStack` returns.)
 
 > **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
 > libssl (`SSL_write`/`SSL_read`) to record plaintext before encryption / after
