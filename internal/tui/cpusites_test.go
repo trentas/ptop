@@ -191,3 +191,23 @@ func TestCPUPanelNeverOverflowsItsWidth(t *testing.T) {
 		}
 	}
 }
+
+// TotalSites is how many distinct functions the WINDOW holds. Taking the
+// largest any single profile reported is a different number — each profile
+// counts one second, and the union over thirty of them is bigger — and it
+// published total_sites=4 beside a list of five, a count smaller than the thing
+// it counts.
+func TestCPUSiteTotalIsNeverSmallerThanTheListItCounts(t *testing.T) {
+	var w cpuSiteWindow
+	// Each second sees two functions; across the window there are four.
+	w.add(profile(100, 0, site("main.a", 60, 1), site("main.b", 40, 2)))
+	w.add(profile(100, 0, site("main.c", 60, 3), site("main.d", 40, 4)))
+	got := w.fold()
+	if len(got.Sites) != 4 {
+		t.Fatalf("folded %d sites, want 4", len(got.Sites))
+	}
+	if int(got.TotalSites) < len(got.Sites) {
+		t.Errorf("total_sites=%d beside a list of %d — the count is smaller than what it counts",
+			got.TotalSites, len(got.Sites))
+	}
+}
