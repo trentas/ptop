@@ -34,7 +34,22 @@ const COLORS = {
 function useSimulatedData() {
   const [tick,             setTick]             = useState(0);
   const [cpuHistory,       setCpuHistory]       = useState(()=>Array(60).fill(0).map(()=>Math.random()*30+5));
+  // CPU attribution (#125): WHERE the sampled CPU time went, shown under the
+  // sparkline that says HOW MUCH there was. samples travels with share on
+  // purpose — 38% of 2.4k samples and 38% of 24 are different claims.
+  const cpuSites = { total:2400, windowSec:30, rateHz:97, totalSites:23, sites:[
+    { func:"encoding/json.(*decodeState).object", file:"decode.go:612", samples:912 },
+    { func:"runtime.mallocgc",                   file:"malloc.go:1012", samples:456 },
+    { func:"api/handler.parseRequest",           file:"handler.go:88",  samples:288 },
+    { func:"runtime.scanobject",                 file:"mgcmark.go:1421", samples:168 },
+    { func:"libc.so.6",                          file:"",               samples:120 },
+  ]};
   const [syscallCounts,    setSyscallCounts]    = useState(()=>Object.fromEntries(SYSCALLS.map(s=>[s,Math.floor(Math.random()*200)])));
+  // Network throughput trend. Derived from the cumulative per-connection
+  // counters the table below shows — a total cannot show a transfer starting
+  // or stopping, which is what this row is for.
+  const netTxHistory = Array(60).fill(0).map((_,i)=>40000+35000*Math.sin(i/11));
+  const netRxHistory = Array(60).fill(0).map((_,i)=>300000+250000*Math.sin(i/7+1));
   const [netEvents,        setNetEvents]        = useState([
     { id:1, type:"TCP",  remote:"10.0.1.5:5432",         state:"WAIT",        latency:42, dir:"→", tx:12000,  rx:88000  },
     { id:2, type:"TCP",  remote:"10.0.0.1:443",          state:"ESTABLISHED", latency:8,  dir:"↔", tx:480000, rx:500000 },
@@ -146,7 +161,7 @@ function useSimulatedData() {
     return ()=>clearInterval(iv);
   },[]);
 
-  return { tick, cpuHistory, syscallCounts, netEvents, memStats, threads, ioReadHistory, ioWriteHistory, ioFiles, ioTotals, ioLatencyBuckets, fds, fdCountHistory, fdEvents, timeline, activeTab, setActiveTab };
+  return { tick, cpuHistory, cpuSites, syscallCounts, netEvents, netTxHistory, netRxHistory, memStats, threads, ioReadHistory, ioWriteHistory, ioFiles, ioTotals, ioLatencyBuckets, fds, fdCountHistory, fdEvents, timeline, activeTab, setActiveTab };
 }
 
 // ─── Shared primitives ────────────────────────────────────────────────────────
@@ -223,6 +238,36 @@ function DualSparkline({ readH, writeH }) {
 
 // ─── Panels ───────────────────────────────────────────────────────────────────
 
+// CpuSites is the lower half of the CPU box (#125). The sparkline above is
+// scheduler-accounted time, exact; these are shares of a sample count, and each
+// one carries the count it was computed from so the reader can refuse it.
+//
+// The header says "top N of M" when the collector's own cut dropped something —
+// otherwise a function leaving the list reads as a function going quiet.
+function CpuSites({ data }) {
+  const truncated = data.sites.length < data.totalSites;
+  return (
+    <div style={{ padding:"2px 10px 6px", display:"flex", flexDirection:"column", gap:2 }}>
+      <div style={{ display:"flex", fontSize:9, color:COLORS.muted, justifyContent:"space-between" }}>
+        <span>{truncated?`hot functions (top ${data.sites.length} of ${data.totalSites})`:"hot functions"}</span>
+        <span>{`${(data.total/1000).toFixed(1)}k samples · ${data.windowSec}s · ${data.rateHz}Hz`}</span>
+      </div>
+      {data.sites.map(s=>(
+        <div key={s.func} style={{ display:"flex", alignItems:"center", gap:6, fontSize:9 }}>
+          <span style={{ flex:1, color:COLORS.cyan, overflow:"hidden", whiteSpace:"nowrap", textOverflow:"ellipsis" }}>
+            {s.file?`${s.func} (${s.file})`:s.func}
+          </span>
+          <div style={{ width:120, height:7, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden", flexShrink:0 }}>
+            <div style={{ width:`${(s.samples/data.total)*100}%`, height:"100%", backgroundColor:COLORS.cyan, opacity:0.85 }}/>
+          </div>
+          <span style={{ width:30, color:COLORS.bright, textAlign:"right", flexShrink:0 }}>{`${((s.samples/data.total)*100).toFixed(0)}%`}</span>
+          <span style={{ width:40, color:COLORS.muted, textAlign:"right", flexShrink:0 }}>{s.samples}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function SyscallBars({ counts }) {
   const sorted=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,8);
   const max=sorted[0]?.[1]||1;
@@ -244,6 +289,32 @@ function SyscallBars({ counts }) {
 // the narrow F1 overview panel omits it to keep REMOTE readable. The TX/RX
 // reading is OS-dependent in the real TUI — cumulative bytes on Linux/eBPF,
 // current send/recv socket-buffer occupancy (a backlog gauge) on macOS.
+// NetThroughput is the tx/rx trend. Two rows and not one sum: a link saturating
+// upstream and one saturating downstream are different problems with different
+// fixes, and a single "network bytes/s" line cannot tell them apart.
+function NetThroughput({ tx, rx }) {
+  const row=(hist,color,label)=>{
+    const max=Math.max(...hist,1);
+    const pts=hist.map((v,i)=>`${(i/(hist.length-1))*260},18-${(v/max)*18}`.replace("18-","")).join(" ");
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <svg width={260} height={18} style={{ flex:1 }}>
+          <polyline points={hist.map((v,i)=>`${(i/(hist.length-1))*260},${18-(v/max)*18}`).join(" ")} fill="none" stroke={color} strokeWidth="1.5"/>
+        </svg>
+        <span style={{ fontSize:9, color:COLORS.muted, width:70, flexShrink:0 }}>
+          {label} <span style={{ color, fontWeight:700 }}>{fmt(hist[hist.length-1])}/s</span>
+        </span>
+      </div>
+    );
+  };
+  return (
+    <div style={{ padding:"4px 10px", display:"flex", flexDirection:"column", gap:2 }}>
+      {row(tx, COLORS.green, "tx")}
+      {row(rx, COLORS.blue, "rx")}
+    </div>
+  );
+}
+
 function NetPanel({ events, showTraffic }) {
   const sc=s=>s==="WAIT"?COLORS.amber:s==="RECV"?COLORS.cyan:s==="ESTABLISHED"?COLORS.green:COLORS.muted;
   return (
@@ -385,14 +456,20 @@ function OverviewView({ data }) {
   return (
     <div style={{ display:"flex", flex:1, gap:1, overflow:"hidden", padding:1 }}>
       <div style={{ display:"flex", flexDirection:"column", flex:2, gap:1 }}>
-        <Box title="▸ CPU" flex={1}><Sparkline history={data.cpuHistory} color={data.cpuHistory[data.cpuHistory.length-1]>80?COLORS.red:data.cpuHistory[data.cpuHistory.length-1]>50?COLORS.amber:COLORS.green} label="cpu usage" value={`${data.cpuHistory[data.cpuHistory.length-1].toFixed(0)}%`}/></Box>
-        <Box title="▸ Top Syscalls" flex={1.5}><SyscallBars counts={data.syscallCounts}/></Box>
-        <Box title="▸ Threads" flex={1.4}><ThreadPanel threads={data.threads}/></Box>
+        <Box title="▸ CPU" flex={1.55}>
+          <Sparkline history={data.cpuHistory} color={data.cpuHistory[data.cpuHistory.length-1]>80?COLORS.red:data.cpuHistory[data.cpuHistory.length-1]>50?COLORS.amber:COLORS.green} label="cpu usage" value={`${data.cpuHistory[data.cpuHistory.length-1].toFixed(0)}%`}/>
+          <CpuSites data={data.cpuSites}/>
+        </Box>
+        <Box title="▸ Top Syscalls" flex={1.25}><SyscallBars counts={data.syscallCounts}/></Box>
+        <Box title="▸ Threads" flex={1.1}><ThreadPanel threads={data.threads}/></Box>
       </div>
       <div style={{ display:"flex", flexDirection:"column", flex:1.3, gap:1 }}>
         <Box title="▸ I/O Throughput" flex={1.1}><IOMiniPanel totals={data.ioTotals} readH={data.ioReadHistory} writeH={data.ioWriteHistory}/></Box>
         <Box title="▸ File Descriptors" flex={0.9}><FdMiniPanel fds={data.fds}/></Box>
-        <Box title="▸ Network" flex={0.9}><NetPanel events={data.netEvents}/></Box>
+        <Box title="▸ Network" flex={1.2}>
+          <NetThroughput tx={data.netTxHistory} rx={data.netRxHistory}/>
+          <NetPanel events={data.netEvents}/>
+        </Box>
         <Box title="▸ Memory" flex={0.65}><MemPanel stats={data.memStats}/></Box>
         <Box title="▸ Event Stream" flex={1.8}><Timeline events={data.timeline}/></Box>
       </div>
@@ -430,6 +507,7 @@ function NetworkView({ data }) {
   return (
     <div style={{ display:"flex", flex:1, gap:1, overflow:"hidden", padding:1 }}>
       <div style={{ display:"flex", flexDirection:"column", flex:2, gap:1 }}>
+        <Box title="▸ Throughput" flex={0.45}><NetThroughput tx={data.netTxHistory} rx={data.netRxHistory}/></Box>
         <Box title="▸ Active Connections" flex={1}><NetPanel events={data.netEvents} showTraffic/></Box>
         <Box title="▸ Latency Trend" flex={1.5}>
           <div style={{ padding:"8px 12px", display:"flex", flexDirection:"column", gap:10 }}>

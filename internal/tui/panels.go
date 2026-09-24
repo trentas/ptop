@@ -16,7 +16,7 @@ import (
 // renderCPU draws a sparkline + current value on the right.
 // Uses a FIXED 0-100% scale — without this the sparkline would rescale every
 // tick and cause the "everything jumping" effect.
-func renderCPU(history []float64, w int) string {
+func renderCPU(history []float64, sites cpuSiteSummary, w, h int) string {
 	if w < 12 {
 		return MutedStyle.Render("…")
 	}
@@ -47,7 +47,182 @@ func renderCPU(history []float64, w int) string {
 		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Right).Render(lbl),
 	)
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, spark, panelSp2, right)
+	top := lipgloss.JoinHorizontal(lipgloss.Top, spark, panelSp2, right)
+
+	// The sparkline block is two rows; whatever is left of the panel goes to
+	// the attribution list, and a panel with no room simply keeps the classic
+	// layout rather than truncating a ranking into meaninglessness.
+	body := renderCPUSites(sites, w, h-2)
+	if body == "" {
+		return top
+	}
+	return top + "\n" + body
+}
+
+// renderCPUSites is the lower half of the F1 CPU panel (#125): WHICH functions
+// the target's CPU time went into, under the sparkline that says HOW MUCH of it
+// there was.
+//
+// The two halves come from different instruments and the panel does not blur
+// them. The percentage above is scheduler-accounted time, exact. The percentages
+// below are shares of a sample count, and every one of them is printed beside
+// the count it came from, because a share alone cannot be refused by the reader.
+//
+// h is the rows available; 0 or fewer renders nothing, so a short terminal keeps
+// the classic sparkline-only panel.
+func renderCPUSites(sum cpuSiteSummary, w, h int) string {
+	if h <= 0 || sum.WindowMs == 0 {
+		return ""
+	}
+	head := renderCPUSitesHeader(sum, w)
+	if !sum.Ranked() {
+		// Refusing is the honest output. At 99Hz a target using 2.5% of a core
+		// contributes a couple of samples a second, and a top-N built from a
+		// dozen of them is an ordering of noise that a reader will believe.
+		return head + "\n" + MutedStyle.Render(truncate(
+			fmt.Sprintf("too few samples to rank — %d in %ds", sum.Total, sum.WindowMs/1000), w))
+	}
+
+	lines := []string{head}
+	if blind := sum.BlindPct(); blind >= cpuSiteBlindWarnPct {
+		// Actionable only by the human in front of the terminal, which is the
+		// whole reason this panel carries it: a stream consumer can record that
+		// the axis came back blind but cannot rebuild the binary.
+		lines = append(lines, AmberStyle.Render(truncate(
+			fmt.Sprintf("%.0f%% of samples unnamed — no symbols for the hot module", blind), w)))
+	}
+	rows := h - len(lines)
+	for i, site := range sum.Sites {
+		if i >= rows {
+			break
+		}
+		lines = append(lines, renderCPUSiteRow(site, w))
+	}
+	return strings.Join(lines, "\n")
+}
+
+// cpuSiteBlindWarnPct is where an unnamed fraction stops being a footnote. A
+// tenth of the samples missing does not change what the list says; a third does.
+const cpuSiteBlindWarnPct = 30
+
+// renderCPUSitesHeader states what the numbers below are made of: how many
+// samples, over how long, at what rate the kernel ACTUALLY delivered.
+//
+// The achieved rate and not the requested one, and it is here rather than
+// hidden because #108 measured them diverging by 10-20% on a quiet host. It is
+// also the one diagnostic on this panel that points at the machine rather than
+// at the code.
+func renderCPUSitesHeader(sum cpuSiteSummary, w int) string {
+	full := "hot functions"
+	if sum.Truncated() {
+		// Say the list is a selection. A reader watching a function leave the
+		// list cannot otherwise tell that from the function going quiet.
+		full = fmt.Sprintf("hot functions (top %d of %d)", len(sum.Sites), sum.TotalSites)
+	}
+	right := fmt.Sprintf("%s samples · %ds · %.0fHz",
+		fmtCount(sum.Total), sum.WindowMs/1000, sum.RateHz)
+
+	// Priority-based segment dropping, the pattern header.go uses: a strip that
+	// overflows its width wraps, and a wrapped line inside a bordered panel
+	// pushes every row below it out of the box. The sample count is the last
+	// thing to go, since it is what makes the shares refusable.
+	for _, pair := range [][2]string{
+		{full, right},
+		{"hot functions", right},
+		{"", right},
+		{full, ""},
+	} {
+		label, rhs := pair[0], pair[1]
+		gap := w - lipgloss.Width(label) - lipgloss.Width(rhs)
+		if gap < 1 {
+			continue
+		}
+		return MutedStyle.Render(label) +
+			lipgloss.NewStyle().Background(ColorPanel).Render(strings.Repeat(" ", gap)) +
+			MutedStyle.Render(rhs)
+	}
+	return MutedStyle.Render(truncate(right, w))
+}
+
+// renderCPUSiteRow lays out one function: its name, a share bar, the share, and
+// the sample count the share was computed from.
+//
+// The count is not decoration. 38% of 2400 samples and 38% of 24 are the same
+// number and completely different claims, and the second one should not survive
+// contact with a reader who can see both.
+func renderCPUSiteRow(s collector.CPUSite, w int) string {
+	const pctW, cntW, minNameW = 5, 7, 12
+	const maxBarW = 20
+
+	// Columns are dropped in reverse order of what they are for: the name says
+	// WHERE, the share says how much of the window, the count says whether the
+	// share can be believed, and the bar is the only decorative one. Each drop
+	// is checked against the width rather than assumed to fit, because a row
+	// one column too wide wraps and takes the whole panel with it.
+	name := truncate(cpuSiteLabel(s), w)
+	pct := fmt.Sprintf("%.0f%%", s.SharePct)
+	cnt := fmtCount(s.Samples)
+
+	barW := maxBarW
+	for {
+		nameW := w - barW - pctW - cntW - 3
+		if barW > 0 && nameW < minNameW {
+			if barW -= 4; barW < 4 {
+				barW = 0
+			}
+			continue
+		}
+		if barW > 0 {
+			return CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW)) + panelSp1 +
+				renderShareBar(s.SharePct, barW) + panelSp1 +
+				BrightStyle.Width(pctW).Align(lipgloss.Right).Render(pct) + panelSp1 +
+				MutedStyle.Width(cntW).Align(lipgloss.Right).Render(cnt)
+		}
+		break
+	}
+	if nameW := w - pctW - cntW - 2; nameW >= 6 {
+		return CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW)) + panelSp1 +
+			BrightStyle.Width(pctW).Align(lipgloss.Right).Render(pct) + panelSp1 +
+			MutedStyle.Width(cntW).Align(lipgloss.Right).Render(cnt)
+	}
+	if nameW := w - pctW - 1; nameW >= 4 {
+		return CyanStyle.Width(nameW).Render(truncate(cpuSiteLabel(s), nameW)) + panelSp1 +
+			BrightStyle.Width(pctW).Align(lipgloss.Right).Render(pct)
+	}
+	return CyanStyle.Render(name)
+}
+
+// renderShareBar draws a share as a filled fraction of barW. Clamped, because a
+// share is of the window total and rounding at the last site can exceed 100.
+func renderShareBar(pct float64, barW int) string {
+	filled := int(pct / 100 * float64(barW))
+	if filled < 0 {
+		filled = 0
+	}
+	if filled > barW {
+		filled = barW
+	}
+	return lipgloss.NewStyle().Foreground(ColorCyan).Background(ColorPanel).Render(strings.Repeat("█", filled)) +
+		lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW-filled))
+}
+
+// cpuSiteLabel renders a sampled function the same way heapSiteLabel renders a
+// call site, and for the same reason — one visual vocabulary for "where in the
+// code" across every axis that has an answer.
+//
+// The line is the HOTTEST line inside the function, not its declaration, which
+// is why a function appears once with one line rather than once per line.
+func cpuSiteLabel(s collector.CPUSite) string {
+	if s.Func != "" {
+		if s.File != "" && s.Line > 0 {
+			return fmt.Sprintf("%s (%s:%d)", s.Func, filepath.Base(s.File), s.Line)
+		}
+		return s.Func
+	}
+	if s.Module != "" {
+		return s.Module
+	}
+	return s.AddrHex
 }
 
 // ─── Syscall bars ────────────────────────────────────────────────────────────
@@ -490,6 +665,59 @@ func netStateColor(state string) lipgloss.Color {
 // has no cumulative counter, so they are the current send/recv socket-buffer
 // occupancy (a backlog gauge). The ? overlay reports the active source so the
 // user can tell which reading they're looking at.
+// renderNetThroughput is the tx/rx trend that sits above the connection list,
+// the network counterpart of the I/O Throughput panel.
+//
+// The two series are stacked rather than summed: a link saturating upstream and
+// one saturating downstream are different problems with different fixes, and a
+// single "network bytes/s" line cannot tell them apart. Same reason the I/O
+// panel keeps read and write on their own rows.
+//
+// Returns "" when there is nothing to draw, so a target with no sockets keeps
+// the plain connection list instead of two flat lines implying measurement.
+func renderNetThroughput(txH, rxH []float64, maxTx, maxRx float64, w, h int) string {
+	if w < 24 || (len(txH) == 0 && len(rxH) == 0) || h <= 0 {
+		return ""
+	}
+	cur := func(h []float64) float64 {
+		if len(h) == 0 {
+			return 0
+		}
+		return h[len(h)-1]
+	}
+
+	const labelW = 12
+	sparkW := w - labelW - 1
+	if sparkW < 5 {
+		sparkW = 5
+	}
+
+	label := func(name string, v float64, c lipgloss.Color) string {
+		return lipgloss.NewStyle().Width(labelW).Background(ColorPanel).Render(
+			MutedStyle.Render(name) +
+				lipgloss.NewStyle().Foreground(c).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(v)))
+	}
+
+	// One row cannot hold two directions, and rendering only the first is the
+	// worst of the three options: the panel looks complete and is half true.
+	// Showing both figures without their charts says less and lies about
+	// nothing. (The panel's MaxHeight would otherwise truncate the second row
+	// silently — measured on F3, which gave this panel a single body row and
+	// published tx with rx nowhere on screen.)
+	if h == 1 {
+		return lipgloss.NewStyle().Width(w).Background(ColorPanel).Render(
+			MutedStyle.Render("tx ") +
+				lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(cur(txH))) +
+				MutedStyle.Render("   rx ") +
+				lipgloss.NewStyle().Foreground(ColorBlue).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(cur(rxH))))
+	}
+
+	sparks := SparklineWithMax(txH, sparkW, maxTx, ColorGreen) + "\n" +
+		SparklineWithMax(rxH, sparkW, maxRx, ColorBlue)
+	labels := label("tx ", cur(txH), ColorGreen) + "\n" + label("rx ", cur(rxH), ColorBlue)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sparks, panelSp1, labels)
+}
+
 func renderNetMini(conns []collector.NetConn, w, h int, showTraffic bool) string {
 	const typeW = 5
 	const stateW = 12

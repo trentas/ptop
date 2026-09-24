@@ -23,12 +23,25 @@ func Panel(title, body string, w, h int) string {
 		Background(lipgloss.Color("#0d1017")).
 		Foreground(ColorCyan).
 		Width(inner).
+		MaxWidth(inner).
 		Render(" ▸ " + strings.ToUpper(title))
 
+	// MaxWidth as well as Width, and for the same reason MaxHeight is here:
+	// Width is a MINIMUM. A body line wider than the box made the box grow to
+	// fit it, so two panels side by side rendered wider than the terminal, the
+	// line wrapped, and every row below it left the layout. Measured on main,
+	// that hit the Network, Threads and FD tabs at 60, 80 and 100 columns —
+	// 80 being the width more terminals are than any other.
+	//
+	// A renderer producing an over-wide line is still a bug in that renderer,
+	// and CLAUDE.md's width discipline still asks it not to. This is the floor
+	// under that: the box keeps its own width whatever it is handed, so one
+	// careless row costs a truncated row instead of the whole screen.
 	bodyArea := lipgloss.NewStyle().
 		Background(ColorPanel).
 		Foreground(ColorText).
 		Width(inner).
+		MaxWidth(inner).
 		Height(bodyH).
 		MaxHeight(bodyH).
 		Render(body)
@@ -54,6 +67,7 @@ func PanelTitleless(body string, w, h int) string {
 		Background(ColorPanel).
 		Foreground(ColorText).
 		Width(inner).
+		MaxWidth(inner).
 		Height(bodyH).
 		MaxHeight(bodyH).
 		Render(body)

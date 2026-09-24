@@ -101,6 +101,14 @@ type CpuMsg collector.CpuSample
 type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
 type HeapMsg collector.HeapStats
+
+// CPUProfileMsg carries one window of per-function CPU attribution (#125).
+// Separate from CpuMsg on purpose: one is exact scheduler-accounted time, the
+// other an estimate from samples, and the panel presents them as such.
+type CPUProfileMsg collector.CPUProfile
+
+// NetThroughputMsg carries the target's network volume and rate (#128).
+type NetThroughputMsg collector.NetThroughputSample
 type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
@@ -136,11 +144,14 @@ type Model struct {
 
 	// Collected data
 	CPUHistory     []float64
+	NetTxHist      []float64 // network throughput trend, bytes/s (#125 follow-up)
+	NetRxHist      []float64
 	SyscallCounts  map[string]uint64
 	NetConns       []collector.NetConn
 	NetErrors      []collector.NetError // eBPF RST/retransmit anomalies (#56), newest-first
 	MemStats       collector.MemStats
 	HeapStats      collector.HeapStats // eBPF malloc/free pairing (#53); empty without eBPF
+	CPUSites       cpuSiteWindow       // rolling window of CPU attribution profiles (#125)
 	HeapLiveHist   []float64           // live-heap bytes history for the F1 sparkline
 	Threads        []collector.ThreadInfo
 	IOStats        collector.IOStats
@@ -244,6 +255,8 @@ type Model struct {
 
 	// IO maxima with slow decay — avoids rescaling sparklines every tick.
 	ioMaxRead  float64
+	netMaxTx   float64
+	netMaxRx   float64
 	ioMaxWrite float64
 
 	// render memoizes the last frame so View() stays cheap on the high-rate
@@ -405,7 +418,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FDMsg:
 		m.FDs = []collector.FDEntry(v)
 		m.usingMockFDs = false
-		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
+		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), historyLen)
 		return m, m.waitBus()
 
 	case TimelineMsg:
@@ -426,7 +439,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CpuMsg:
 		s := collector.CpuSample(v)
-		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
+		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, historyLen)
 		m.usingMockCPU = false
 		return m, m.waitBus()
 
@@ -440,6 +453,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.usingMockMem = false
 		return m, m.waitBus()
 
+	case CPUProfileMsg:
+		m.CPUSites.add(collector.CPUProfile(v))
+		return m, m.waitBus()
+
 	case HeapMsg:
 		m.HeapStats = collector.HeapStats(v)
 		// The sparkline plots whatever the lane measures, matching the
@@ -449,7 +466,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !heapLiveShown(m.HeapStats) {
 			trend = m.HeapStats.AllocBytesRate
 		}
-		m.HeapLiveHist = appendCapped(m.HeapLiveHist, trend, 60)
+		m.HeapLiveHist = appendCapped(m.HeapLiveHist, trend, historyLen)
 		return m, m.waitBus()
 
 	case IOWaitMsg:
@@ -485,6 +502,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case NetMsg:
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
+		return m, m.waitBus()
+
+	case NetThroughputMsg:
+		// Published, not derived (#128). The trend cannot be recovered from
+		// NetConns: a connection leaves that list the moment it closes and its
+		// bytes leave with it, so a total summed here sawtoothed back to zero
+		// every time a transfer finished. Only the collector sees the closed
+		// connections.
+		m.recordNetThroughput(v.TxBytesPerS, v.RxBytesPerS)
 		return m, m.waitBus()
 
 	case NetErrorMsg:
@@ -632,8 +658,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.IOStats.WriteBytesPerS = s.WriteBytesPerS
 		m.IOStats.ReadOps = s.ReadOps
 		m.IOStats.WriteOps = s.WriteOps
-		m.IOReadHist = appendCapped(m.IOReadHist, s.ReadBytesPerS, 60)
-		m.IOWriteHist = appendCapped(m.IOWriteHist, s.WriteBytesPerS, 60)
+		m.IOReadHist = appendCapped(m.IOReadHist, s.ReadBytesPerS, historyLen)
+		m.IOWriteHist = appendCapped(m.IOWriteHist, s.WriteBytesPerS, historyLen)
 		m.ioMaxRead = math.Max(m.ioMaxRead*0.97, s.ReadBytesPerS)
 		m.ioMaxWrite = math.Max(m.ioMaxWrite*0.97, s.WriteBytesPerS)
 		if m.ioMaxRead < 100*1024 {
@@ -647,6 +673,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// historyLen is how many readings each sparkline series keeps.
+//
+// 240 and not 60 because a braille cell now carries two samples, so a chart w
+// columns wide draws the last 2w readings: at the old 60 a wide panel ran out
+// of history and drew into half its own width. At roughly one reading a second
+// this is four minutes of trend, in the same space that used to hold one.
+const historyLen = 240
 
 func (m Model) View() string {
 	// Frame memoization: bubbletea calls View() once per message, but only the
@@ -672,6 +706,13 @@ func (m Model) View() string {
 func (m Model) renderFrame() string {
 	if m.Width == 0 || m.Height == 0 {
 		return "starting..."
+	}
+
+	// Decided before any chrome exists. A view only learns the CONTENT area, so
+	// a view-level check happens after the header, tab bar and status bar have
+	// already been drawn into a terminal that cannot hold them.
+	if tooSmall(m.Width, m.Height) {
+		return renderTooSmall(m.Width, m.Height)
 	}
 
 	header := renderHeader(m)
@@ -725,6 +766,29 @@ func (m Model) renderFrame() string {
 		Render(content)
 
 	return header + "\n" + tabbar + "\n" + contentBox + "\n" + statusbar
+}
+
+// recordNetThroughput appends one tx/rx reading and rescales the chart.
+//
+// The maximum decays rather than tracking the window's peak exactly, for the
+// same reason the I/O panel's does: a single burst would otherwise rescale the
+// whole chart and flatten everything around it, and then un-flatten it a
+// second later. The floor keeps an idle link from drawing its own noise as a
+// full-height chart.
+func (m *Model) recordNetThroughput(tx, rx float64) {
+	m.NetTxHist = appendCapped(m.NetTxHist, tx, historyLen)
+	m.NetRxHist = appendCapped(m.NetRxHist, rx, historyLen)
+
+	const decayPerTick = 0.97
+	const floorBytesPerSec = 10 * 1024
+	m.netMaxTx = math.Max(m.netMaxTx*decayPerTick, tx)
+	m.netMaxRx = math.Max(m.netMaxRx*decayPerTick, rx)
+	if m.netMaxTx < floorBytesPerSec {
+		m.netMaxTx = floorBytesPerSec
+	}
+	if m.netMaxRx < floorBytesPerSec {
+		m.netMaxRx = floorBytesPerSec
+	}
 }
 
 // ─── Simulation ──────────────────────────────────────────────────────────────
@@ -784,7 +848,7 @@ func (m *Model) seedMockData() {
 	r := m.rng
 
 	// CPU history
-	m.CPUHistory = make([]float64, 60)
+	m.CPUHistory = make([]float64, historyLen)
 	for i := range m.CPUHistory {
 		m.CPUHistory[i] = 5 + r.Float64()*30
 	}
@@ -819,8 +883,8 @@ func (m *Model) seedMockData() {
 	}
 
 	// I/O history
-	m.IOReadHist = make([]float64, 60)
-	m.IOWriteHist = make([]float64, 60)
+	m.IOReadHist = make([]float64, historyLen)
+	m.IOWriteHist = make([]float64, historyLen)
 	for i := range m.IOReadHist {
 		m.IOReadHist[i] = r.Float64() * 800 * 1024
 		m.IOWriteHist[i] = r.Float64() * 400 * 1024
@@ -872,14 +936,14 @@ func (m *Model) seedMockData() {
 	}
 
 	// FD count history
-	m.FDCountHistory = make([]float64, 60)
+	m.FDCountHistory = make([]float64, historyLen)
 	for i := range m.FDCountHistory {
 		m.FDCountHistory[i] = float64(len(m.FDs)) + r.Float64()*4 - 2
 	}
 
 	// Timeline (seeded empty — gets filled by tick)
 	m.Timeline = make([]collector.TimelineEvent, 0, 120)
-	m.FDEvents = make([]collector.FDEvent, 0, 60)
+	m.FDEvents = make([]collector.FDEvent, 0, historyLen)
 
 	// Initialize stable caches and decaying maxima
 	m.refreshTopN()
@@ -951,7 +1015,7 @@ func (m *Model) tick() {
 		}
 		delta := (r.Float64()*2 - 0.9) * 12
 		cpu := clamp(prev+delta, 0, 100)
-		m.CPUHistory = appendCapped(m.CPUHistory, cpu, 60)
+		m.CPUHistory = appendCapped(m.CPUHistory, cpu, historyLen)
 	}
 
 	// Syscalls — only simulates if the eBPF tracer isn't running.
@@ -1016,8 +1080,8 @@ func (m *Model) tick() {
 		if r.Float64() > 0.9 {
 			nw += 1500 * 1024
 		}
-		m.IOReadHist = appendCapped(m.IOReadHist, nr, 60)
-		m.IOWriteHist = appendCapped(m.IOWriteHist, nw, 60)
+		m.IOReadHist = appendCapped(m.IOReadHist, nr, historyLen)
+		m.IOWriteHist = appendCapped(m.IOWriteHist, nw, historyLen)
 		m.IOStats.ReadBytesPerS = nr
 		m.IOStats.WriteBytesPerS = nw
 
@@ -1144,7 +1208,7 @@ func (m *Model) simulateFDs() {
 		}
 	}
 
-	m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
+	m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), historyLen)
 }
 
 func (m *Model) pushTimeline() {
@@ -1285,6 +1349,10 @@ func busMsg(v interface{}) tea.Msg {
 		return MemMsg(t)
 	case collector.HeapStats:
 		return HeapMsg(t)
+	case collector.CPUProfile:
+		return CPUProfileMsg(t)
+	case collector.NetThroughputSample:
+		return NetThroughputMsg(t)
 	case collector.IOWaitSample:
 		return IOWaitMsg(t)
 	case collector.IOThroughputSample:

@@ -37,8 +37,19 @@ simulated data. **Each Go view must faithfully reproduce the layout of the
 corresponding mockup.** Use it as the authoritative visual spec — if there's
 any doubt about layout, the mockup wins.
 
-`assets/screenshot-overview.txt` is a captured F1 dump used as a regression
-fixture in `internal/tui/dump_test.go`.
+`assets/screenshot-overview.txt` is a captured F1 dump, kept as a reference for
+what the view looks like. Two things about it that have caught people:
+
+- **Nothing compares against it.** `TestDumpFrames` in `internal/tui/dump_test.go`
+  only WRITES dumps, and only when `TUI_DUMP=1`; it is a generator, not an
+  assertion. Regenerate with
+  `TUI_DUMP=1 TUI_W=140 TUI_H=39 go test ./internal/tui -run TestDumpFrames`,
+  on Linux — a capture taken on the macOS port carries the libproc footer and a
+  `(?)` process name.
+- **It is a `--no-ebpf` capture**, so the panels that exist only with eBPF are
+  absent from it by construction: the Memory panel's heap detail (#53) and the
+  CPU panel's hot-function list (#125). `assets/mockup.jsx` is where those are
+  specified.
 
 Color palette (defined in `internal/tui/styles.go`):
 
@@ -520,7 +531,18 @@ directly.
 
 ### Sparklines
 
-Unicode braille (`⣀⣄⣆⣇⡇⡏⡟⡿`, 8-level per column).
+Unicode braille, **two samples per cell** — each column filled from the bottom
+up, four levels (`⣀⣤⣶⣿` at equal heights).
+
+It used to claim eight levels per column, which braille cannot do: a cell is
+four rows tall. That ramp faked the extra four by spilling into the second
+column — a horizontal axis — so the height saturated at 57% of the scale, the
+top half of the scale filled *downwards* from the top, and the bottom-right dot
+was never lit at any level. Using the second column as the next SAMPLE instead
+gives four honest levels and twice the time resolution in the same width.
+`sparkline_test.go` pins all three defects. If vertical resolution ever matters
+more than time, the half-block ramp `▁▂▃▄▅▆▇█` is eight real levels at one
+sample per cell.
 `Sparkline(data []float64, width int, color lipgloss.Color) string` is pure
 and reused across views.
 

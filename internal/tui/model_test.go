@@ -50,14 +50,16 @@ func TestTickAdvances(t *testing.T) {
 	m.Width = 120
 	m.Height = 40
 
-	for i := 0; i < 200; i++ {
+	// Past the cap, not merely up to it: at a fixed 200 this stopped exercising
+	// the bound the moment historyLen moved above it.
+	for i := 0; i < historyLen*2; i++ {
 		nm, _ := m.Update(TickMsg(time.Now()))
 		m = nm.(Model)
 	}
-	if len(m.CPUHistory) > 60 {
+	if len(m.CPUHistory) > historyLen {
 		t.Errorf("CPUHistory grew unbounded: %d", len(m.CPUHistory))
 	}
-	if len(m.IOReadHist) > 60 {
+	if len(m.IOReadHist) > historyLen {
 		t.Errorf("IOReadHist grew unbounded: %d", len(m.IOReadHist))
 	}
 	if len(m.Timeline) > 120 {

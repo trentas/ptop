@@ -29,6 +29,22 @@ func fmtRate(r float64) string {
 	return fmt.Sprintf("%.0f/s", r)
 }
 
+// fmtCount abbreviates a sample count so it fits a narrow column without
+// losing the order of magnitude — which is the whole point of printing it: 38%
+// of 2.4k samples and 38% of 24 are the same percentage and different claims.
+func fmtCount(n uint64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1e6)
+	case n >= 10_000:
+		return fmt.Sprintf("%.0fk", float64(n)/1e3)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1e3)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 // plural returns the plural suffix "s" for counts other than 1.
 func plural(n int) string {
 	if n == 1 {
