@@ -35,8 +35,18 @@ func renderNetworkView(m Model, w, h int) string {
 	// how much each connection has moved IN TOTAL, which is a different
 	// question from how much is moving right now. A cumulative column cannot
 	// show a transfer starting or stopping.
+	// Floor the throughput panel at two body rows. splitFlex hands it three
+	// rows at ordinary terminal heights — border, title, border and nothing
+	// left — so without this it renders as an empty box, and with one row it
+	// would have to drop a direction.
+	const throughputH = 5
+	if leftHs[0] < throughputH {
+		leftHs[1] -= throughputH - leftHs[0]
+		leftHs[0] = throughputH
+	}
+
 	throughput := Panel("Throughput",
-		renderNetThroughput(m.NetTxHist, m.NetRxHist, m.netMaxTx, m.netMaxRx, leftW-2),
+		renderNetThroughput(m.NetTxHist, m.NetRxHist, m.netMaxTx, m.netMaxRx, leftW-2, leftHs[0]-3),
 		leftW, leftHs[0])
 
 	conns := Panel("Active Connections",

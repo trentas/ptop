@@ -117,12 +117,22 @@ func splitOverviewWidth(w int) (int, int) {
 // both — the connection list is the part that still says something at three
 // rows, since a sparkline squeezed to nothing says nothing at all.
 func renderNetBody(m Model, w, h int) string {
-	trend := ""
-	if h >= 5 {
-		trend = renderNetThroughput(m.NetTxHist, m.NetRxHist, m.netMaxTx, m.netMaxRx, w)
+	// This panel is one of five in the overview's right column, so it gets
+	// three or four body rows at the heights people actually run. The trend
+	// therefore degrades rather than waiting for room: two rows of chart when
+	// there are four, a single row of figures when there are three, nothing
+	// below that. A threshold of five, which is what this had first, meant the
+	// trend never appeared here at all.
+	trendH := 0
+	switch {
+	case h >= 4:
+		trendH = 2
+	case h == 3:
+		trendH = 1
 	}
+	trend := renderNetThroughput(m.NetTxHist, m.NetRxHist, m.netMaxTx, m.netMaxRx, w, trendH)
 	if trend == "" {
 		return renderNetMini(m.NetConns, w, h, false)
 	}
-	return trend + "\n" + renderNetMini(m.NetConns, w, h-2, false)
+	return trend + "\n" + renderNetMini(m.NetConns, w, h-trendH, false)
 }

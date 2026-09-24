@@ -675,8 +675,8 @@ func netStateColor(state string) lipgloss.Color {
 //
 // Returns "" when there is nothing to draw, so a target with no sockets keeps
 // the plain connection list instead of two flat lines implying measurement.
-func renderNetThroughput(txH, rxH []float64, maxTx, maxRx float64, w int) string {
-	if w < 24 || (len(txH) == 0 && len(rxH) == 0) {
+func renderNetThroughput(txH, rxH []float64, maxTx, maxRx float64, w, h int) string {
+	if w < 24 || (len(txH) == 0 && len(rxH) == 0) || h <= 0 {
 		return ""
 	}
 	cur := func(h []float64) float64 {
@@ -696,6 +696,20 @@ func renderNetThroughput(txH, rxH []float64, maxTx, maxRx float64, w int) string
 		return lipgloss.NewStyle().Width(labelW).Background(ColorPanel).Render(
 			MutedStyle.Render(name) +
 				lipgloss.NewStyle().Foreground(c).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(v)))
+	}
+
+	// One row cannot hold two directions, and rendering only the first is the
+	// worst of the three options: the panel looks complete and is half true.
+	// Showing both figures without their charts says less and lies about
+	// nothing. (The panel's MaxHeight would otherwise truncate the second row
+	// silently — measured on F3, which gave this panel a single body row and
+	// published tx with rx nowhere on screen.)
+	if h == 1 {
+		return lipgloss.NewStyle().Width(w).Background(ColorPanel).Render(
+			MutedStyle.Render("tx ") +
+				lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(cur(txH))) +
+				MutedStyle.Render("   rx ") +
+				lipgloss.NewStyle().Foreground(ColorBlue).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(cur(rxH))))
 	}
 
 	sparks := SparklineWithMax(txH, sparkW, maxTx, ColorGreen) + "\n" +

@@ -92,3 +92,26 @@ func TestPanelKeepsItsWidthWithAnOverWideBody(t *testing.T) {
 		}
 	}
 }
+
+// The network trend is two directions. Rendering only the first is the worst
+// option available: the panel looks complete and is half true. Measured on F3,
+// which handed the panel a single body row and published tx with rx nowhere on
+// screen — so below two rows it falls back to both figures without charts, and
+// below one it renders nothing.
+func TestNetThroughputNeverShowsOneDirectionAlone(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	for i := 0; i < 60; i++ {
+		m.recordNetThroughput(40000, 300000)
+	}
+	for _, tab := range []int{0, 2} {
+		for _, h := range []int{minTerminalHeight, 18, 20, 24, 30, 40, 50, 60} {
+			m.Width, m.Height, m.ActiveTab = 120, h, tab
+			m.render.commit = true
+			out := m.View()
+			tx, rx := strings.Contains(out, "tx "), strings.Contains(out, "rx ")
+			if tx != rx {
+				t.Errorf("tab %d at h=%d: tx=%v rx=%v — one direction on its own", tab, h, tx, rx)
+			}
+		}
+	}
+}
