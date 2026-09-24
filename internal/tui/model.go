@@ -356,7 +356,7 @@ func NewModel(cfg Config) Model {
 	if cfg.Export {
 		if f, err := openExportFile(); err == nil {
 			m.exportFile = f
-			m.toast = fmt.Sprintf("✓ export: %s", f.Name())
+			m.toast = fmt.Sprintf("✓ export: %s", AbsPath(f.Name()))
 		} else {
 			fmt.Fprintf(os.Stderr, "warning: --export failed: %v\n", err)
 		}

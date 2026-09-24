@@ -42,15 +42,7 @@ func renderStatusBar(m Model) string {
 	rightParts := []string{}
 	// Toast has priority — replaces the right info for 2s
 	if m.toast != "" {
-		toastStyle := lipgloss.NewStyle().
-			Foreground(ColorTeal).
-			Background(barBg).
-			Bold(true)
-		// If toast starts with ⚠, switch to warning color
-		if strings.HasPrefix(m.toast, "⚠") {
-			toastStyle = toastStyle.Foreground(ColorAmber)
-		}
-		rightParts = append(rightParts, toastStyle.Render(m.toast))
+		rightParts = append(rightParts, toastStyleFor(m.toast, barBg).Render(m.toast))
 	} else {
 		if m.Paused {
 			rightParts = append(rightParts, lipgloss.NewStyle().
@@ -85,6 +77,22 @@ func renderStatusBar(m Model) string {
 	if lipgloss.Width(left)+lipgloss.Width(right)+3 > m.Width {
 		left = strings.Join(miniParts, lblStyle.Render("  ·  "))
 	}
+	// Last resort. A toast is SHORTENED rather than dropped: it is the only
+	// thing on this bar that answers a question the operator just asked, and
+	// the answer is usually a path. Dropping it at 80 or 100 columns — which is
+	// where an absolute path stops fitting, and where most terminals are — hands
+	// back nothing at all.
+	//
+	// Truncated from the LEFT, keeping the tail: the file name and the nearest
+	// directories identify it, the leading /home/… does not.
+	if lipgloss.Width(left)+lipgloss.Width(right)+3 > m.Width {
+		if m.toast != "" {
+			budget := m.Width - lipgloss.Width(left) - 3
+			right = toastStyleFor(m.toast, barBg).Render(truncateLeft(m.toast, budget))
+		} else {
+			right = ""
+		}
+	}
 	if lipgloss.Width(left)+lipgloss.Width(right)+3 > m.Width {
 		right = ""
 	}
@@ -97,4 +105,33 @@ func renderStatusBar(m Model) string {
 	edge := lipgloss.NewStyle().Background(barBg).Render(" ")
 
 	return edge + left + pad + right + edge
+}
+
+// toastStyleFor colours a toast: amber when it opens with the warning sign,
+// teal otherwise.
+func toastStyleFor(toast string, bg lipgloss.Color) lipgloss.Style {
+	st := lipgloss.NewStyle().Foreground(ColorTeal).Background(bg).Bold(true)
+	if strings.HasPrefix(toast, "⚠") {
+		st = st.Foreground(ColorAmber)
+	}
+	return st
+}
+
+// truncateLeft keeps the END of a string, marking the cut with a leading "…".
+//
+// The opposite of truncate(), and for a reason: this is used on paths, where
+// the tail is what identifies the file and the head is the part every path on
+// the machine has in common.
+func truncateLeft(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= w {
+		return s
+	}
+	if w == 1 {
+		return "…"
+	}
+	return "…" + string(r[len(r)-(w-1):])
 }

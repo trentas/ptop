@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/trentas/ptop/pkg/collector"
@@ -83,7 +84,8 @@ func buildSnapshot(m Model) Snapshot {
 }
 
 // SaveSnapshot serializes a snapshot as formatted JSON to a file
-// ptop-snapshot-<timestamp>.json in the cwd. Returns the created path.
+// ptop-snapshot-<timestamp>.json in the cwd. Returns the ABSOLUTE path, since
+// the caller reports it to someone who cannot see the working directory.
 //
 // Exposed for main.go to use in the --export-on-quit flow.
 func SaveSnapshot(m Model) (string, error) {
@@ -96,7 +98,26 @@ func SaveSnapshot(m Model) (string, error) {
 	if err := os.WriteFile(path, data, 0644); err != nil {
 		return "", err
 	}
-	return path, nil
+	return AbsPath(path), nil
+}
+
+// AbsPath resolves a path for DISPLAY, falling back to what it was handed.
+//
+// Every file ptop writes is named relative to the working directory, so it
+// lands wherever the operator launched from. Reporting it back the same way is
+// the one place that does not work: the TUI owns the whole screen, so by the
+// time someone reads "✓ snapshot: ptop-snapshot-20260924-031500.json" they
+// cannot see the shell that would tell them which directory that is. Under
+// --serve the same name is written by a process whose working directory is
+// usually / and never the reader's.
+//
+// A failure here is not worth reporting — the file was already written — so the
+// relative name is returned rather than an error nobody can act on.
+func AbsPath(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 // openExportFile creates/truncates ptop-export-<timestamp>.jsonl for continuous mode.

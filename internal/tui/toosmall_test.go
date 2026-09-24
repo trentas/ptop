@@ -115,3 +115,36 @@ func TestNetThroughputNeverShowsOneDirectionAlone(t *testing.T) {
 		}
 	}
 }
+
+// A toast is the only thing on the status bar that answers a question the
+// operator just asked, and the answer is usually a path. It used to be dropped
+// whole when it did not fit — at 80 and 100 columns, which is where an absolute
+// path stops fitting and where most terminals are.
+func TestStatusBarShortensAToastRatherThanDroppingIt(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m.toast = "✓ snapshot: /home/someone/a/deep/path/that/goes/on/ptop-snapshot-20260924-031500.json"
+	for _, w := range []int{60, 80, 100, 140, 200} {
+		m.Width = w
+		out := renderStatusBar(m)
+		if !strings.Contains(out, "ptop-snapshot-20260924-031500.json") {
+			t.Errorf("w=%d: the file name is gone entirely:\n%s", w, out)
+		}
+		if got := lipgloss.Width(out); got > w {
+			t.Errorf("w=%d: status bar is %d wide", w, got)
+		}
+	}
+}
+
+// Truncated from the left, because the tail identifies the file and the head is
+// what every path on the machine has in common.
+func TestTruncateLeftKeepsTheTail(t *testing.T) {
+	if got := truncateLeft("/a/very/long/path/file.json", 12); got != "…h/file.json" {
+		t.Errorf("truncateLeft = %q", got)
+	}
+	if got := truncateLeft("short", 20); got != "short" {
+		t.Errorf("a string that fits must not be touched, got %q", got)
+	}
+	if got := truncateLeft("abc", 0); got != "" {
+		t.Errorf("no room means no output, got %q", got)
+	}
+}

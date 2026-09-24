@@ -59,11 +59,16 @@ func TestSaveSnapshot_roundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if !strings.HasPrefix(path, "ptop-snapshot-") {
-		t.Errorf("unexpected path: %s", path)
+	// ABSOLUTE, and it has to be: the caller shows this to someone looking at a
+	// full-screen TUI, with no shell in sight to say what the working directory
+	// was.
+	if !filepath.IsAbs(path) {
+		t.Errorf("path is not absolute: %s", path)
 	}
-	full := filepath.Join(dir, path)
-	data, err := os.ReadFile(full)
+	if base := filepath.Base(path); !strings.HasPrefix(base, "ptop-snapshot-") {
+		t.Errorf("unexpected name: %s", base)
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
