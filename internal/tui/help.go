@@ -97,7 +97,7 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		"",
 		sectionTitle.Render("Snapshot / Export"),
 		row("s", "One-shot snapshot (ptop-snapshot-<ts>.json)"),
-		row("e", "Toggle continuous export (ptop-export-<ts>.jsonl)"),
+		row("e", "Toggle continuous export (ptop-export-<ts>.jsonl, ~40KB/s)"),
 		dimRow("--export", "CLI flag: export from launch + final snapshot on exit"),
 		"",
 		sectionTitle.Render("Collectors"),

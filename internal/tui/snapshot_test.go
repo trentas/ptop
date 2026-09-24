@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 func TestBuildSnapshot_includesAllFields(t *testing.T) {
@@ -120,5 +122,35 @@ func TestExportFile_jsonlLine(t *testing.T) {
 		if err := json.Unmarshal([]byte(line), &s); err != nil {
 			t.Errorf("line %d is not valid JSON: %v", i, err)
 		}
+	}
+}
+
+// Both axes reached the panels before they reached this file, so an export
+// looked complete while carrying everything except them.
+func TestSnapshotCarriesTheCPUAndNetworkAxes(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m.CPUSites.add(collector.CPUProfile{
+		Sites:        []collector.CPUSite{{Func: "main.hot", Module: "app", Samples: 300}},
+		TotalSamples: 400, UnresolvedSamples: 100, WindowMs: 1000,
+		SampleRateHz: 97, RequestedRateHz: 99, TotalSites: 12, OmittedSamples: 40,
+	})
+	m.NetThroughput = collector.NetThroughputSample{TxBytes: 5000, RxBytes: 9000, TxBytesPerS: 100}
+
+	d := buildSnapshot(m).Data
+	if len(d.CPUSites.Sites) != 1 || d.CPUSites.Sites[0].Func != "main.hot" {
+		t.Errorf("cpu sites missing from the export: %+v", d.CPUSites)
+	}
+	// The readings that make a share refusable have to travel with it.
+	if d.CPUSites.TotalSamples != 400 || d.CPUSites.UnresolvedSamples != 100 {
+		t.Errorf("sample counts missing: %+v", d.CPUSites)
+	}
+	if d.CPUSites.SampleRateHz != 97 || d.CPUSites.RequestedRateHz != 99 {
+		t.Errorf("achieved/requested rate missing: %+v", d.CPUSites)
+	}
+	if d.CPUSites.TotalSites != 12 || d.CPUSites.OmittedSamples != 40 {
+		t.Errorf("the top-N cut is unreadable without these: %+v", d.CPUSites)
+	}
+	if d.NetThroughput.TxBytes != 5000 || d.NetThroughput.RxBytes != 9000 {
+		t.Errorf("network totals missing: %+v", d.NetThroughput)
 	}
 }
