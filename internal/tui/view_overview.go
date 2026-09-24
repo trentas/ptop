@@ -77,7 +77,7 @@ func renderOverviewView(m Model, w, h int) string {
 		rightW, rightHs[1])
 
 	netPanel := Panel("Network",
-		renderNetMini(m.NetConns, rightW-2, rightHs[2]-3, false),
+		renderNetBody(m, rightW-2, rightHs[2]-3),
 		rightW, rightHs[2])
 
 	memPanel := Panel("Memory",
@@ -107,4 +107,22 @@ func splitOverviewWidth(w int) (int, int) {
 	}
 	right := w - left
 	return left, right
+}
+
+// renderNetBody stacks the throughput trend over the connection list, the way
+// the CPU panel stacks its hot functions under the sparkline: the chart says
+// how much is moving, the list says who with.
+//
+// The trend takes two rows and yields them when the panel is too short to hold
+// both — the connection list is the part that still says something at three
+// rows, since a sparkline squeezed to nothing says nothing at all.
+func renderNetBody(m Model, w, h int) string {
+	trend := ""
+	if h >= 5 {
+		trend = renderNetThroughput(m.NetTxHist, m.NetRxHist, m.netMaxTx, m.netMaxRx, w)
+	}
+	if trend == "" {
+		return renderNetMini(m.NetConns, w, h, false)
+	}
+	return trend + "\n" + renderNetMini(m.NetConns, w, h-2, false)
 }

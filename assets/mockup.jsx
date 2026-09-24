@@ -45,6 +45,11 @@ function useSimulatedData() {
     { func:"libc.so.6",                          file:"",               samples:120 },
   ]};
   const [syscallCounts,    setSyscallCounts]    = useState(()=>Object.fromEntries(SYSCALLS.map(s=>[s,Math.floor(Math.random()*200)])));
+  // Network throughput trend. Derived from the cumulative per-connection
+  // counters the table below shows — a total cannot show a transfer starting
+  // or stopping, which is what this row is for.
+  const netTxHistory = Array(60).fill(0).map((_,i)=>40000+35000*Math.sin(i/11));
+  const netRxHistory = Array(60).fill(0).map((_,i)=>300000+250000*Math.sin(i/7+1));
   const [netEvents,        setNetEvents]        = useState([
     { id:1, type:"TCP",  remote:"10.0.1.5:5432",         state:"WAIT",        latency:42, dir:"→", tx:12000,  rx:88000  },
     { id:2, type:"TCP",  remote:"10.0.0.1:443",          state:"ESTABLISHED", latency:8,  dir:"↔", tx:480000, rx:500000 },
@@ -156,7 +161,7 @@ function useSimulatedData() {
     return ()=>clearInterval(iv);
   },[]);
 
-  return { tick, cpuHistory, cpuSites, syscallCounts, netEvents, memStats, threads, ioReadHistory, ioWriteHistory, ioFiles, ioTotals, ioLatencyBuckets, fds, fdCountHistory, fdEvents, timeline, activeTab, setActiveTab };
+  return { tick, cpuHistory, cpuSites, syscallCounts, netEvents, netTxHistory, netRxHistory, memStats, threads, ioReadHistory, ioWriteHistory, ioFiles, ioTotals, ioLatencyBuckets, fds, fdCountHistory, fdEvents, timeline, activeTab, setActiveTab };
 }
 
 // ─── Shared primitives ────────────────────────────────────────────────────────
@@ -284,6 +289,32 @@ function SyscallBars({ counts }) {
 // the narrow F1 overview panel omits it to keep REMOTE readable. The TX/RX
 // reading is OS-dependent in the real TUI — cumulative bytes on Linux/eBPF,
 // current send/recv socket-buffer occupancy (a backlog gauge) on macOS.
+// NetThroughput is the tx/rx trend. Two rows and not one sum: a link saturating
+// upstream and one saturating downstream are different problems with different
+// fixes, and a single "network bytes/s" line cannot tell them apart.
+function NetThroughput({ tx, rx }) {
+  const row=(hist,color,label)=>{
+    const max=Math.max(...hist,1);
+    const pts=hist.map((v,i)=>`${(i/(hist.length-1))*260},18-${(v/max)*18}`.replace("18-","")).join(" ");
+    return (
+      <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+        <svg width={260} height={18} style={{ flex:1 }}>
+          <polyline points={hist.map((v,i)=>`${(i/(hist.length-1))*260},${18-(v/max)*18}`).join(" ")} fill="none" stroke={color} strokeWidth="1.5"/>
+        </svg>
+        <span style={{ fontSize:9, color:COLORS.muted, width:70, flexShrink:0 }}>
+          {label} <span style={{ color, fontWeight:700 }}>{fmt(hist[hist.length-1])}/s</span>
+        </span>
+      </div>
+    );
+  };
+  return (
+    <div style={{ padding:"4px 10px", display:"flex", flexDirection:"column", gap:2 }}>
+      {row(tx, COLORS.green, "tx")}
+      {row(rx, COLORS.blue, "rx")}
+    </div>
+  );
+}
+
 function NetPanel({ events, showTraffic }) {
   const sc=s=>s==="WAIT"?COLORS.amber:s==="RECV"?COLORS.cyan:s==="ESTABLISHED"?COLORS.green:COLORS.muted;
   return (
@@ -435,7 +466,10 @@ function OverviewView({ data }) {
       <div style={{ display:"flex", flexDirection:"column", flex:1.3, gap:1 }}>
         <Box title="▸ I/O Throughput" flex={1.1}><IOMiniPanel totals={data.ioTotals} readH={data.ioReadHistory} writeH={data.ioWriteHistory}/></Box>
         <Box title="▸ File Descriptors" flex={0.9}><FdMiniPanel fds={data.fds}/></Box>
-        <Box title="▸ Network" flex={0.9}><NetPanel events={data.netEvents}/></Box>
+        <Box title="▸ Network" flex={1.2}>
+          <NetThroughput tx={data.netTxHistory} rx={data.netRxHistory}/>
+          <NetPanel events={data.netEvents}/>
+        </Box>
         <Box title="▸ Memory" flex={0.65}><MemPanel stats={data.memStats}/></Box>
         <Box title="▸ Event Stream" flex={1.8}><Timeline events={data.timeline}/></Box>
       </div>
@@ -473,6 +507,7 @@ function NetworkView({ data }) {
   return (
     <div style={{ display:"flex", flex:1, gap:1, overflow:"hidden", padding:1 }}>
       <div style={{ display:"flex", flexDirection:"column", flex:2, gap:1 }}>
+        <Box title="▸ Throughput" flex={0.45}><NetThroughput tx={data.netTxHistory} rx={data.netRxHistory}/></Box>
         <Box title="▸ Active Connections" flex={1}><NetPanel events={data.netEvents} showTraffic/></Box>
         <Box title="▸ Latency Trend" flex={1.5}>
           <div style={{ padding:"8px 12px", display:"flex", flexDirection:"column", gap:10 }}>

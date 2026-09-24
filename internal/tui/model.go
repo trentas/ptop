@@ -141,6 +141,8 @@ type Model struct {
 
 	// Collected data
 	CPUHistory     []float64
+	NetTxHist      []float64 // network throughput trend, bytes/s (#125 follow-up)
+	NetRxHist      []float64
 	SyscallCounts  map[string]uint64
 	NetConns       []collector.NetConn
 	NetErrors      []collector.NetError // eBPF RST/retransmit anomalies (#56), newest-first
@@ -250,6 +252,9 @@ type Model struct {
 
 	// IO maxima with slow decay — avoids rescaling sparklines every tick.
 	ioMaxRead  float64
+	netTput    collector.NetThroughput // derives tx/rx rates from cumulative counters
+	netMaxTx   float64
+	netMaxRx   float64
 	ioMaxWrite float64
 
 	// render memoizes the last frame so View() stays cheap on the high-rate
@@ -495,6 +500,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case NetMsg:
 		m.NetConns = []collector.NetConn(v)
 		m.usingMockNet = false
+		// The snapshot carries cumulative per-connection counters, so the trend
+		// is derived rather than published. collector.NetThroughput owns that
+		// arithmetic because it is not the subtraction it looks like — see its
+		// doc comment for the three ways a naive total lies.
+		tx, rx := m.netTput.Observe(m.NetConns, time.Now())
+		m.recordNetThroughput(tx, rx)
 		return m, m.waitBus()
 
 	case NetErrorMsg:
@@ -750,6 +761,29 @@ func (m Model) renderFrame() string {
 		Render(content)
 
 	return header + "\n" + tabbar + "\n" + contentBox + "\n" + statusbar
+}
+
+// recordNetThroughput appends one tx/rx reading and rescales the chart.
+//
+// The maximum decays rather than tracking the window's peak exactly, for the
+// same reason the I/O panel's does: a single burst would otherwise rescale the
+// whole chart and flatten everything around it, and then un-flatten it a
+// second later. The floor keeps an idle link from drawing its own noise as a
+// full-height chart.
+func (m *Model) recordNetThroughput(tx, rx float64) {
+	m.NetTxHist = appendCapped(m.NetTxHist, tx, historyLen)
+	m.NetRxHist = appendCapped(m.NetRxHist, rx, historyLen)
+
+	const decayPerTick = 0.97
+	const floorBytesPerSec = 10 * 1024
+	m.netMaxTx = math.Max(m.netMaxTx*decayPerTick, tx)
+	m.netMaxRx = math.Max(m.netMaxRx*decayPerTick, rx)
+	if m.netMaxTx < floorBytesPerSec {
+		m.netMaxTx = floorBytesPerSec
+	}
+	if m.netMaxRx < floorBytesPerSec {
+		m.netMaxRx = floorBytesPerSec
+	}
 }
 
 // ─── Simulation ──────────────────────────────────────────────────────────────

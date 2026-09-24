@@ -11,14 +11,17 @@ import (
 
 // renderNetworkView (F3) — assets/mockup.jsx → NetworkView
 //
-//   ┌── Active Connections (left) ──────────────┬── Network Events ─┐
-//   │ TYPE REMOTE       STATE   LAT      TX/RX   │ 12:34 NET TCP …   │
-//   │ ...                                         │                   │
-//   ├── Anomalies ────────────────────────┤                          │
-//   │ ⚠ refused → 10.0.1.5:5432 (RST 1.5ms)│                          │
-//   ├── Latency Trend ────────────────────┤                          │
-//   │ remote        ▇▇▇▇▇▇  42ms          │                          │
-//   └─────────────────────────────────────┴──────────────────────────┘
+//	┌── Throughput ─────────────────────────────┬── Network Events ─┐
+//	│ ⣀⣤⣶⣿⣶⣤⣀ tx 5.4KB                          │                   │
+//	│ ⣿⣶⣤⣀⣤⣶⣿ rx 109.6KB                        │                   │
+//	├── Active Connections ─────────────────────┤                   │
+//	│ TYPE REMOTE       STATE   LAT      TX/RX   │ 12:34 NET TCP …   │
+//	│ ...                                         │                   │
+//	├── Anomalies ────────────────────────┤                          │
+//	│ ⚠ refused → 10.0.1.5:5432 (RST 1.5ms)│                          │
+//	├── Latency Trend ────────────────────┤                          │
+//	│ remote        ▇▇▇▇▇▇  42ms          │                          │
+//	└─────────────────────────────────────┴──────────────────────────┘
 func renderNetworkView(m Model, w, h int) string {
 	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
@@ -26,25 +29,33 @@ func renderNetworkView(m Model, w, h int) string {
 	leftW := w * 2 / 3
 	rightW := w - leftW
 
-	leftHs := splitFlex([]float64{1.0, 0.7, 1.3}, h)
+	leftHs := splitFlex([]float64{0.45, 1.0, 0.7, 1.3}, h)
 
-	conns := Panel("Active Connections",
-		renderNetMini(m.NetConns, leftW-2, leftHs[0]-3, true),
+	// Throughput first: the table below says who the target is talking to and
+	// how much each connection has moved IN TOTAL, which is a different
+	// question from how much is moving right now. A cumulative column cannot
+	// show a transfer starting or stopping.
+	throughput := Panel("Throughput",
+		renderNetThroughput(m.NetTxHist, m.NetRxHist, m.netMaxTx, m.netMaxRx, leftW-2),
 		leftW, leftHs[0])
 
-	anomalies := Panel("Anomalies",
-		renderNetAnomalies(m, leftW-2, leftHs[1]-3),
+	conns := Panel("Active Connections",
+		renderNetMini(m.NetConns, leftW-2, leftHs[1]-3, true),
 		leftW, leftHs[1])
+
+	anomalies := Panel("Anomalies",
+		renderNetAnomalies(m, leftW-2, leftHs[2]-3),
+		leftW, leftHs[2])
 
 	latency := Panel("Latency Trend",
 		renderNetLatencyTrend(m, leftW-2),
-		leftW, leftHs[2])
+		leftW, leftHs[3])
 
 	stream := Panel("Network Events",
 		renderTimelineCompact(filterTimelineByCategory(m.Timeline, "net"), rightW-2, h-3),
 		rightW, h)
 
-	left := lipgloss.JoinVertical(lipgloss.Left, conns, anomalies, latency)
+	left := lipgloss.JoinVertical(lipgloss.Left, throughput, conns, anomalies, latency)
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, stream)
 }
 

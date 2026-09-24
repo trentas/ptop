@@ -665,6 +665,45 @@ func netStateColor(state string) lipgloss.Color {
 // has no cumulative counter, so they are the current send/recv socket-buffer
 // occupancy (a backlog gauge). The ? overlay reports the active source so the
 // user can tell which reading they're looking at.
+// renderNetThroughput is the tx/rx trend that sits above the connection list,
+// the network counterpart of the I/O Throughput panel.
+//
+// The two series are stacked rather than summed: a link saturating upstream and
+// one saturating downstream are different problems with different fixes, and a
+// single "network bytes/s" line cannot tell them apart. Same reason the I/O
+// panel keeps read and write on their own rows.
+//
+// Returns "" when there is nothing to draw, so a target with no sockets keeps
+// the plain connection list instead of two flat lines implying measurement.
+func renderNetThroughput(txH, rxH []float64, maxTx, maxRx float64, w int) string {
+	if w < 24 || (len(txH) == 0 && len(rxH) == 0) {
+		return ""
+	}
+	cur := func(h []float64) float64 {
+		if len(h) == 0 {
+			return 0
+		}
+		return h[len(h)-1]
+	}
+
+	const labelW = 12
+	sparkW := w - labelW - 1
+	if sparkW < 5 {
+		sparkW = 5
+	}
+
+	label := func(name string, v float64, c lipgloss.Color) string {
+		return lipgloss.NewStyle().Width(labelW).Background(ColorPanel).Render(
+			MutedStyle.Render(name) +
+				lipgloss.NewStyle().Foreground(c).Background(ColorPanel).Bold(true).Render(fmtBytesPerSec(v)))
+	}
+
+	sparks := SparklineWithMax(txH, sparkW, maxTx, ColorGreen) + "\n" +
+		SparklineWithMax(rxH, sparkW, maxRx, ColorBlue)
+	labels := label("tx ", cur(txH), ColorGreen) + "\n" + label("rx ", cur(rxH), ColorBlue)
+	return lipgloss.JoinHorizontal(lipgloss.Top, sparks, panelSp1, labels)
+}
+
 func renderNetMini(conns []collector.NetConn, w, h int, showTraffic bool) string {
 	const typeW = 5
 	const stateW = 12
