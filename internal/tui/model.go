@@ -411,7 +411,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case FDMsg:
 		m.FDs = []collector.FDEntry(v)
 		m.usingMockFDs = false
-		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
+		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), historyLen)
 		return m, m.waitBus()
 
 	case TimelineMsg:
@@ -432,7 +432,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case CpuMsg:
 		s := collector.CpuSample(v)
-		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, 60)
+		m.CPUHistory = appendCapped(m.CPUHistory, s.UsagePct, historyLen)
 		m.usingMockCPU = false
 		return m, m.waitBus()
 
@@ -459,7 +459,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !heapLiveShown(m.HeapStats) {
 			trend = m.HeapStats.AllocBytesRate
 		}
-		m.HeapLiveHist = appendCapped(m.HeapLiveHist, trend, 60)
+		m.HeapLiveHist = appendCapped(m.HeapLiveHist, trend, historyLen)
 		return m, m.waitBus()
 
 	case IOWaitMsg:
@@ -642,8 +642,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.IOStats.WriteBytesPerS = s.WriteBytesPerS
 		m.IOStats.ReadOps = s.ReadOps
 		m.IOStats.WriteOps = s.WriteOps
-		m.IOReadHist = appendCapped(m.IOReadHist, s.ReadBytesPerS, 60)
-		m.IOWriteHist = appendCapped(m.IOWriteHist, s.WriteBytesPerS, 60)
+		m.IOReadHist = appendCapped(m.IOReadHist, s.ReadBytesPerS, historyLen)
+		m.IOWriteHist = appendCapped(m.IOWriteHist, s.WriteBytesPerS, historyLen)
 		m.ioMaxRead = math.Max(m.ioMaxRead*0.97, s.ReadBytesPerS)
 		m.ioMaxWrite = math.Max(m.ioMaxWrite*0.97, s.WriteBytesPerS)
 		if m.ioMaxRead < 100*1024 {
@@ -657,6 +657,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	return m, nil
 }
+
+// historyLen is how many readings each sparkline series keeps.
+//
+// 240 and not 60 because a braille cell now carries two samples, so a chart w
+// columns wide draws the last 2w readings: at the old 60 a wide panel ran out
+// of history and drew into half its own width. At roughly one reading a second
+// this is four minutes of trend, in the same space that used to hold one.
+const historyLen = 240
 
 func (m Model) View() string {
 	// Frame memoization: bubbletea calls View() once per message, but only the
@@ -801,7 +809,7 @@ func (m *Model) seedMockData() {
 	r := m.rng
 
 	// CPU history
-	m.CPUHistory = make([]float64, 60)
+	m.CPUHistory = make([]float64, historyLen)
 	for i := range m.CPUHistory {
 		m.CPUHistory[i] = 5 + r.Float64()*30
 	}
@@ -836,8 +844,8 @@ func (m *Model) seedMockData() {
 	}
 
 	// I/O history
-	m.IOReadHist = make([]float64, 60)
-	m.IOWriteHist = make([]float64, 60)
+	m.IOReadHist = make([]float64, historyLen)
+	m.IOWriteHist = make([]float64, historyLen)
 	for i := range m.IOReadHist {
 		m.IOReadHist[i] = r.Float64() * 800 * 1024
 		m.IOWriteHist[i] = r.Float64() * 400 * 1024
@@ -889,14 +897,14 @@ func (m *Model) seedMockData() {
 	}
 
 	// FD count history
-	m.FDCountHistory = make([]float64, 60)
+	m.FDCountHistory = make([]float64, historyLen)
 	for i := range m.FDCountHistory {
 		m.FDCountHistory[i] = float64(len(m.FDs)) + r.Float64()*4 - 2
 	}
 
 	// Timeline (seeded empty — gets filled by tick)
 	m.Timeline = make([]collector.TimelineEvent, 0, 120)
-	m.FDEvents = make([]collector.FDEvent, 0, 60)
+	m.FDEvents = make([]collector.FDEvent, 0, historyLen)
 
 	// Initialize stable caches and decaying maxima
 	m.refreshTopN()
@@ -968,7 +976,7 @@ func (m *Model) tick() {
 		}
 		delta := (r.Float64()*2 - 0.9) * 12
 		cpu := clamp(prev+delta, 0, 100)
-		m.CPUHistory = appendCapped(m.CPUHistory, cpu, 60)
+		m.CPUHistory = appendCapped(m.CPUHistory, cpu, historyLen)
 	}
 
 	// Syscalls — only simulates if the eBPF tracer isn't running.
@@ -1033,8 +1041,8 @@ func (m *Model) tick() {
 		if r.Float64() > 0.9 {
 			nw += 1500 * 1024
 		}
-		m.IOReadHist = appendCapped(m.IOReadHist, nr, 60)
-		m.IOWriteHist = appendCapped(m.IOWriteHist, nw, 60)
+		m.IOReadHist = appendCapped(m.IOReadHist, nr, historyLen)
+		m.IOWriteHist = appendCapped(m.IOWriteHist, nw, historyLen)
 		m.IOStats.ReadBytesPerS = nr
 		m.IOStats.WriteBytesPerS = nw
 
@@ -1161,7 +1169,7 @@ func (m *Model) simulateFDs() {
 		}
 	}
 
-	m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), 60)
+	m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), historyLen)
 }
 
 func (m *Model) pushTimeline() {

@@ -531,7 +531,18 @@ directly.
 
 ### Sparklines
 
-Unicode braille (`⣀⣄⣆⣇⡇⡏⡟⡿`, 8-level per column).
+Unicode braille, **two samples per cell** — each column filled from the bottom
+up, four levels (`⣀⣤⣶⣿` at equal heights).
+
+It used to claim eight levels per column, which braille cannot do: a cell is
+four rows tall. That ramp faked the extra four by spilling into the second
+column — a horizontal axis — so the height saturated at 57% of the scale, the
+top half of the scale filled *downwards* from the top, and the bottom-right dot
+was never lit at any level. Using the second column as the next SAMPLE instead
+gives four honest levels and twice the time resolution in the same width.
+`sparkline_test.go` pins all three defects. If vertical resolution ever matters
+more than time, the half-block ramp `▁▂▃▄▅▆▇█` is eight real levels at one
+sample per cell.
 `Sparkline(data []float64, width int, color lipgloss.Color) string` is pure
 and reused across views.
 
