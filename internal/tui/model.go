@@ -382,6 +382,23 @@ func (m Model) Init() tea.Cmd {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Pause stops the DISPLAY, and until now it stopped only the simulation —
+	// with real collectors attached, `p` drew a PAUSED badge over a screen that
+	// went on changing, which is the one thing a pause must not do.
+	//
+	// The values are still DRAINED, never left in the bus. The queue is bounded
+	// and a consumer that stops reading makes the collector shed its own
+	// snapshots (#121); under --serve --tui the gRPC hub shares that bus, so a
+	// paused TUI would throttle every subscriber. What pause skips is applying
+	// them, so the frame being read stays put and resumes at the present rather
+	// than replaying a backlog.
+	if bv, ok := msg.(busValueMsg); ok {
+		if m.Paused {
+			return m, m.waitBus()
+		}
+		msg = bv.inner
+	}
+
 	switch v := msg.(type) {
 
 	case tea.WindowSizeMsg:
@@ -481,6 +498,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case exportTickMsg:
 		// Continuous export: writes one JSONL line per tick. If the write fails,
 		// closes the file and shows an error toast — doesn't hang the TUI.
+		//
+		// While paused the model holds readings from whenever the operator
+		// pressed `p`, so writing them again would stamp them with the current
+		// time and assert measurements that were never taken. A gap in the file
+		// is readable; repeated frozen samples look like a process that stopped
+		// changing. The tick stays scheduled so export resumes on its own.
+		if m.Paused {
+			return m, exportTick()
+		}
 		if m.exportFile != nil {
 			if err := writeSnapshotLine(m.exportFile, m); err != nil {
 				_ = m.exportFile.Close()
@@ -1321,12 +1347,19 @@ func (m Model) waitBus() tea.Cmd {
 	return func() tea.Msg {
 		for v := range sub.C() {
 			if msg := busMsg(v); msg != nil {
-				return msg
+				return busValueMsg{inner: msg}
 			}
 		}
 		return busClosedMsg{}
 	}
 }
+
+// busValueMsg envelopes everything that arrives from the collector bus.
+//
+// It exists so pause has ONE place to stop the display, rather than a check in
+// each of the twenty-odd collector cases — a list that would silently fall out
+// of date the first time an axis was added. Unwrapped at the top of Update.
+type busValueMsg struct{ inner tea.Msg }
 
 // busMsg maps a published collector value onto the model's message type, or nil
 // when the TUI has nothing to do with it. This is the whole demux: the value's

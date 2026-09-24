@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -180,5 +181,78 @@ func TestSeed(t *testing.T) {
 	}
 	if len(m.IOStats.TopFiles) == 0 {
 		t.Error("IOStats.TopFiles empty after seed")
+	}
+}
+
+// `p` used to draw a PAUSED badge over a screen that went on changing: Paused
+// gated the SIMULATION and nothing else, so with real collectors attached the
+// one thing a pause must do was the one thing it did not.
+func TestPauseFreezesTheDisplayAndResumes(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m.Width, m.Height = 120, 40
+
+	apply := func(m Model, pct float64) Model {
+		nm, _ := m.Update(busValueMsg{inner: CpuMsg{UsagePct: pct}})
+		return nm.(Model)
+	}
+
+	m = apply(m, 10)
+	before := len(m.CPUHistory)
+	if before == 0 {
+		t.Fatal("a collector value should reach the model when running")
+	}
+
+	nm, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = nm.(Model)
+	if !m.Paused {
+		t.Fatal("p should pause")
+	}
+	for i := 0; i < 5; i++ {
+		m = apply(m, 99)
+	}
+	if len(m.CPUHistory) != before {
+		t.Errorf("history grew from %d to %d while paused", before, len(m.CPUHistory))
+	}
+	if last := m.CPUHistory[len(m.CPUHistory)-1]; last == 99 {
+		t.Error("a value applied while paused reached the display")
+	}
+
+	nm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	m = nm.(Model)
+	m = apply(m, 77)
+	if last := m.CPUHistory[len(m.CPUHistory)-1]; last != 77 {
+		t.Errorf("after resuming, the newest reading is %v, want 77", last)
+	}
+}
+
+// Paused, the model holds readings from whenever `p` was pressed. Writing them
+// again stamps them with the current time and asserts measurements that were
+// never taken; a gap is readable, repeated frozen samples are not.
+func TestPauseStopsTheContinuousExportWithoutStoppingItsTick(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m.Width, m.Height = 120, 40
+	f, err := os.CreateTemp(t.TempDir(), "export-*.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.exportFile = f
+
+	nm, _ := m.Update(exportTickMsg{})
+	m = nm.(Model)
+	st, _ := f.Stat()
+	if st.Size() == 0 {
+		t.Fatal("a running export should write")
+	}
+	wrote := st.Size()
+
+	m.Paused = true
+	nm, cmd := m.Update(exportTickMsg{})
+	m = nm.(Model)
+	if cmd == nil {
+		t.Error("the export tick must stay scheduled so it resumes on its own")
+	}
+	st, _ = f.Stat()
+	if st.Size() != wrote {
+		t.Errorf("the export wrote %d more bytes while paused", st.Size()-wrote)
 	}
 }

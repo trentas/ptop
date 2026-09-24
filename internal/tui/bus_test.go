@@ -87,10 +87,14 @@ func TestModelConsumesSharedFeed(t *testing.T) {
 
 	f.ch <- collector.CpuSample{UsagePct: 42}
 
-	msg := m.waitBus()()
-	cpu, ok := msg.(CpuMsg)
+	// Bus values arrive enveloped, so pause has one place to stop them.
+	env, ok := m.waitBus()().(busValueMsg)
+	if !ok {
+		t.Fatalf("model received %#v, want a busValueMsg", env)
+	}
+	cpu, ok := env.inner.(CpuMsg)
 	if !ok || cpu.UsagePct != 42 {
-		t.Fatalf("model received %#v, want CpuMsg{42}", msg)
+		t.Fatalf("model received %#v, want CpuMsg{42}", env.inner)
 	}
 	select {
 	case v := <-other.C():
