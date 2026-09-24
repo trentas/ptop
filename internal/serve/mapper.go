@@ -64,6 +64,20 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		}
 		ev.Payload = &pb.Event_Network{Network: &pb.NetworkSnapshot{Conns: conns}}
 
+	case collector.NetThroughputSample:
+		// CATEGORY_NETWORK, beside the connection list rather than inside it:
+		// the list is who the target is talking to, this is how much has moved,
+		// and the second cannot be recovered from the first once a connection
+		// closes (#128).
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_NETWORK
+		ev.Payload = &pb.Event_NetThroughput{NetThroughput: &pb.NetThroughputSample{
+			TxBytes:     x.TxBytes,
+			RxBytes:     x.RxBytes,
+			TxBytesPerS: x.TxBytesPerS,
+			RxBytesPerS: x.RxBytesPerS,
+		}}
+
 	case collector.NetError:
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = pb.Category_CATEGORY_NETWORK
