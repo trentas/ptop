@@ -154,3 +154,35 @@ func TestSnapshotCarriesTheCPUAndNetworkAxes(t *testing.T) {
 		t.Errorf("network totals missing: %+v", d.NetThroughput)
 	}
 }
+
+// One object with two naming conventions is worse than a file that is
+// consistently ugly. The wrapper's own fields carry snake_case tags, so the
+// types inside it must too — CPUSite and NetThroughputSample were new enough to
+// still be taggable without changing a shape anyone had read.
+func TestSnapshotAxesUseTheFilesNamingConvention(t *testing.T) {
+	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m.CPUSites.add(collector.CPUProfile{
+		Sites:        []collector.CPUSite{{Func: "main.hot", Samples: 3}},
+		TotalSamples: 3, WindowMs: 1000,
+	})
+	m.NetThroughput = collector.NetThroughputSample{TxBytes: 1}
+
+	b, err := json.Marshal(buildSnapshot(m))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(b)
+	for _, want := range []string{
+		`"share_pct"`, `"stack_id"`, `"addr_hex"`, `"samples"`,
+		`"tx_bytes"`, `"rx_bytes_per_s"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %s — the axis serialized with Go field names", want)
+		}
+	}
+	for _, unwanted := range []string{`"SharePct"`, `"StackID"`, `"AddrHex"`, `"TxBytesPerS"`} {
+		if strings.Contains(out, unwanted) {
+			t.Errorf("%s leaked a Go field name into the export", unwanted)
+		}
+	}
+}

@@ -12,6 +12,14 @@ import (
 
 // snapshotSchemaVersion matches semver in the JSON format. Bumping requires
 // migration in the consumer; fields added in backward-compat don't bump it.
+//
+// Known inconsistency, deliberately not fixed here: the collector types carry
+// no json tags, so everything nested inside this file — network_connections,
+// memory, threads, heap — serializes with Go field names ("RSSBytes", "CPUPct")
+// while the fields around them are snake_case. Correcting that changes the
+// shape of a format consumers already read, so it belongs to a version bump
+// rather than to a bug fix. The axes added in #125 and #128 were tagged while
+// they were still new enough that nobody could have read them yet.
 const snapshotSchemaVersion = 1
 
 // Snapshot is the canonical export format — used both by `s` (one-shot)
