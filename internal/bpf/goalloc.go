@@ -90,6 +90,12 @@ type GoAllocTracer struct {
 	stacksMap   *ebpf.Map
 	accumMap    *ebpf.Map
 	sampleBytes uint64
+
+	// exe is the target executable as parsed to find mallocgc. Held, not
+	// used: while it is alive, pkg/symbol's image cache hands the same parse to
+	// the symbolizers that resolve this process's frames next, instead of each
+	// of them parsing a large Go binary's line table again (#137).
+	exe *symbol.Module
 }
 
 // Totals returns how many allocations the target has made and how many bytes
@@ -148,7 +154,7 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	// another mount namespace (a container), and it cannot go stale the way a
 	// path can after an upgrade replaces the file on disk.
 	exePath := fmt.Sprintf("/proc/%d/exe", pid)
-	mallocOff, err := goMallocFileOffset(exePath)
+	mallocOff, exe, err := goMallocFileOffset(exePath)
 	if err != nil {
 		return nil, targetReadError("locate "+goMallocSymbol+" in the target executable", err)
 	}
@@ -161,7 +167,7 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	if err != nil {
 		return nil, kprobeLoadError("load goalloc collection", err)
 	}
-	t := &GoAllocTracer{coll: coll}
+	t := &GoAllocTracer{coll: coll, exe: exe}
 
 	targetMap := coll.Maps["goalloc_target_pid"]
 	if targetMap == nil {
@@ -242,35 +248,36 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 }
 
 // goMallocFileOffset locates runtime.mallocgc in the ELF image at path and
-// returns its offset within the file, which is the form a uprobe takes.
+// returns its offset within the file, which is the form a uprobe takes, along
+// with the parsed image (see GoAllocTracer.exe).
 //
 // Returns ErrNotGo when the image has no Go line table.
-func goMallocFileOffset(path string) (uint64, error) {
+func goMallocFileOffset(path string) (uint64, *symbol.Module, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", path, err)
+		return 0, nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	defer f.Close()
 
 	mod, err := symbol.OpenModule(f, path)
 	if err != nil {
-		return 0, fmt.Errorf("parse %s: %w", path, err)
+		return 0, nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if !mod.IsGo() {
-		return 0, ErrNotGo
+		return 0, nil, ErrNotGo
 	}
 	vaddr, _, ok := mod.FuncStart(goMallocSymbol)
 	if !ok {
 		// A Go image whose line table does not name mallocgc is either far
 		// older than the register ABI this probe reads, or so heavily
 		// rewritten that guessing would be worse than declining.
-		return 0, fmt.Errorf("%s not found in %s (unsupported Go build)", goMallocSymbol, path)
+		return 0, nil, fmt.Errorf("%s not found in %s (unsupported Go build)", goMallocSymbol, path)
 	}
 	off, ok := mod.FileOffset(vaddr)
 	if !ok {
-		return 0, fmt.Errorf("%s at %#x is in no file-backed segment of %s", goMallocSymbol, vaddr, path)
+		return 0, nil, fmt.Errorf("%s at %#x is in no file-backed segment of %s", goMallocSymbol, vaddr, path)
 	}
-	return off, nil
+	return off, mod, nil
 }
 
 // Next blocks until the next allocation event arrives. Returns io.EOF when the
@@ -349,5 +356,6 @@ func (t *GoAllocTracer) Close() error {
 		t.callsiteMap = nil
 		t.stacksMap = nil
 	}
+	t.exe = nil
 	return nil
 }

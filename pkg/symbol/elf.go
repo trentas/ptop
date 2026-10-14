@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"sync"
 )
@@ -44,11 +45,26 @@ type progLoad struct {
 	off, vaddr, filesz uint64
 }
 
-// Module wraps a parsed ELF image and resolves file virtual addresses to
-// Frames. It retains no open file handle (all needed data is read at open
-// time), so it is cheap to cache and safe for concurrent Resolve calls.
+// Module is one name for a parsed ELF image, and resolves file virtual
+// addresses in it to Frames. It retains no open file handle, so it is cheap to
+// cache and safe for concurrent Resolve calls.
+//
+// The name is the only thing a Module owns. Everything parsed out of the file
+// lives in the image, which depends on the file's contents alone, so every
+// Module opened on the same file shares one (image.go, #137): the four
+// symbolizing collectors of a target, the Go allocation probe locating
+// runtime.mallocgc, and the symbolizers of a second target running the same
+// binary. The name stays per Module because callers reach one file by
+// different paths — /proc/<pid>/exe and the mapped path name the same image,
+// and Frame.Module must not depend on which of them opened it first.
 type Module struct {
-	name     string
+	name string
+	*image
+}
+
+// image is everything parsed out of one ELF file. Read-only once built, apart
+// from the lazily constructed line tables, which guard themselves.
+type image struct {
 	funcs    []funcSym // sorted by value, deduped
 	loads    []progLoad
 	loadBase uint64 // smallest PT_LOAD vaddr (link-time base)
@@ -68,19 +84,41 @@ type Module struct {
 	dw          *dwarf.Data
 	dwarfMu     sync.Mutex
 	lineReaders map[dwarf.Offset]*dwarf.LineReader
+
+	// mapping is the file, mapped read-only, when pclnData and dwarfSecs are
+	// slices of it rather than heap copies; nil when they are copies. It is
+	// unmapped by a cleanup once no Module references the image, and every
+	// method that reads it runs under a fault guard — see image.go.
+	mapping   []byte
+	faultOnce sync.Once
 }
 
 // OpenModule parses the ELF image in r. name is used for Frame.Module (its
-// basename) and error messages. r is fully consumed before returning; the
-// caller may close it immediately.
+// basename) and error messages. The caller may close r as soon as this returns.
+//
+// When r is an *os.File the parse is shared: a file already open as a Module
+// elsewhere in the process is not parsed again, and the large sections are
+// mapped from the file instead of copied onto the heap. Any other ReaderAt is
+// parsed afresh into heap copies. See image.go for both.
 func OpenModule(r io.ReaderAt, name string) (*Module, error) {
+	img, err := loadImage(r, name)
+	if err != nil {
+		return nil, err
+	}
+	return &Module{name: filepath.Base(name), image: img}, nil
+}
+
+// parseImage does the parsing for OpenModule. Section contents come through
+// data, which slices them out of a mapping of the file when it can and copies
+// them otherwise (sectionSource, image.go).
+func parseImage(r io.ReaderAt, name string, data func(*elf.Section) ([]byte, error)) (*image, error) {
 	f, err := elf.NewFile(r)
 	if err != nil {
 		return nil, fmt.Errorf("parse ELF %s: %w", name, err)
 	}
 	defer f.Close()
 
-	m := &Module{name: filepath.Base(name), loadBase: ^uint64(0)}
+	m := &image{loadBase: ^uint64(0)}
 	for _, p := range f.Progs {
 		if p.Type != elf.PT_LOAD {
 			continue
@@ -96,7 +134,7 @@ func OpenModule(r io.ReaderAt, name string) (*Module, error) {
 
 	m.buildID = readBuildID(f)
 	m.funcs = collectFuncs(f)
-	m.dwarfSecs = loadDWARFSections(f)
+	m.dwarfSecs = loadDWARFSections(f, data)
 
 	// Stash the Go line table inputs for lazy gosym construction.
 	//
@@ -105,8 +143,8 @@ func OpenModule(r io.ReaderAt, name string) (*Module, error) {
 	// Section.Data on one of those hands back a zero-filled buffer the size of
 	// the original — a large allocation that can only parse as garbage.
 	if sec := f.Section(".gopclntab"); sec != nil && sec.Type != elf.SHT_NOBITS {
-		if data, err := sec.Data(); err == nil && len(data) > 0 {
-			m.pclnData = data
+		if d, err := data(sec); err == nil && len(d) > 0 {
+			m.pclnData = d
 			if t := f.Section(".text"); t != nil {
 				m.textAddr = t.Addr
 			}
@@ -132,8 +170,15 @@ func (m *Module) BuildID() string { return m.buildID }
 // first and short-circuits. DWARF is the C/C++ path: optional, much larger,
 // and absent from most shipped binaries, so it runs only after a name has
 // already been found and only fills in what is missing.
-func (m *Module) Resolve(fileVaddr uint64) Frame {
-	fr := Frame{Module: m.name, BuildID: m.buildID, Offset: fileVaddr - m.loadBase}
+//
+// A fault reading the mapped file — it was truncated on disk while mapped —
+// ends the lookup with whatever had resolved so far rather than the process
+// (endFaultGuard).
+func (m *Module) Resolve(fileVaddr uint64) (fr Frame) {
+	fr = Frame{Module: m.name, BuildID: m.buildID, Offset: fileVaddr - m.loadBase}
+	if m.mapping != nil {
+		defer m.endFaultGuard(m.name, debug.SetPanicOnFault(true))
+	}
 
 	if tab := m.gosym(); tab != nil {
 		if file, line, fn := tab.PCToLine(fileVaddr); fn != nil {
@@ -152,7 +197,7 @@ func (m *Module) Resolve(fileVaddr uint64) Frame {
 	return fr
 }
 
-func (m *Module) gosym() *gosym.Table {
+func (m *image) gosym() *gosym.Table {
 	m.gosymOnce.Do(func() {
 		if len(m.pclnData) == 0 {
 			return
@@ -232,6 +277,20 @@ func fileVaddr(runtimeAddr, segStart, segFileOff uint64, loads []progLoad) (uint
 		}
 	}
 	return 0, false
+}
+
+// fileBuildID reads the GNU build-id of the ELF image in r, or "". It parses
+// the headers and one note and nothing else — never the symbol tables or the
+// line table — which is what makes it cheap enough to call for an identity
+// (#137: ProcessBuildID used to open a full Module for it, and on a Go binary
+// that meant a copy of .gopclntab to read 20 bytes).
+func fileBuildID(r io.ReaderAt) string {
+	f, err := elf.NewFile(r)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	return readBuildID(f)
 }
 
 // readBuildID reads the GNU build-id from the .note.gnu.build-id section, or

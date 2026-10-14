@@ -90,7 +90,7 @@ func TestLookupFunc(t *testing.T) {
 
 func TestResolveStrippedFallback(t *testing.T) {
 	// No symbols, no gosym → module + module-relative offset.
-	m := &Module{name: "libfoo.so", loadBase: 0x1000, buildID: "abcd"}
+	m := &Module{name: "libfoo.so", image: &image{loadBase: 0x1000, buildID: "abcd"}}
 	fr := m.Resolve(0x2500)
 	if fr.Func != "" || fr.Module != "libfoo.so" || fr.Offset != 0x1500 || fr.BuildID != "abcd" {
 		t.Errorf("fallback frame = %+v", fr)

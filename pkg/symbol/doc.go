@@ -11,8 +11,10 @@
 // file:line for Go binaries and survives symbol stripping; the ELF symbol
 // table (.symtab/.dynsym) yields function names for C/C++, and DWARF line info
 // (dwarf.go) fills in their file:line where the image carries debug sections;
-// a stripped module degrades gracefully to "module+0xoffset". Modules are
-// parsed once and cached.
+// a stripped module degrades gracefully to "module+0xoffset". A file is
+// parsed once per process and shared by every Module opened on it, with its
+// line table and DWARF mapped from the file rather than copied (image.go,
+// #137) — the collectors of one target symbolize against one parse.
 //
 // What that cascade cannot name is a third-party binary shipped stripped, whose
 // symbols live outside the mapped image. debuginfod.go (#119) adds the optional

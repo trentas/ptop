@@ -159,7 +159,7 @@ func TestDwarfLineRejectsUnknownPC(t *testing.T) {
 }
 
 func TestDwarfLineOnModuleWithoutSections(t *testing.T) {
-	m := &Module{name: "stripped.so"}
+	m := &Module{name: "stripped.so", image: &image{}}
 	if _, _, ok := m.dwarfLine(0x1000); ok {
 		t.Error("dwarfLine resolved on a module with no debug sections")
 	}
@@ -174,7 +174,7 @@ func TestLoadDWARFSectionsRequiresInfoAndLine(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
-	if secs := loadDWARFSections(f); secs == nil {
+	if secs := loadDWARFSections(f, (*elf.Section).Data); secs == nil {
 		t.Fatal("loadDWARFSections declined a -g binary")
 	} else if secs[".debug_info"] == nil || secs[".debug_line"] == nil {
 		t.Error("loaded sections missing .debug_info or .debug_line")

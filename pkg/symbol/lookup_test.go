@@ -30,7 +30,7 @@ func TestIsGo(t *testing.T) {
 
 	// A module with no line table is the non-Go case (a C library, or an ELF
 	// we failed to find .gopclntab in).
-	if (&Module{name: "libc.so.6"}).IsGo() {
+	if (&Module{name: "libc.so.6", image: &image{}}).IsGo() {
 		t.Error("IsGo = true for a module with no line table")
 	}
 }
@@ -163,7 +163,7 @@ func TestFileOffsetMatchesProgramHeaders(t *testing.T) {
 }
 
 func TestFileOffsetRejectsUnmappedAddress(t *testing.T) {
-	m := &Module{loads: []progLoad{{off: 0x1000, vaddr: 0x400000, filesz: 0x2000}}}
+	m := &Module{image: &image{loads: []progLoad{{off: 0x1000, vaddr: 0x400000, filesz: 0x2000}}}}
 	if _, ok := m.FileOffset(0x500000); ok {
 		t.Error("FileOffset accepted an address in no segment")
 	}
