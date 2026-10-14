@@ -198,6 +198,9 @@ ptop/
 │       └── *_test.go, *_stub.go
 │   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)
 │       ├── elf.go                 OS-agnostic ELF/gosym core (Module, build-id)
+│       ├── image.go               one parse per file, shared + mapped; fault guard (#137)
+│       ├── mmap_unix.go           file identity + read-only mmap (linux, darwin)
+│       ├── mmap_other.go          heap-copy fallback for any other OS
 │       ├── dwarf.go               C/C++ file:line from .debug_line
 │       ├── debuginfod.go          off-image symbols by build-id: local bundle + debuginfod (#119)
 │       ├── lookup.go              name → address (uprobe attach), gosym fallback
@@ -844,6 +847,61 @@ section's **header** while blanking its contents to `SHT_NOBITS`, and
 original. `OpenModule` and `loadDWARFSections` now skip `SHT_NOBITS` sections
 for that reason — without it, a debug file's `.gopclntab` is a large allocation
 that can only parse as garbage.
+
+### A binary is parsed once, and its line table is mapped (#137)
+
+A Go binary's `.gopclntab` is a large fraction of the file (131.6 MB of a
+394 MB `otelcol-contrib`), and the gosym table built over it is about as large
+again. Every `Symbolizer` used to open its own `Module`, every `Module` copied
+the section onto the heap, and four collectors symbolize (heap, futex,
+security, cpuprof), with `goalloc` and `ProcessBuildID` opening the executable
+on their own as well. Attaching to that one binary peaked at **1.1–1.2 GB** of
+anonymous memory, and the kernel OOM-killed ptop in the 512 MiB container a
+downstream consumer sizes for ordinary targets.
+
+`pkg/symbol/image.go` fixes it in two halves, and each one is needed:
+
+- **One parse per file.** A `Module` is a name plus a pointer to an `image`, and
+  images are cached by file identity: device, inode, size and mtime. The name
+  stays per `Module` because one file is reached by several paths:
+  `/proc/<pid>/exe` (goalloc) and the mapped path (every symbolizer) are the
+  same image, and `Frame.Module` must not depend on which one opened it first.
+  Concurrent opens wait on a single parse. `GoAllocTracer` holds its `Module`
+  so that the symbolizers adopt the parse it already made.
+- **The large sections are mapped.** `.gopclntab` and the DWARF sections are
+  slices of a read-only `MAP_PRIVATE` mapping, not copies. Their pages are
+  file-backed and reclaimable. A `ReaderAt` that is not an `*os.File` still
+  gets private heap copies, as before.
+
+Measured against `otelcol-contrib` 0.156.0, alternating arms: `main` peaked at
+1,101–1,185 MB RSS, the fix at 256–258 MB (~152 MB anonymous). In a 512 MiB
+memcg, `main` was OOM-killed on both runs and the fix peaked at 155–236 MB.
+150,058 addresses across `.text` resolve byte-identically before and after.
+What remains on the heap is one gosym table (~130 MB there), which grows with
+the function count. It is the next lever.
+
+Four invariants to know before touching this:
+
+- **The cache holds images weakly.** An image lives exactly as long as some
+  `Module` refers to it, and a cleanup unmaps the file afterwards. A server
+  that has watched many short-lived targets (#72) holds nothing for the ones
+  that are gone.
+- **Every read of the mapping runs under the fault guard.** A file truncated
+  while mapped raises SIGBUS on the next touch, and the Go runtime dies of it.
+  `Resolve` and `FuncStart` defer `endFaultGuard(…, debug.SetPanicOnFault(true))`.
+  **A new method that reads `pclnData` or `dwarfSecs` must do the same.** The
+  test only bites on Linux: macOS returns zeros for a truncated mapping instead
+  of faulting, so on a Mac the unguarded control passes too.
+- **Nothing may keep a slice of the mapping beyond the image.** Once the image
+  is unmapped, any such slice would fault. gosym and `debug/dwarf` copy every
+  string they return, and `Frame` holds only strings.
+- **`ProcessBuildID` reads the note and nothing else** (`fileBuildID`). It used
+  to parse a whole `Module`, and on a Go target that meant a copy of the line
+  table just to read 20 bytes.
+
+The general rule: **a cost that scales with the target's size is paid once per
+target, not once per consumer of it.** Several collectors reading the same
+binary is the normal shape here, not an edge case.
 
 Version metadata is injected via `-ldflags` at release time
 (`main.version`, `main.commit`, `main.buildDate`). In dev they stay as

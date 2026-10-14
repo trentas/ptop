@@ -1,5 +1,7 @@
 package symbol
 
+import "runtime/debug"
+
 // Name → address lookup, the inverse of Resolve.
 //
 // Resolve answers "what code is at this address", which is what stack
@@ -26,7 +28,13 @@ func (m *Module) IsGo() bool { return len(m.pclnData) > 0 }
 // table's entry/end pair only approximates), then the Go line table for
 // stripped binaries. size is 0 when only the line table knew the symbol and
 // its extent could not be derived.
+//
+// Like Resolve, it reads the mapped line table under a fault guard: a file
+// truncated on disk while mapped yields ok=false, not a crash.
 func (m *Module) FuncStart(name string) (vaddr, size uint64, ok bool) {
+	if m.mapping != nil {
+		defer m.endFaultGuard(m.name, debug.SetPanicOnFault(true))
+	}
 	for _, f := range m.funcs {
 		if f.name == name {
 			return f.value, f.size, true

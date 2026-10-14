@@ -15,24 +15,28 @@ import (
 // function name — enough to say WHAT, never enough to point at a line, and a
 // line is what a consumer needs to cross the behaviour against a code diff.
 //
-// ─── Why the sections are copied in, and why there is a budget ──────────────
+// ─── Why the sections are taken at open time, and why there is a budget ────
 //
 // A Module deliberately retains no open file handle, so it stays cheap to
 // cache and safe to share. Keeping that property means the DWARF bytes have to
-// be copied in while the file is open, and parsed later on demand.
+// be taken while the file is open, and parsed later on demand. Since #137 they
+// are slices of a read-only mapping of the file wherever one can be made (see
+// image.go), and heap copies only where it cannot — a compressed section, or a
+// Module opened from something other than a file.
 //
-// Copying is bounded because it is unbounded in principle: a large C++ binary
-// built with -g carries debug sections far larger than its code. Past the
-// budget the module simply resolves without file:line — the same answer it
-// gave before this file existed, which is a real degradation but a safe one.
-// The alternative (holding a file handle per mapped module for the life of the
-// process) trades a bounded memory cost for an unbounded fd cost.
+// The budget is still applied either way, because it is unbounded in
+// principle: a large C++ binary built with -g carries debug sections far
+// larger than its code. Past the budget the module simply resolves without
+// file:line — the same answer it gave before this file existed, which is a
+// real degradation but a safe one. The alternative (holding a file handle per
+// mapped module for the life of the process) trades a bounded memory cost for
+// an unbounded fd cost.
 //
-// .debug_frame and the location lists are not copied: they carry unwind and
+// .debug_frame and the location lists are not taken: they carry unwind and
 // variable-location data, they are often the largest sections present, and the
 // line table needs neither.
 
-// dwarfBudget caps the total debug bytes copied into one Module. Sized so an
+// dwarfBudget caps the total debug bytes taken into one Module. Sized so an
 // ordinary service binary with -g fits comfortably while a debug-info-heavy
 // C++ image degrades to func-only instead of pinning hundreds of megabytes.
 const dwarfBudget = 256 << 20
@@ -53,9 +57,10 @@ var dwarfSections = []string{
 	".debug_str_offsets",
 }
 
-// loadDWARFSections copies the line-resolution sections out of f, or returns
-// nil when the image has no debug info or exceeds the budget.
-func loadDWARFSections(f *elf.File) map[string][]byte {
+// loadDWARFSections takes the line-resolution sections out of f through data
+// (a mapping or a copy — sectionSource), or returns nil when the image has no
+// debug info or exceeds the budget.
+func loadDWARFSections(f *elf.File, data func(*elf.Section) ([]byte, error)) map[string][]byte {
 	var total uint64
 	for _, name := range dwarfSections {
 		if sec := f.Section(name); sec != nil && sec.Type != elf.SHT_NOBITS {
@@ -66,7 +71,7 @@ func loadDWARFSections(f *elf.File) map[string][]byte {
 		return nil
 	}
 	// .debug_info and .debug_line are the two that must be there; without
-	// either there is no line program to read and the copy is wasted.
+	// either there is no line program to read and taking the rest is wasted.
 	if !hasBits(f, ".debug_info") || !hasBits(f, ".debug_line") {
 		return nil
 	}
@@ -77,11 +82,11 @@ func loadDWARFSections(f *elf.File) map[string][]byte {
 		if sec == nil || sec.Type == elf.SHT_NOBITS {
 			continue
 		}
-		data, err := sec.Data()
+		b, err := data(sec)
 		if err != nil {
-			continue // a compressed or truncated section: skip it, not the lot
+			continue // a truncated or undecodable section: skip it, not the lot
 		}
-		out[name] = data
+		out[name] = b
 	}
 	if out[".debug_info"] == nil || out[".debug_line"] == nil {
 		return nil
@@ -91,7 +96,7 @@ func loadDWARFSections(f *elf.File) map[string][]byte {
 
 // dwarfData builds the DWARF reader on first use. Parsing is deferred because
 // most modules in a process never have a frame land in them.
-func (m *Module) dwarfData() *dwarf.Data {
+func (m *image) dwarfData() *dwarf.Data {
 	m.dwarfOnce.Do(func() {
 		if len(m.dwarfSecs) == 0 {
 			return
@@ -130,7 +135,7 @@ func (m *Module) dwarfData() *dwarf.Data {
 //
 // Serialized on m.dwarfMu: dwarf.Reader and dwarf.LineReader are stateful
 // cursors, and Module.Resolve is documented safe for concurrent use.
-func (m *Module) dwarfLine(fileVaddr uint64) (file string, line int, ok bool) {
+func (m *image) dwarfLine(fileVaddr uint64) (file string, line int, ok bool) {
 	d := m.dwarfData()
 	if d == nil {
 		return "", 0, false

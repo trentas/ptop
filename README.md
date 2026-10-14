@@ -480,6 +480,13 @@ sources the module carries, in that order:
 
 A module with none of them degrades to `module+0xoffset` rather than guessing.
 
+Symbolization costs ptop memory in proportion to the target binary, not to how
+many collectors use it. Each binary is parsed once and shared, and its line
+table and DWARF are mapped from the file instead of copied (#137). What stays
+on ptop's heap is the Go function index: about 130 MB for a 394 MB
+`otelcol-contrib`, where a capture peaks at around 260 MB RSS. Size a memory
+limit for the largest binary you will attach to.
+
 #### Symbols that live outside the binary
 
 Those four sources all travel *inside* the mapped image. The case they leave

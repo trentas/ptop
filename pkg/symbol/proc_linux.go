@@ -120,9 +120,9 @@ func (s *Symbolizer) ProcessBuildID() string {
 			return
 		}
 		defer f.Close()
-		if m, err := OpenModule(f, "exe"); err == nil {
-			s.execBuildID = m.buildID
-		}
+		// The note alone, not a Module: parsing the whole image for 20 bytes
+		// was a transient copy of the line table on every Go target (#137).
+		s.execBuildID = fileBuildID(f)
 	})
 	return s.execBuildID
 }
