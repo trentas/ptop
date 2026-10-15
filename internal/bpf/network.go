@@ -12,6 +12,7 @@ import (
 	"os"
 
 	"github.com/cilium/ebpf"
+	"github.com/cilium/ebpf/btf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -29,7 +30,7 @@ type NetConnKey struct {
 	_      uint16 // pad
 }
 
-// NetConnVal mirrors `struct net_val`. 64 bytes.
+// NetConnVal mirrors `struct net_val`. 72 bytes.
 type NetConnVal struct {
 	FirstSeenNs   uint64
 	LastSeenNs    uint64
@@ -40,7 +41,17 @@ type NetConnVal struct {
 	RxBytes       uint64
 	State         uint32
 	Retransmits   uint32 // #56 — running tcp_retransmit_skb count
+	Flags         uint32 // netFlag*
+	_             uint32
 }
+
+// Flags on a net_val — must match NET_F_* in programs/network.bpf.c.
+const (
+	// netFlagRTT: RTTNs is a measurement — the program saw this connection's
+	// handshake. Without it RTTNs is 0 because nothing was measured, which is
+	// every accepted connection and every one older than the capture.
+	netFlagRTT uint32 = 1
+)
 
 // Net error kinds — must match NET_ERR_* in programs/network.bpf.c.
 const (
@@ -78,23 +89,42 @@ type NetSnapshot struct {
 	TxBytes uint64
 	RxBytes uint64
 	LastNs  uint64
-	// FirstNs is when the tracer first saw this connection, in the
-	// bpf_ktime_get_ns domain. It is what tells a connection born under
-	// observation from one that was already running when ptop attached (#128)
-	// — the two need opposite treatment on their first sighting.
-	FirstNs uint64
+	// RTTMeasured says RTTNs is a handshake the tracer timed. False means
+	// RTTNs is not a measurement at all — never a 0ms handshake.
+	RTTMeasured bool
 }
 
 // NetTracer loads network.bpf.o, attaches the sock:inet_sock_set_state
-// tracepoint + kprobes on tcp_sendmsg/tcp_cleanup_rbuf, and exposes Stats()
-// to read the map.
+// tracepoint plus one byte lane (see attachByteLane), and exposes Stats() to
+// read the map.
 type NetTracer struct {
 	coll     *ebpf.Collection
 	links    []link.Link
 	cmap     *ebpf.Map
 	statsMap *ebpf.Map       // net_stats: what the map refused to hold (#133)
 	rb       *ringbuf.Reader // #56 — net_error_events channel
+	// ByteLane names what counts the bytes: NetByteLaneTracepoint or
+	// NetByteLaneKprobe.
+	ByteLane string
 }
+
+// The two ways the tracer can count bytes.
+const (
+	// NetByteLaneTracepoint is sock:sock_{send,recv}_length (6.4+): the exact
+	// count sock_{send,recv}msg returned, at a point the compiler cannot remove.
+	NetByteLaneTracepoint = "sock_send_length/sock_recv_length tracepoints"
+	// NetByteLaneKprobe is the lane for older kernels: kprobes on tcp_sendmsg
+	// (the requested size) and tcp_cleanup_rbuf. The second one is an inlining
+	// candidate — on a 7.2 kernel its call inside tcp_recvmsg was inlined and
+	// the kprobe never saw a received byte.
+	NetByteLaneKprobe = "tcp_sendmsg/tcp_cleanup_rbuf kprobes"
+)
+
+// forceNetKprobeLane makes the tracer skip the tracepoint lane, so the kprobe
+// lane can be exercised on a kernel that has both. Set at build time only
+// (-ldflags -X github.com/trentas/ptop/internal/bpf.forceNetKprobeLane=1);
+// there is deliberately no flag for it.
+var forceNetKprobeLane string
 
 func OpenNetTracer(target Target) (*NetTracer, error) {
 	if err := target.validate(); err != nil {
@@ -110,6 +140,10 @@ func OpenNetTracer(target Target) (*NetTracer, error) {
 	}
 	coll, err := ebpf.NewCollection(spec)
 	if err != nil {
+		if _, berr := btf.LoadKernelSpec(); berr != nil {
+			return nil, fmt.Errorf("load net collection: %w (the network probe reads a socket's "+
+				"addresses through the kernel's BTF, and this kernel exposes none: %v)", err, berr)
+		}
 		return nil, kprobeLoadError("load net collection", err)
 	}
 	t := &NetTracer{coll: coll}
@@ -148,29 +182,12 @@ func OpenNetTracer(target Target) (*NetTracer, error) {
 	}
 	t.links = append(t.links, tpLink)
 
-	// kprobes for Tx/Rx bytes. If a kprobe fails (kernel without
-	// CONFIG_KPROBES, symbol renamed, etc.), the tracer keeps working — only
-	// loses byte counts. Logging a warning would be nicer, but for simplicity
-	// we stay silent: state/RTT remain available. Truly fatal errors are rare.
-	kprobes := []struct{ sym, prog string }{
-		{"tcp_sendmsg", "handle_tcp_sendmsg"},
-		{"tcp_cleanup_rbuf", "handle_tcp_cleanup_rbuf"},
-	}
-	for _, kp := range kprobes {
-		p := coll.Programs[kp.prog]
-		if p == nil {
-			t.Close()
-			return nil, fmt.Errorf("program %s missing", kp.prog)
-		}
-		l, err := link.Kprobe(kp.sym, p, nil)
-		if err != nil {
-			t.Close()
-			return nil, fmt.Errorf("attach kprobe %s: %w", kp.sym, err)
-		}
-		t.links = append(t.links, l)
+	if err := t.attachByteLane(); err != nil {
+		t.Close()
+		return nil, err
 	}
 
-	// Net error probes (#56). Non-fatal — unlike the byte kprobes above, a
+	// Net error probes (#56). Non-fatal — unlike the byte lane above, a
 	// kernel without these symbols (renamed, or CONFIG_KPROBES off) simply
 	// yields no net-error events; connection tracking is unaffected, so we log
 	// and continue rather than failing the whole tracer.
@@ -209,6 +226,57 @@ func OpenNetTracer(target Target) (*NetTracer, error) {
 	return t, nil
 }
 
+// attachByteLane attaches what counts the bytes: the sock_{send,recv}_length
+// tracepoints where the kernel has them (6.4+), the kprobes otherwise. Both
+// lanes adopt a socket the target does I/O on (see network.bpf.c), so the
+// choice changes how bytes are measured, never which connections are seen.
+func (t *NetTracer) attachByteLane() error {
+	if forceNetKprobeLane == "" {
+		var tps []link.Link
+		for _, tp := range []struct{ name, prog string }{
+			{"sock_send_length", "handle_send_length"},
+			{"sock_recv_length", "handle_recv_length"},
+		} {
+			p := t.coll.Programs[tp.prog]
+			if p == nil {
+				return fmt.Errorf("program %s missing", tp.prog)
+			}
+			l, err := link.Tracepoint("sock", tp.name, p, nil)
+			if err != nil {
+				break // pre-6.4: fall through to the kprobes
+			}
+			tps = append(tps, l)
+		}
+		if len(tps) == 2 {
+			t.links = append(t.links, tps...)
+			t.ByteLane = NetByteLaneTracepoint
+			return nil
+		}
+		for _, l := range tps {
+			_ = l.Close()
+		}
+	}
+
+	// Fatal if these fail too: without either lane the axis has rows and no
+	// bytes, and every zero it published would read as an idle connection.
+	for _, kp := range []struct{ sym, prog string }{
+		{"tcp_sendmsg", "handle_tcp_sendmsg"},
+		{"tcp_cleanup_rbuf", "handle_tcp_cleanup_rbuf"},
+	} {
+		p := t.coll.Programs[kp.prog]
+		if p == nil {
+			return fmt.Errorf("program %s missing", kp.prog)
+		}
+		l, err := link.Kprobe(kp.sym, p, nil)
+		if err != nil {
+			return fmt.Errorf("attach kprobe %s: %w", kp.sym, err)
+		}
+		t.links = append(t.links, l)
+	}
+	t.ByteLane = NetByteLaneKprobe
+	return nil
+}
+
 // NextError blocks until the next net-error event arrives from the kernel.
 // Returns io.EOF once the tracer is closed. A short/garbled record is reported
 // as an error but does not close the stream — the caller keeps reading.
@@ -233,14 +301,18 @@ func (t *NetTracer) NextError() (NetErrorRecord, error) {
 	return rec, nil
 }
 
-// SeedConnection inserts an entry into net_conn_map for a 5-tuple that was
-// not captured by the tracepoint (e.g. TCP connections already established
-// when ptop attached). Uses BPF_NOEXIST: if an entry already exists (because
-// the tracepoint fired at some point), it preserves what's there — data
-// from the tracepoint has real RTT, accumulated bytes, etc.
+// SeedConnection inserts an entry into net_conn_map for a 4-tuple the kernel
+// side has not seen yet — a connection that was already established when ptop
+// attached, or one opened since that has neither moved a byte nor changed
+// state. Uses BPF_NOEXIST: an entry the program already holds keeps everything
+// it has.
 //
-// State is the kernel numeric value (1=ESTABLISHED, 2=SYN_SENT, ..., 11=CLOSING).
-// last_seen_ns is left zero so "fresh" connections from the tracepoint rank above.
+// The entry carries no socket pointer; the program adopts the socket the first
+// time the target reads or writes it, or the first time it changes state,
+// matching it by this tuple (#142). Until then the row has no bytes because
+// none have moved: any send or receive would have adopted it.
+//
+// State is the kernel numeric value (1=ESTABLISHED, ...).
 func (t *NetTracer) SeedConnection(key NetConnKey, state uint32) error {
 	if t == nil || t.cmap == nil {
 		return errors.New("tracer not initialized")
@@ -280,7 +352,8 @@ func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 			TxBytes: v.TxBytes,
 			RxBytes: v.RxBytes,
 			LastNs:  v.LastSeenNs,
-			FirstNs: v.FirstSeenNs,
+
+			RTTMeasured: v.Flags&netFlagRTT != 0,
 		})
 	}
 	if err := iter.Err(); err != nil {

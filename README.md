@@ -16,7 +16,7 @@ in the target.
 |---|---|---|
 | **F1 Overview** | CPU sparkline, top syscalls, threads, I/O, FDs, network, heap/leak, events | aggregate |
 | **F2 Syscalls** | per-call frequency, latency, live event stream | `raw_syscalls:sys_{enter,exit}` |
-| **F3 Network**  | TCP/UDP/UNIX connections with state, RTT, Tx/Rx | `sock:inet_sock_set_state` + tcp_sendmsg/cleanup_rbuf kprobes |
+| **F3 Network**  | TCP/UDP/UNIX connections with state, RTT, Tx/Rx | `sock:inet_sock_set_state` + `sock:sock_{send,recv}_length` (kprobes before 6.4) |
 | **F4 Threads**  | per-TID state, on-CPU%, lock graph (futex) | `sched:sched_switch` + futex tracepoints |
 | **F5 I/O**      | dual throughput, top files, latency histogram | VFS read/write/fsync syscall tracking |
 | **F6 FDs**      | live FD table by type, with bytes and active flag | `/proc/<pid>/fd` + open/close events |
@@ -323,7 +323,7 @@ eBPF programs in `internal/bpf/programs/`:
 - `syscalls.bpf.c` — raw_syscalls/sys_{enter,exit}
 - `cpu.bpf.c` — sched_switch → the target's on-CPU nanoseconds
 - `io.bpf.c` — VFS read/write/fsync + filesystem semantics (denials/deletes/renames)
-- `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit)
+- `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit); reads the socket's address through the kernel's BTF
 - `threads.bpf.c` — sched_switch
 - `futex.bpf.c` — wait/wake → lock graph
 - `memory.bpf.c` — mmap/brk/page-fault counters

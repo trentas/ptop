@@ -1202,15 +1202,29 @@ func (x *SyscallSnapshot) GetStats() []*SyscallStat {
 
 // ─── Network ────────────────────────────────────────────────────────────────
 type NetConn struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Fd            int32                  `protobuf:"varint,1,opt,name=fd,proto3" json:"fd,omitempty"`
-	Type          string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "TCP" | "UDP" | "UNIX"
-	Remote        string                 `protobuf:"bytes,3,opt,name=remote,proto3" json:"remote,omitempty"`
-	State         string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"` // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
-	Dir           string                 `protobuf:"bytes,5,opt,name=dir,proto3" json:"dir,omitempty"`     // "→" | "←" | "↔"
-	LatencyMs     float64                `protobuf:"fixed64,6,opt,name=latency_ms,json=latencyMs,proto3" json:"latency_ms,omitempty"`
-	TxBytes       uint64                 `protobuf:"varint,7,opt,name=tx_bytes,json=txBytes,proto3" json:"tx_bytes,omitempty"`
-	RxBytes       uint64                 `protobuf:"varint,8,opt,name=rx_bytes,json=rxBytes,proto3" json:"rx_bytes,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Fd     int32                  `protobuf:"varint,1,opt,name=fd,proto3" json:"fd,omitempty"`
+	Type   string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "TCP" | "UDP" | "UNIX"
+	Remote string                 `protobuf:"bytes,3,opt,name=remote,proto3" json:"remote,omitempty"`
+	State  string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"` // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
+	Dir    string                 `protobuf:"bytes,5,opt,name=dir,proto3" json:"dir,omitempty"`     // "→" | "←" | "↔"
+	// The handshake RTT (SYN_SENT → ESTABLISHED), when it was measured.
+	//
+	// ABSENT means not measured, never 0ms: a connection the target accepted
+	// (only active opens are timed), one already open when the capture started
+	// (`preexisting`), or a source with no RTT at all. Before this field had
+	// presence every connection published 0 — the handshake was in fact never
+	// timed (#135) — and a consumer read that as an instant connect.
+	LatencyMs *float64 `protobuf:"fixed64,6,opt,name=latency_ms,json=latencyMs,proto3,oneof" json:"latency_ms,omitempty"`
+	// Bytes the target sent / received on this connection SINCE THE ATTACH —
+	// for a `preexisting` connection too. Zero is a measurement: any send or
+	// receive by the target would have been counted (#142).
+	TxBytes uint64 `protobuf:"varint,7,opt,name=tx_bytes,json=txBytes,proto3" json:"tx_bytes,omitempty"`
+	RxBytes uint64 `protobuf:"varint,8,opt,name=rx_bytes,json=rxBytes,proto3" json:"rx_bytes,omitempty"`
+	// The connection was already open when the capture started, so its
+	// handshake (and age) were never observable. Its byte counters are not
+	// affected: they cover the capture, like every other connection's.
+	Preexisting   bool `protobuf:"varint,9,opt,name=preexisting,proto3" json:"preexisting,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1281,8 +1295,8 @@ func (x *NetConn) GetDir() string {
 }
 
 func (x *NetConn) GetLatencyMs() float64 {
-	if x != nil {
-		return x.LatencyMs
+	if x != nil && x.LatencyMs != nil {
+		return *x.LatencyMs
 	}
 	return 0
 }
@@ -1299,6 +1313,13 @@ func (x *NetConn) GetRxBytes() uint64 {
 		return x.RxBytes
 	}
 	return 0
+}
+
+func (x *NetConn) GetPreexisting() bool {
+	if x != nil {
+		return x.Preexisting
+	}
+	return false
 }
 
 type NetworkSnapshot struct {
@@ -3657,17 +3678,19 @@ const file_event_proto_rawDesc = "" +
 	"latency_ns\x18\x03 \x01(\x04H\x00R\tlatencyNs\x88\x01\x01B\r\n" +
 	"\v_latency_ns\"=\n" +
 	"\x0fSyscallSnapshot\x12*\n" +
-	"\x05stats\x18\x01 \x03(\v2\x14.ptop.v1.SyscallStatR\x05stats\"\xc2\x01\n" +
+	"\x05stats\x18\x01 \x03(\v2\x14.ptop.v1.SyscallStatR\x05stats\"\xf8\x01\n" +
 	"\aNetConn\x12\x0e\n" +
 	"\x02fd\x18\x01 \x01(\x05R\x02fd\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x16\n" +
 	"\x06remote\x18\x03 \x01(\tR\x06remote\x12\x14\n" +
 	"\x05state\x18\x04 \x01(\tR\x05state\x12\x10\n" +
-	"\x03dir\x18\x05 \x01(\tR\x03dir\x12\x1d\n" +
+	"\x03dir\x18\x05 \x01(\tR\x03dir\x12\"\n" +
 	"\n" +
-	"latency_ms\x18\x06 \x01(\x01R\tlatencyMs\x12\x19\n" +
+	"latency_ms\x18\x06 \x01(\x01H\x00R\tlatencyMs\x88\x01\x01\x12\x19\n" +
 	"\btx_bytes\x18\a \x01(\x04R\atxBytes\x12\x19\n" +
-	"\brx_bytes\x18\b \x01(\x04R\arxBytes\"9\n" +
+	"\brx_bytes\x18\b \x01(\x04R\arxBytes\x12 \n" +
+	"\vpreexisting\x18\t \x01(\bR\vpreexistingB\r\n" +
+	"\v_latency_ms\"9\n" +
 	"\x0fNetworkSnapshot\x12&\n" +
 	"\x05conns\x18\x01 \x03(\v2\x10.ptop.v1.NetConnR\x05conns\"\xc6\x01\n" +
 	"\x13NetThroughputSample\x12\x19\n" +
@@ -4001,6 +4024,7 @@ func file_event_proto_init() {
 		(*Event_NetThroughput)(nil),
 	}
 	file_event_proto_msgTypes[6].OneofWrappers = []any{}
+	file_event_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

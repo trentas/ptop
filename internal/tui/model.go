@@ -899,9 +899,9 @@ func (m *Model) seedMockData() {
 
 	// Net
 	m.NetConns = []collector.NetConn{
-		{FD: 4, Type: "TCP", Remote: "10.0.1.5:5432", State: "WAIT", Dir: "→", LatencyMs: 42, TxBytes: 12000, RxBytes: 88000},
-		{FD: 3, Type: "TCP", Remote: "10.0.0.1:443", State: "ESTABLISHED", Dir: "↔", LatencyMs: 8, TxBytes: 480000, RxBytes: 500000},
-		{FD: 5, Type: "UNIX", Remote: "/var/run/docker.sock", State: "ESTABLISHED", Dir: "→", LatencyMs: 1, TxBytes: 22000, RxBytes: 22000},
+		{FD: 4, Type: "TCP", Remote: "10.0.1.5:5432", State: "WAIT", Dir: "→", LatencyMs: 42, RTTMeasured: true, TxBytes: 12000, RxBytes: 88000},
+		{FD: 3, Type: "TCP", Remote: "10.0.0.1:443", State: "ESTABLISHED", Dir: "↔", LatencyMs: 8, RTTMeasured: true, TxBytes: 480000, RxBytes: 500000},
+		{FD: 5, Type: "UNIX", Remote: "/var/run/docker.sock", State: "ESTABLISHED", Dir: "→", LatencyMs: 1, RTTMeasured: true, TxBytes: 22000, RxBytes: 22000},
 	}
 
 	// Memory

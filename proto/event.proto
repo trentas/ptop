@@ -236,9 +236,23 @@ message NetConn {
   string remote = 3;
   string state = 4; // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
   string dir = 5; // "→" | "←" | "↔"
-  double latency_ms = 6;
+  // The handshake RTT (SYN_SENT → ESTABLISHED), when it was measured.
+  //
+  // ABSENT means not measured, never 0ms: a connection the target accepted
+  // (only active opens are timed), one already open when the capture started
+  // (`preexisting`), or a source with no RTT at all. Before this field had
+  // presence every connection published 0 — the handshake was in fact never
+  // timed (#135) — and a consumer read that as an instant connect.
+  optional double latency_ms = 6;
+  // Bytes the target sent / received on this connection SINCE THE ATTACH —
+  // for a `preexisting` connection too. Zero is a measurement: any send or
+  // receive by the target would have been counted (#142).
   uint64 tx_bytes = 7;
   uint64 rx_bytes = 8;
+  // The connection was already open when the capture started, so its
+  // handshake (and age) were never observable. Its byte counters are not
+  // affected: they cover the capture, like every other connection's.
+  bool preexisting = 9;
 }
 message NetworkSnapshot {
   repeated NetConn conns = 1;

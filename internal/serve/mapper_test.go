@@ -284,3 +284,34 @@ func TestMapHeapSnapshotCarriesCompleteness(t *testing.T) {
 		t.Errorf("omitted_alloc_bytes = %d, want %d", h.GetOmittedAllocBytes(), 96<<10)
 	}
 }
+
+// An untimed handshake must reach the wire as ABSENT, not as 0ms (#135): an
+// accepted connection and one older than the capture have no handshake the
+// probe could time, and every connection used to publish 0 — which a consumer
+// read as an instant connect.
+func TestMapNetConnLatencyPresenceAndPreexisting(t *testing.T) {
+	ev := toEvent(1, "", []collector.NetConn{
+		{Remote: "10.0.0.1:443", LatencyMs: 12.5, RTTMeasured: true},
+		{Remote: "10.0.0.2:5432", Preexisting: true, TxBytes: 4096},
+		{Remote: "10.0.0.3:80"}, // accepted: nothing timed, nothing pre-existing
+	})
+	c := ev.GetNetwork().GetConns()
+	if len(c) != 3 {
+		t.Fatalf("got %d conns, want 3", len(c))
+	}
+	if c[0].LatencyMs == nil || c[0].GetLatencyMs() != 12.5 {
+		t.Errorf("measured RTT = %v, want 12.5", c[0].LatencyMs)
+	}
+	for _, i := range []int{1, 2} {
+		if c[i].LatencyMs != nil {
+			t.Errorf("conn %d: latency_ms = %v, want absent — nothing was measured", i, *c[i].LatencyMs)
+		}
+	}
+	if !c[1].GetPreexisting() || c[0].GetPreexisting() || c[2].GetPreexisting() {
+		t.Errorf("preexisting = %v/%v/%v, want false/true/false",
+			c[0].GetPreexisting(), c[1].GetPreexisting(), c[2].GetPreexisting())
+	}
+	if c[1].GetTxBytes() != 4096 {
+		t.Errorf("a pre-existing connection's bytes are measured and must pass through, got %d", c[1].GetTxBytes())
+	}
+}

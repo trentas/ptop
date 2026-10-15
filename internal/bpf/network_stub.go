@@ -20,6 +20,8 @@ type NetSnapshot struct {
 	TxBytes uint64
 	RxBytes uint64
 	LastNs  uint64
+
+	RTTMeasured bool
 }
 
 type NetConnKey struct {
@@ -31,9 +33,9 @@ type NetConnKey struct {
 	_      uint16
 }
 
-type NetTracer struct{}
+type NetTracer struct{ ByteLane string }
 
-func OpenNetTracer(Target) (*NetTracer, error)                       { return nil, errNetStub }
-func (*NetTracer) Stats() ([]NetSnapshot, error)                   { return nil, errNetStub }
-func (*NetTracer) SeedConnection(NetConnKey, uint32) error         { return errNetStub }
-func (*NetTracer) Close() error                                    { return nil }
+func OpenNetTracer(Target) (*NetTracer, error)             { return nil, errNetStub }
+func (*NetTracer) Stats() ([]NetSnapshot, error)           { return nil, errNetStub }
+func (*NetTracer) SeedConnection(NetConnKey, uint32) error { return errNetStub }
+func (*NetTracer) Close() error                            { return nil }

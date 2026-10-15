@@ -41,5 +41,25 @@ func (r seedReport) caveat(pid int) string {
 const cgroupSeedCaveat = "cgroup scope: connections opened before the capture are not seeded (that needs a pid). " +
 	seedConsequence
 
-const seedConsequence = "They appear only after a state transition, so fan_out and peers " +
+const seedConsequence = "They appear only once they move a byte or change state, so fan_out and peers " +
 	"undercount a process that talks over persistent connections."
+
+// kprobeLaneCaveat qualifies the byte lane kernels before 6.4 get. It counts
+// received bytes at a kprobe on tcp_cleanup_rbuf, and measured on one kernel
+// build the call that carries the byte count was inlined into tcp_recvmsg: the
+// kprobe fired, never with a byte, and every connection read rx 0 — which is
+// indistinguishable from a connection that received nothing.
+const kprobeLaneCaveat = "this kernel predates the sock_recv_length tracepoint (6.4), so received bytes are " +
+	"counted at a kprobe on tcp_cleanup_rbuf; a kernel build that inlines that call reports rx 0 for every " +
+	"connection — ebpf-selftest checks this host"
+
+// joinCaveats joins two qualifiers on one probe, either of which may be empty.
+func joinCaveats(a, b string) string {
+	switch {
+	case a == "":
+		return b
+	case b == "":
+		return a
+	}
+	return a + "; " + b
+}

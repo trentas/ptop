@@ -76,7 +76,7 @@ ptop/
 │   ├── event.proto                unified Event + payloads
 │   └── service.proto              EventStream gRPC service
 ├── cmd/ptop/main.go               entrypoint: parse flags, start model
-├── cmd/ebpfselftest/              root-only eBPF self-diagnostic
+├── cmd/ebpfselftest/              root-only eBPF self-diagnostic (filters, CPU axis, network)
 ├── internal/
 │   ├── bpf/                       eBPF programs + loader (build tag `ebpf`)
 │   │   ├── objects_amd64.go       per-arch embeds of the compiled objects (#123)
@@ -89,7 +89,7 @@ ptop/
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
 │   │   │   ├── io.bpf.c           VFS read/write/fsync
-│   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes
+│   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135)
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
@@ -114,7 +114,7 @@ ptop/
 │   │   ├── cpuprof.go             perf_event stack sampler loader (#125)
 │   │   ├── cpuprof_spec.go        sampling-rate policy (build-tag-free, #125)
 │   │   ├── syscalls.go            raw_syscalls tracepoint loader
-│   │   ├── network.go             sock tracepoints + connection seeding
+│   │   ├── network.go             loader: byte lane (tracepoint vs kprobe) + connection seeding
 │   │   ├── io.go                  VFS syscall tracker loader
 │   │   ├── memory.go              memory counter loader
 │   │   ├── heap.go                libc allocator uprobe loader (#53)
@@ -457,6 +457,63 @@ across a subtree the same address names a different function in every process.
 That would be a confident wrong answer rather than a gap, which is why it is in
 `cgroupUnsupported` rather than simply left unresolved.
 
+### Who owns a socket is decided by evidence, never by `current` (#135, #142)
+
+The network axis used to filter every TCP state transition on the target's
+pid. Most transitions are packet processing, in softirq, where `current` is
+whichever task the interrupt landed on. Measured against `main`, both on a
+privileged OrbStack container (7.2) and on bare metal (`daark`, 7.0, a real NIC
+and an internet peer):
+
+- **The target's own transitions were dropped.** Against a non-loopback peer
+  `SYN_SENT → ESTABLISHED` arrived in the target's context 0 times in 24, and
+  `CLOSE` 5 in 24. Rows never reached `CLOSE`, the only state the #133 prune
+  acts on, so a server's map filled with 698 rows in fifteen seconds.
+- **Other processes' transitions were admitted.** On loopback the softirq runs
+  in the SENDER's context, so the target's own `close()` processed its peer's
+  FIN handling; and a busy target is whoever the NIC interrupts. A target owning
+  no socket at all was credited with 1,582 connections in fifteen seconds
+  (192 on bare metal).
+- **`SYN_SENT` has no source port.** `tcp_v4_connect` sets the state before
+  `inet_hash_connect` picks the port, so the tracepoint reports `sport=0`
+  there. Keyed on it, every connection to one peer shared one immortal
+  `SYN_SENT` row that absorbed all their bytes, and the handshake RTT was never
+  computed at all: `ESTABLISHED` carries the real port, hence another key.
+- **A connection older than the capture never moved a byte (#142).** The seed
+  wrote its 4-tuple without the socket pointer, and the byte probes key on the
+  pointer.
+- **Received bytes depended on inlining.** `tcp_cleanup_rbuf`'s call inside
+  `tcp_recvmsg` is inlined on the 7.2 build, so the kprobe fired only with
+  `copied <= 0` and every connection read rx 0. On Ubuntu's 7.0 it is not.
+
+So `network.bpf.c` now admits a socket only on evidence that the target owns
+it — it called `connect()` on it (`SYN_SENT` runs in the caller, and only notes
+the socket in `connecting`, since there is no port to key on yet), it sent or
+received on it (the byte probes run in the caller), its 4-tuple matches a row
+already proven (the seed reads `/proc/<pid>/fd`), or it `listen()`ed on or
+closed it (states only the owner's syscalls set). Once owned (`sock_to_key`),
+every transition follows the socket in any context. The probes that are handed
+only a pointer read the 4-tuple out of `sk->__sk_common` through CO-RE — the
+fields `/proc/net/tcp` prints, so a seeded key and an adopted one are equal.
+That makes the network probe the first in the repo to need the kernel's BTF;
+the loader names it when it is missing. Bytes come from the
+`sock:sock_{send,recv}_length` tracepoints (6.4+, exact, cannot be inlined
+away); the kprobes are the lane before that, and the probe carries a caveat
+when it runs on them.
+
+On the wire, `NetConn.latency_ms` is `optional`: absent means the handshake was
+not timed (an accepted connection, or one older than the capture), never 0ms.
+`preexisting` marks the connections the first seed found. It lives in the
+collector, not in the kernel row: the kernel can adopt the socket on its first
+byte before the seed writes that row, and flagging an existing row would race
+the kernel's byte counters. Their counters cover the capture like any other
+row's, so a zero on a pre-existing connection is a measurement: any send or
+receive would have adopted it.
+
+`cmd/ebpfselftest` checks all of it against a peer in another process — a peer
+inside the selftest's own process would make `current` the target every time
+and pass a filter that is wrong.
+
 ### The observer's cost is charged to the target
 
 A uprobe runs on the thread that tripped it, so its cost lands in the TARGET's
@@ -614,6 +671,7 @@ Two caveats worth knowing before extending this:
 
 Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest`: it
 runs one workload and checks the pid filter and the cgroup filter against it
+(and, last, the network axis's socket ownership against a peer process)
 (and then two quieter ones, to check the CPU axis against `/proc` — see the
 section on measuring time above)
 (the cgroup phase reports SKIP where there is no subtree to target — a cgroup

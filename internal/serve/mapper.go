@@ -3,6 +3,8 @@ package serve
 import (
 	"time"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/trentas/ptop/pkg/collector"
 	pb "github.com/trentas/ptop/pkg/streampb"
 	"github.com/trentas/ptop/pkg/symbol"
@@ -62,7 +64,12 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		for i, c := range x {
 			conns[i] = &pb.NetConn{
 				Fd: int32(c.FD), Type: c.Type, Remote: c.Remote, State: c.State,
-				Dir: c.Dir, LatencyMs: c.LatencyMs, TxBytes: c.TxBytes, RxBytes: c.RxBytes,
+				Dir: c.Dir, TxBytes: c.TxBytes, RxBytes: c.RxBytes,
+				Preexisting: c.Preexisting,
+			}
+			// Absent unless measured: an untimed handshake is not a 0ms one.
+			if c.RTTMeasured {
+				conns[i].LatencyMs = proto.Float64(c.LatencyMs)
 			}
 		}
 		ev.Payload = &pb.Event_Network{Network: &pb.NetworkSnapshot{Conns: conns}}
