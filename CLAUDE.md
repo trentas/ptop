@@ -193,7 +193,7 @@ ptop/
 │       ├── security_ebpf.go       PROT_EXEC mmap/mprotect + LSM denials (#59)
 │       ├── security_decode.go     prot/kind/detail decode (build-tag-free)
 │       ├── fds.go                 /proc/<pid>/fd + fdinfo + events
-│       ├── sockets.go             inode → host:port via /proc/net/*
+│       ├── sockets.go             inode → host:port via the target's /proc/<pid>/net/* (#140)
 │       ├── syscall_names.go       syscall id → name table
 │       └── *_test.go, *_stub.go
 │   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)

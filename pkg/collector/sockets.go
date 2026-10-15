@@ -35,24 +35,62 @@ type SocketInfo struct {
 	StateNum uint32 // raw kernel state (1=ESTABLISHED, 2=SYN_SENT, ...)
 }
 
-// SocketResolver maintains an inode→SocketInfo map populated from the
-// /proc/net/* files. Calls to Resolve with a stale cache trigger a refresh.
+// SocketResolver maintains an inode→SocketInfo map populated from the socket
+// tables under /proc. Calls to Resolve with a stale cache trigger a refresh.
 //
-// Not exposed as a collector — used inside the FDCollector. Cache TTL: 2s.
-// Under high connection churn "(socket:[N])" may show up instead of TCP
-// IP:port for the first 1-2 polls.
+// Not exposed as a collector — used inside the FDCollector and the network
+// bootstrap. Cache TTL: 2s. Under high connection churn "(socket:[N])" may show
+// up instead of TCP IP:port for the first 1-2 polls.
+//
+// # Whose tables (#140)
+//
+// /proc/net/* is the table of the network namespace of whoever READS it, and
+// /proc/<pid>/net/* is the table of <pid>'s. They are the same only when ptop
+// shares the target's network namespace. A Profiler container with `pid: host`
+// sees a host process's fds but not its sockets: every inode it finds in
+// /proc/<pid>/fd is missing from its own /proc/net/tcp, Resolve answers ok=false
+// for all of them, and nothing says so. Seen on a host otelcol watched from a
+// Profiler in its own network namespace: a client exporting over persistent
+// connections published fan_out 0 with the network probe active. ForPID points
+// the resolver at the target's tables.
 type SocketResolver struct {
 	mu       sync.Mutex
 	cache    map[uint64]SocketInfo
 	cachedAt time.Time
 	ttl      time.Duration
+
+	procRoot string // "/proc"; a fixture tree in tests
+	pid      int    // 0 = the reader's own namespace (/proc/net)
 }
 
 func NewSocketResolver() *SocketResolver {
 	return &SocketResolver{
-		cache: make(map[uint64]SocketInfo),
-		ttl:   2 * time.Second,
+		cache:    make(map[uint64]SocketInfo),
+		ttl:      2 * time.Second,
+		procRoot: "/proc",
 	}
+}
+
+// ForPID makes the resolver read pid's socket tables — the ones of pid's
+// network namespace — instead of ptop's own. A non-positive pid is ignored: the
+// cgroup scope has no single pid, and there the reader's tables stay the only
+// ones there are.
+func (r *SocketResolver) ForPID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.pid = pid
+	r.cachedAt = time.Time{} // the cached tables, if any, were someone else's
+}
+
+// netDir is the directory the socket tables are read from.
+func (r *SocketResolver) netDir() string {
+	if r.pid > 0 {
+		return fmt.Sprintf("%s/%d/net", r.procRoot, r.pid)
+	}
+	return r.procRoot + "/net"
 }
 
 // Resolve returns the SocketInfo for the inode, refreshing the cache if stale.
@@ -71,11 +109,12 @@ func (r *SocketResolver) Resolve(inode uint64) (SocketInfo, bool) {
 
 func (r *SocketResolver) refreshLocked() {
 	r.cache = make(map[uint64]SocketInfo, len(r.cache))
-	parseInetFile("/proc/net/tcp", "TCP", true, r.cache)
-	parseInetFile("/proc/net/tcp6", "TCP", false, r.cache)
-	parseInetFile("/proc/net/udp", "UDP", true, r.cache)
-	parseInetFile("/proc/net/udp6", "UDP", false, r.cache)
-	parseUnixFile("/proc/net/unix", r.cache)
+	dir := r.netDir()
+	parseInetFile(dir+"/tcp", "TCP", true, r.cache)
+	parseInetFile(dir+"/tcp6", "TCP", false, r.cache)
+	parseInetFile(dir+"/udp", "UDP", true, r.cache)
+	parseInetFile(dir+"/udp6", "UDP", false, r.cache)
+	parseUnixFile(dir+"/unix", r.cache)
 }
 
 // ─── /proc/net/{tcp,tcp6,udp,udp6} ───────────────────────────────────────────

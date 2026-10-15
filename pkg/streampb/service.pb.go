@@ -314,7 +314,10 @@ type ProbeInfo struct {
 	// same measurement, so this is part of the comparison key too.
 	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
 	// Why a probe that is not ACTIVE is not running — the attach error, or the
-	// flag that switched it off. Operator-facing prose; do not parse it.
+	// flag that switched it off. On an ACTIVE probe, a caveat: what it attached
+	// and still could not see, such as connections that predate the capture and
+	// could not be seeded (#140); empty when there is none. Operator-facing prose;
+	// do not parse it.
 	Detail        string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
