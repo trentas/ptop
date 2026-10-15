@@ -15,22 +15,24 @@ import (
 
 // NetworkEBPFCollector combines:
 //
-//   - tracepoint sock:inet_sock_set_state — discovers 5-tuple + state +
-//     handshake RTT (SYN_SENT → ESTABLISHED).
+//   - tracepoint sock:inet_sock_set_state — every state transition: the
+//     connection's lifecycle and its handshake RTT (SYN_SENT → ESTABLISHED).
 //
-//   - kprobes on tcp_sendmsg/tcp_cleanup_rbuf — Tx/Rx bytes per connection,
-//     correlated via the auxiliary sock_to_key map (skaddr → 5-tuple)
-//     populated by the tracepoint itself.
+//   - one byte lane — the sock_{send,recv}_length tracepoints where the kernel
+//     has them, kprobes on tcp_sendmsg/tcp_cleanup_rbuf otherwise.
 //
-//   - kprobes on tcp_reset/tcp_retransmit_skb — network errors (#56): a
-//     received RST (classified refused vs reset from the tracked state) and
-//     retransmits, correlated through the same sock_to_key map and delivered
+//   - kprobes on tcp_reset/tcp_retransmit_skb — network errors (#56), delivered
 //     per-event via a ring buffer.
 //
-// Publishes []NetConn every 500ms, plus a NetError per error event. Pre-existing
-// connections (opened before attach) don't appear — a tracepoint limitation,
-// since it only fires on state transitions; their errors likewise don't
-// correlate (no sock_to_key entry) and are skipped.
+// Which sockets are the target's is decided in the kernel, by evidence rather
+// than by whichever task a softirq interrupted (#135): the target connected
+// it, moved bytes on it, closed it, or it matches a row seeded from the
+// target's own fds. network.bpf.c has the whole argument and the measurements.
+//
+// Publishes []NetConn every 500ms, plus a NetError per error event. Connections
+// opened before the attach are seeded from /proc (bootstrapFromProc) and adopted
+// by the kernel side on their first byte or transition, so their bytes are
+// counted from the attach on (#142).
 type NetworkEBPFCollector struct {
 	tracer   *bpf.NetTracer
 	pid      int
@@ -41,13 +43,16 @@ type NetworkEBPFCollector struct {
 	// tput accumulates the target's monotonic byte totals across every
 	// connection the map holds, closed ones included (#128). publishLoop-only.
 	tput netAccumulator
-	// attachedNs is when this collector started, in the same clock the tracer
-	// stamps first_seen_ns with. A connection first seen after it was born
-	// under observation, so its counters are new traffic and not history.
-	attachedNs uint64
 	// caveat is what this probe could not see, decided by the first bootstrap
 	// (#140). Written in start, before Start returns, and read after it.
 	caveat string
+	// preexisting holds the connections the first bootstrap found: open before
+	// the capture (#142). Kept here rather than as a flag in the kernel row
+	// because the kernel may adopt the socket — on its first byte after the
+	// attach — before the seed gets to write that row, and setting a flag on
+	// an existing row would race the kernel's own byte counters. Written in
+	// start; read and pruned by publishLoop.
+	preexisting map[bpf.NetConnKey]struct{}
 }
 
 // Caveat reports what an ACTIVE network probe could not see — pre-existing
@@ -83,21 +88,23 @@ func (c *NetworkEBPFCollector) start(t bpf.Target, pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
-	// Same clock the tracer stamps first_seen_ns with, read before the first
-	// publish: anything first seen after this was born under observation.
-	if ns, err := bpf.MonotonicNanos(); err == nil {
-		c.attachedNs = ns
-	}
+	// Every counter in the map starts at zero after this instant, so the
+	// accumulator's first interval runs from here.
+	c.tput.at = time.Now()
 	// Synchronous bootstrap: populates the map with TCP connections that
 	// already exist in /proc/<pid>/net/tcp{,6} before the first snapshot.
-	// Without this, processes with keep-alive look empty until some transition.
+	// Without this, a process holding idle keep-alive connections looks like it
+	// talks to nobody until one of them moves a byte or changes state.
 	// The tables are the TARGET's — ptop may live in another network namespace,
 	// where its own /proc/net/tcp holds none of the target's sockets (#140).
 	c.resolver.ForPID(pid)
 	if pid > 0 {
-		c.caveat = c.bootstrapFromProc().caveat(pid)
+		c.caveat = c.bootstrapFromProc(true).caveat(pid)
 	} else {
 		c.caveat = cgroupSeedCaveat
+	}
+	if tracer.ByteLane == bpf.NetByteLaneKprobe {
+		c.caveat = joinCaveats(c.caveat, kprobeLaneCaveat)
 	}
 	go c.publishLoop()
 	// Drain net-error events. tracer is passed explicitly (not read from the
@@ -122,8 +129,9 @@ func (c *NetworkEBPFCollector) Subscribe() <-chan interface{} {
 func (c *NetworkEBPFCollector) publishLoop() {
 	t := time.NewTicker(500 * time.Millisecond)
 	defer t.Stop()
-	// Re-seed every 5s to catch long-lived connections that didn't go through
-	// any state transition during ptop's lifetime.
+	// Re-seed every 5s to catch connections opened since the attach that have
+	// neither moved a byte nor changed state — an accepted connection waiting
+	// for its first request — so fan_out counts them before they do.
 	const reseedEvery = 10 // 10 × 500ms = 5s
 	tick := 0
 	for {
@@ -133,7 +141,7 @@ func (c *NetworkEBPFCollector) publishLoop() {
 		case <-t.C:
 			tick++
 			if tick%reseedEvery == 0 {
-				c.bootstrapFromProc()
+				c.bootstrapFromProc(false)
 			}
 			conns, tput := c.snapshot()
 			publish(c.ch, conns)
@@ -168,14 +176,17 @@ func (c *NetworkEBPFCollector) readLoop(tracer *bpf.NetTracer) {
 // bootstrapFromProc enumerates /proc/<pid>/fd/, identifies the process's
 // socket FDs, resolves their inodes in the target's /proc/<pid>/net/tcp{,6}
 // (SocketResolver, #140) and seeds the eBPF net_conn_map with BPF_NOEXIST —
-// existing entries (coming from the tracepoint) are preserved with their real
-// state/RTT/bytes. It returns what it managed, which the first call turns into
-// the probe's caveat.
+// existing entries are preserved with their real state/RTT/bytes. It returns
+// what it managed, which the first call turns into the probe's caveat.
 //
-// Pre-existing seeded connections have zeroed tx/rx and zero RTT — without
-// skaddr we can't correlate them with the kprobes. That's the trade-off of
-// this approach (the alternative would be iterating sock objects via vmlinux.h).
-func (c *NetworkEBPFCollector) bootstrapFromProc() seedReport {
+// A seeded row has no socket pointer, so it holds no bytes until the kernel
+// side adopts the socket — on its first send or receive, or its first state
+// change, by matching this 4-tuple (#142). That leaves no gap: a seeded row
+// with zero bytes is a connection the target did not use while watched.
+//
+// atAttach records what this call finds as open before the capture. Only the
+// first call can say that; a later one finds connections opened since.
+func (c *NetworkEBPFCollector) bootstrapFromProc(atAttach bool) seedReport {
 	var rep seedReport
 	if c.tracer == nil || c.pid <= 0 {
 		return rep
@@ -221,14 +232,17 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() seedReport {
 			SPort:  info.SPort,
 			Family: info.AF,
 		}
-		_ = c.tracer.SeedConnection(key, info.StateNum)
+		if c.tracer.SeedConnection(key, info.StateNum) != nil || !atAttach {
+			continue
+		}
+		if c.preexisting == nil {
+			c.preexisting = make(map[bpf.NetConnKey]struct{})
+		}
+		c.preexisting[key] = struct{}{}
 	}
 	return rep
 }
 
-// snapshot reads the map and converts each entry into a NetConn. Filters
-// out CLOSE (7) — closed connections aren't relevant to the "Active
-// Connections" view. Sorts by most recent activity first.
 // snapshot returns the ACTIVE connections and the target's cumulative volume.
 //
 // The two come from one read of the map on purpose. The list drops closed
@@ -251,10 +265,11 @@ func (c *NetworkEBPFCollector) snapshot() ([]NetConn, NetThroughputSample) {
 		readings = append(readings, netByteReading{
 			Key: netTupleKey(s.SAddr.String(), s.SPort, s.DAddr.String(), s.DPort),
 			Tx:  s.TxBytes, Rx: s.RxBytes,
-			Born: s.FirstNs > c.attachedNs,
 		})
 		if s.State == tcpStateCLOSE {
 			spent = append(spent, s.Key)
+			// The tuple is free for a new connection, which is not pre-existing.
+			delete(c.preexisting, s.Key)
 		}
 	}
 	tput := c.tput.observe(readings, time.Now())
@@ -284,26 +299,30 @@ func (c *NetworkEBPFCollector) snapshot() ([]NetConn, NetThroughputSample) {
 		tput.DroppedConnections = n
 	}
 
+	// Most recent activity first, so rows do not jump around in the terminal.
+	// Sorted before conversion: NetConn has no timestamp to sort on, and
+	// sorting the converted list by the source's indices (as this once did)
+	// compares entries that no longer line up once CLOSE rows are skipped.
+	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].LastNs > snaps[j].LastNs })
 	out := make([]NetConn, 0, len(snaps))
 	for _, s := range snaps {
 		if s.State == tcpStateCLOSE {
 			continue
 		}
-		latMs := float64(s.RTTNs) / 1e6
-		out = append(out, NetConn{
-			Type:      "TCP",
-			Remote:    formatNetAddr(s.DAddr.String(), s.DPort, s.Family),
-			State:     mapTCPState(s.State),
-			Dir:       directionFromBytes(s.TxBytes, s.RxBytes),
-			LatencyMs: latMs,
-			TxBytes:   s.TxBytes,
-			RxBytes:   s.RxBytes,
-		})
+		nc := NetConn{
+			Type:    "TCP",
+			Remote:  formatNetAddr(s.DAddr.String(), s.DPort, s.Family),
+			State:   mapTCPState(s.State),
+			Dir:     directionFromBytes(s.TxBytes, s.RxBytes),
+			TxBytes: s.TxBytes,
+			RxBytes: s.RxBytes,
+		}
+		_, nc.Preexisting = c.preexisting[s.Key]
+		if s.RTTMeasured {
+			nc.LatencyMs, nc.RTTMeasured = float64(s.RTTNs)/1e6, true
+		}
+		out = append(out, nc)
 	}
-	// Stable order: most recent first to avoid jumping rows in the terminal.
-	sort.SliceStable(out, func(i, j int) bool {
-		return snaps[i].LastNs > snaps[j].LastNs
-	})
 	return out, tput
 }
 

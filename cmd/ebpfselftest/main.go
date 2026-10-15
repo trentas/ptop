@@ -10,8 +10,9 @@
 // syscalls), and reports whether the eBPF counters moved. It then runs a
 // second, deliberately quiet workload and checks that the CPU axis agrees
 // with the kernel's own accounting of it — a counter that moves is not the
-// same as a counter that is right (#108). Exit code is 0 on PASS, 1 on FAIL —
-// usable directly in CI / scripts.
+// same as a counter that is right (#108). Last, the network axis: who owns a
+// socket and what it moved, against a peer in another process (#135, #142).
+// Exit code is 0 on PASS, 1 on FAIL — usable directly in CI / scripts.
 package main
 
 import (
@@ -28,6 +29,9 @@ import (
 )
 
 func main() {
+	if spec := os.Getenv(peerEnv); spec != "" {
+		runPeer(spec) // the network phase's other process; never returns
+	}
 	if d := bpf.GetCapStatus().Diagnose(); d != "" {
 		fmt.Fprint(os.Stderr, d)
 		os.Exit(1)
@@ -126,6 +130,10 @@ func run() error {
 	}
 
 	if !checkCPUAttribution(pid) {
+		failed = true
+	}
+
+	if !checkNetwork(pid) {
 		failed = true
 	}
 

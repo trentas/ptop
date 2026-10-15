@@ -129,14 +129,24 @@ type SyscallEvent struct {
 // ─── Network ─────────────────────────────────────────────────────────────────
 
 type NetConn struct {
-	FD        int
-	Type      string // "TCP" | "UDP" | "UNIX"
-	Remote    string
-	State     string // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
-	Dir       string // "→" | "←" | "↔"
-	LatencyMs float64
-	TxBytes   uint64
-	RxBytes   uint64
+	FD     int
+	Type   string // "TCP" | "UDP" | "UNIX"
+	Remote string
+	State  string // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
+	Dir    string // "→" | "←" | "↔"
+	// LatencyMs is the handshake RTT, and a measurement only when RTTMeasured
+	// is set. Unset, it is 0 because nothing was timed — an accepted
+	// connection, one older than the capture, or a source with no RTT at all —
+	// and must not be read as a 0ms handshake.
+	LatencyMs   float64
+	RTTMeasured bool
+	TxBytes     uint64
+	RxBytes     uint64
+	// Preexisting marks a connection that was already open when the capture
+	// started (#142). Its handshake was never observable; its byte counters
+	// start at the attach like every other connection's, so a zero is a
+	// connection that moved nothing while watched.
+	Preexisting bool
 }
 
 // NetThroughputSample is the target's network volume: monotonic byte totals

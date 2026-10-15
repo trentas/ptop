@@ -132,17 +132,11 @@ func renderNetLatencyTrend(m Model, w int) string {
 	}
 	lines := []string{}
 	for _, c := range m.NetConns {
-		latColor := ColorGreen
-		if c.LatencyMs > 30 {
-			latColor = ColorAmber
-		}
-		if c.LatencyMs > 100 {
-			latColor = ColorRed
-		}
+		latText, latColor := netLatency(c, "%.1fms")
 		left := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(labelW).Render(truncate(c.Remote, labelW))
-		bar := HorizontalBar(c.LatencyMs, 100, barW, latColor)
+		bar := HorizontalBar(c.LatencyMs, 100, barW, latColor) // 0 when unmeasured: an empty track
 		val := lipgloss.NewStyle().Foreground(latColor).Background(ColorPanel).Width(8).Align(lipgloss.Right).
-			Render(fmt.Sprintf("%.1fms", c.LatencyMs))
+			Render(latText)
 		lines = append(lines, panelRow(left, bar, val))
 
 	}

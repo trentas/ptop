@@ -9,21 +9,27 @@ func rd(key string, tx, rx uint64) netByteReading {
 	return netByteReading{Key: key, Tx: tx, Rx: rx}
 }
 
-func TestNetTotalsFirstReadingIsABaseline(t *testing.T) {
-	var n netAccumulator
+// Every counter in the kernel map starts at zero after the attach, so the first
+// read carries nothing but traffic that moved while watched — and must count it.
+// It used to be a baseline, which dropped the first half-second of every
+// capture.
+func TestNetTotalsFirstReadingCountsEverything(t *testing.T) {
 	t0 := time.Now()
-	// A connection that already moved a megabyte before ptop attached — every
-	// connection bootstrapped from /proc looks like this.
-	s := n.observe([]netByteReading{rd("a", 1<<20, 1<<20)}, t0)
-	if s.TxBytes != 0 || s.RxBytes != 0 || s.TxBytesPerS != 0 {
-		t.Errorf("first reading reported %+v — it invented volume out of history", s)
-	}
-	s = n.observe([]netByteReading{rd("a", 1<<20+1000, 1<<20+2000)}, t0.Add(time.Second))
+	n := netAccumulator{at: t0} // the attach
+	s := n.observe([]netByteReading{rd("a", 1000, 2000)}, t0.Add(500*time.Millisecond))
 	if s.TxBytes != 1000 || s.RxBytes != 2000 {
-		t.Errorf("totals = %d/%d, want 1000/2000", s.TxBytes, s.RxBytes)
+		t.Errorf("totals = %d/%d, want 1000/2000 — the first read is traffic, not history", s.TxBytes, s.RxBytes)
 	}
-	if s.TxBytesPerS != 1000 || s.RxBytesPerS != 2000 {
-		t.Errorf("rates = %v/%v, want 1000/2000 per second", s.TxBytesPerS, s.RxBytesPerS)
+	if s.TxBytesPerS != 2000 || s.RxBytesPerS != 4000 {
+		t.Errorf("rates = %v/%v, want 2000/4000 per second since the attach", s.TxBytesPerS, s.RxBytesPerS)
+	}
+
+	// Without an attach time there is no interval to divide by, but the bytes
+	// still count.
+	var u netAccumulator
+	s = u.observe([]netByteReading{rd("a", 1000, 0)}, t0)
+	if s.TxBytes != 1000 || s.TxBytesPerS != 0 {
+		t.Errorf("got %+v, want 1000 bytes and no rate", s)
 	}
 }
 
@@ -105,41 +111,44 @@ func TestNetTupleKeySeparatesLocalPorts(t *testing.T) {
 	}
 }
 
-// Baselining every first sighting is right for a connection that predates the
-// observer and catastrophic for one that does not. A connection that opens,
-// transfers and closes inside one interval is seen exactly ONCE, so it used to
-// contribute nothing at all — measured on 50,000 short connections each writing
-// a byte, the axis reported seven.
-func TestNetTotalsCountAConnectionBornUnderObservation(t *testing.T) {
-	var n netAccumulator
+// A connection that opens, transfers and closes inside one interval is seen
+// exactly ONCE. Baselining first sightings made it contribute nothing at all —
+// measured on 50,000 short connections each writing a byte, the axis reported
+// seven.
+func TestNetTotalsCountAConnectionSeenOnce(t *testing.T) {
 	t0 := time.Now()
-	n.observe(nil, t0) // attach: nothing in flight
+	n := netAccumulator{at: t0}
+	n.observe(nil, t0.Add(time.Second)) // nothing in flight
 
 	// One connection lived and died entirely inside this interval.
-	s := n.observe([]netByteReading{{Key: "short", Tx: 900, Rx: 100, Born: true}}, t0.Add(time.Second))
+	s := n.observe([]netByteReading{rd("short", 900, 100)}, t0.Add(2*time.Second))
 	if s.TxBytes != 900 || s.RxBytes != 100 {
 		t.Errorf("totals = %d/%d, want 900/100 — a connection seen once still moved bytes", s.TxBytes, s.RxBytes)
 	}
 
 	// And it must not be counted again when it lingers a tick before pruning.
-	s = n.observe([]netByteReading{{Key: "short", Tx: 900, Rx: 100, Born: true}}, t0.Add(2*time.Second))
+	s = n.observe([]netByteReading{rd("short", 900, 100)}, t0.Add(3*time.Second))
 	if s.TxBytes != 900 {
 		t.Errorf("totals = %d after re-reading the same counters, want 900", s.TxBytes)
 	}
 }
 
-// The other half of the rule: a connection already running when ptop attached
-// carries history, and counting it would invent volume out of the past.
-func TestNetTotalsStillBaselineAPreExistingConnection(t *testing.T) {
-	var n netAccumulator
+// #142: a connection older than the capture is seeded with zero counters and
+// adopted by the kernel on its first byte, which can land before the collector
+// has ever read it. Its first sighting is therefore traffic too. Treating it as
+// history — the old rule for anything not born under observation — threw away
+// whatever it moved before that first read.
+func TestNetTotalsCountWhatASeededConnectionMovedBeforeItsFirstRead(t *testing.T) {
 	t0 := time.Now()
-	n.observe(nil, t0)
-	s := n.observe([]netByteReading{{Key: "old", Tx: 1 << 20, Rx: 1 << 20, Born: false}}, t0.Add(time.Second))
-	if s.TxBytes != 0 {
-		t.Errorf("totals = %d, want 0 — that megabyte moved before anyone was watching", s.TxBytes)
+	n := netAccumulator{at: t0}
+	n.observe(nil, t0.Add(500*time.Millisecond))
+	// Seeded at the attach, adopted, and 64KB moved before this read saw it.
+	s := n.observe([]netByteReading{rd("old", 65536, 512)}, t0.Add(time.Second))
+	if s.TxBytes != 65536 || s.RxBytes != 512 {
+		t.Errorf("totals = %d/%d, want 65536/512", s.TxBytes, s.RxBytes)
 	}
-	s = n.observe([]netByteReading{{Key: "old", Tx: 1<<20 + 500, Rx: 1 << 20, Born: false}}, t0.Add(2*time.Second))
-	if s.TxBytes != 500 {
-		t.Errorf("totals = %d, want the 500 bytes it moved under observation", s.TxBytes)
+	s = n.observe([]netByteReading{rd("old", 65536+500, 512)}, t0.Add(2*time.Second))
+	if s.TxBytes != 65536+500 {
+		t.Errorf("totals = %d, want %d", s.TxBytes, 65536+500)
 	}
 }

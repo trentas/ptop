@@ -768,15 +768,9 @@ func renderNetMini(conns []collector.NetConn, w, h int, showTraffic bool) string
 		}
 		remote := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(remoteW).Render(truncate(dir+" "+c.Remote, remoteW))
 		state := lipgloss.NewStyle().Foreground(netStateColor(c.State)).Background(ColorPanel).Width(stateW).Render(c.State)
-		latColor := ColorGreen
-		if c.LatencyMs > 30 {
-			latColor = ColorAmber
-		}
-		if c.LatencyMs > 100 {
-			latColor = ColorRed
-		}
+		latText, latColor := netLatency(c, "%.0fms")
 		lat := lipgloss.NewStyle().Foreground(latColor).Background(ColorPanel).Width(latW).Align(lipgloss.Right).
-			Render(fmt.Sprintf("%.0fms", c.LatencyMs))
+			Render(latText)
 		if showTraffic {
 			txrx := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(txrxW).Align(lipgloss.Right).
 				Render(fmt.Sprintf("↑%s ↓%s", fmtBytes(c.TxBytes), fmtBytes(c.RxBytes)))
@@ -1012,4 +1006,20 @@ func colorByPctThreshold(value, warn float64) lipgloss.Style {
 	default:
 		return GreenStyle
 	}
+}
+
+// netLatency renders a connection's handshake RTT and picks its color. One the
+// probe did not time — an accepted connection, one older than the capture —
+// shows as "—": printing 0ms would claim an instant connect.
+func netLatency(c collector.NetConn, format string) (string, lipgloss.Color) {
+	if !c.RTTMeasured {
+		return "—", ColorMuted
+	}
+	switch {
+	case c.LatencyMs > 100:
+		return fmt.Sprintf(format, c.LatencyMs), ColorRed
+	case c.LatencyMs > 30:
+		return fmt.Sprintf(format, c.LatencyMs), ColorAmber
+	}
+	return fmt.Sprintf(format, c.LatencyMs), ColorGreen
 }
