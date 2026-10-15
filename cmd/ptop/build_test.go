@@ -32,6 +32,11 @@ func TestResolveBuild(t *testing.T) {
 			want: serve.PtopBuild{Version: "v1.9.0", Commit: "abc123", BuildDate: "2026-10-20T10:00:00Z"},
 		},
 		{
+			name:    "goreleaser's {{ .Version }} drops the v; the identity spells it like the tag",
+			version: "1.9.0", commit: "abc123", date: "2026-10-20T10:00:00Z",
+			want: serve.PtopBuild{Version: "v1.9.0", Commit: "abc123", BuildDate: "2026-10-20T10:00:00Z"},
+		},
+		{
 			name:    "dev build from a clean checkout names its commit",
 			version: "dev", commit: "none", date: "unknown",
 			bi:   vcs("f8d8ad3", "2026-10-15T02:57:27Z", "false"),

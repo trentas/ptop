@@ -26,7 +26,7 @@ func buildIdentity() serve.PtopBuild {
 
 // resolveBuild is buildIdentity with its inputs passed in, for tests.
 func resolveBuild(version, commit, date string, bi *debug.BuildInfo) serve.PtopBuild {
-	b := serve.PtopBuild{Version: version}
+	b := serve.PtopBuild{Version: tagForm(version)}
 	if commit != "none" {
 		b.Commit = commit
 	}
@@ -74,4 +74,15 @@ func versionLine(b serve.PtopBuild) string {
 		return s
 	}
 	return "ptop " + or(b.Version, "dev") + " (commit " + or(b.Commit, "unknown") + ", built " + or(b.BuildDate, "unknown") + ")"
+}
+
+// tagForm spells a release version the way its tag and Go's module version do:
+// "v1.9.0". goreleaser injects {{ .Version }}, which is the tag WITHOUT the v,
+// so a release would otherwise say "1.9.0" while every build from a checkout
+// says "v1.9.1-0.…" — two spellings of one scheme for a consumer to reconcile.
+func tagForm(v string) string {
+	if v != "" && v[0] >= '0' && v[0] <= '9' {
+		return "v" + v
+	}
+	return v
 }
