@@ -109,12 +109,13 @@ type onDemandRegistry struct {
 	ctx     context.Context // server lifetime; each target's ctx derives from it
 	factory FeedFactory
 	max     int
+	build   PtopBuild // stamped into every target's handshake (#145)
 
 	mu      sync.Mutex
 	targets map[int]*liveTarget
 }
 
-func newOnDemandRegistry(ctx context.Context, factory FeedFactory, max int) *onDemandRegistry {
+func newOnDemandRegistry(ctx context.Context, factory FeedFactory, max int, build PtopBuild) *onDemandRegistry {
 	if max <= 0 {
 		max = defaultMaxTargets
 	}
@@ -122,6 +123,7 @@ func newOnDemandRegistry(ctx context.Context, factory FeedFactory, max int) *onD
 		ctx:     ctx,
 		factory: factory,
 		max:     max,
+		build:   build,
 		targets: make(map[int]*liveTarget),
 	}
 }
@@ -162,6 +164,7 @@ func (r *onDemandRegistry) acquire(pid int) (*Hub, StackResolver, func(), error)
 		buildID = resolver.ProcessBuildID()
 	}
 	hub := NewHub(TargetPID(pid), buildID, feed.Set)
+	hub.build = r.build.wire()
 	hub.Start(ctx, feed.Bus)
 
 	t := &liveTarget{hub: hub, resolver: resolver, feed: feed, cancel: cancel, refs: 1}

@@ -651,6 +651,13 @@ the same thing on stderr when it starts:
 [ptop] ⚠ 1 collector(s) asked for but NOT attached — … : syscalls (open tracefs: no such file or directory)
 ```
 
+And it names the **ptop that produced the stream** — `ptop { version, commit,
+build_date }` — for the same reason one level up: what a field means changes
+between releases (until v1.8.1 a connection's `latency_ms` was never a
+measurement), so two captures are only comparable once you know which side of
+such a change each is on. A release carries its tag; a build from a checkout
+carries Go's version for it and its commit, `+dirty` for a modified tree.
+
 An empty probe set means the server does not report one — never that every probe
 ran.
 

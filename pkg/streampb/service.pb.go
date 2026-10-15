@@ -232,7 +232,18 @@ type TargetInfo struct {
 	// indistinguishable from a target that never did the thing. A consumer
 	// comparing two captures must compare their probe sets before their numbers,
 	// or it reports the change of instrumentation as a change in behaviour.
-	Probes        []*ProbeInfo `protobuf:"bytes,5,rep,name=probes,proto3" json:"probes,omitempty"`
+	Probes []*ProbeInfo `protobuf:"bytes,5,rep,name=probes,proto3" json:"probes,omitempty"`
+	// The ptop that produced this stream (#145). Absent from a server older than
+	// this field.
+	//
+	// What a field MEANS changes between releases, in ways the wire alone does
+	// not show: until v1.8.1 a NetConn's latency_ms was never a measurement and a
+	// seeded connection's bytes were an unmeasured 0 (#144); a syscall's
+	// latency_ns was always 0 (#143). A consumer comparing two captures must
+	// know which side of such a change each one is on — the same reason it
+	// compares their probe sets — or it reads a change of instrumentation as a
+	// change of behaviour.
+	Ptop          *PtopBuild `protobuf:"bytes,6,opt,name=ptop,proto3" json:"ptop,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -302,6 +313,83 @@ func (x *TargetInfo) GetProbes() []*ProbeInfo {
 	return nil
 }
 
+func (x *TargetInfo) GetPtop() *PtopBuild {
+	if x != nil {
+		return x.Ptop
+	}
+	return nil
+}
+
+// PtopBuild identifies a ptop binary. Every field is empty when unknown.
+type PtopBuild struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The release tag ("v1.9.0"). A build that is not a release carries the
+	// version Go derives from its checkout — a pseudo-version such as
+	// "v1.8.2-0.20261015…-f8d8ad318f29", "+dirty" for a modified tree — or
+	// "dev" when there is none.
+	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
+	// The git commit it was built from. A dev build built from a checkout
+	// carries it too (Go's embedded VCS info), suffixed "+dirty" when the tree
+	// had uncommitted changes.
+	Commit string `protobuf:"bytes,2,opt,name=commit,proto3" json:"commit,omitempty"`
+	// When it was built (a release) or when its commit was made (a dev build),
+	// RFC 3339.
+	BuildDate     string `protobuf:"bytes,3,opt,name=build_date,json=buildDate,proto3" json:"build_date,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PtopBuild) Reset() {
+	*x = PtopBuild{}
+	mi := &file_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PtopBuild) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PtopBuild) ProtoMessage() {}
+
+func (x *PtopBuild) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PtopBuild.ProtoReflect.Descriptor instead.
+func (*PtopBuild) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *PtopBuild) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *PtopBuild) GetCommit() string {
+	if x != nil {
+		return x.Commit
+	}
+	return ""
+}
+
+func (x *PtopBuild) GetBuildDate() string {
+	if x != nil {
+		return x.BuildDate
+	}
+	return ""
+}
+
 // ProbeInfo is one collector's outcome for the target of this stream.
 type ProbeInfo struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -325,7 +413,7 @@ type ProbeInfo struct {
 
 func (x *ProbeInfo) Reset() {
 	*x = ProbeInfo{}
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -337,7 +425,7 @@ func (x *ProbeInfo) String() string {
 func (*ProbeInfo) ProtoMessage() {}
 
 func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -350,7 +438,7 @@ func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeInfo.ProtoReflect.Descriptor instead.
 func (*ProbeInfo) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{2}
+	return file_service_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ProbeInfo) GetName() string {
@@ -397,7 +485,7 @@ type StreamMeta struct {
 
 func (x *StreamMeta) Reset() {
 	*x = StreamMeta{}
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -409,7 +497,7 @@ func (x *StreamMeta) String() string {
 func (*StreamMeta) ProtoMessage() {}
 
 func (x *StreamMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -422,7 +510,7 @@ func (x *StreamMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamMeta.ProtoReflect.Descriptor instead.
 func (*StreamMeta) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{3}
+	return file_service_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *StreamMeta) GetDropped() uint64 {
@@ -454,7 +542,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -466,7 +554,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -479,7 +567,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{4}
+	return file_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *SubscribeResponse) GetKind() isSubscribeResponse_Kind {
@@ -542,7 +630,7 @@ type ResolveStackRequest struct {
 
 func (x *ResolveStackRequest) Reset() {
 	*x = ResolveStackRequest{}
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -554,7 +642,7 @@ func (x *ResolveStackRequest) String() string {
 func (*ResolveStackRequest) ProtoMessage() {}
 
 func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -567,7 +655,7 @@ func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackRequest.ProtoReflect.Descriptor instead.
 func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{5}
+	return file_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ResolveStackRequest) GetStackId() uint64 {
@@ -597,7 +685,7 @@ type ResolveStackResponse struct {
 
 func (x *ResolveStackResponse) Reset() {
 	*x = ResolveStackResponse{}
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -609,7 +697,7 @@ func (x *ResolveStackResponse) String() string {
 func (*ResolveStackResponse) ProtoMessage() {}
 
 func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -622,7 +710,7 @@ func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackResponse.ProtoReflect.Descriptor instead.
 func (*ResolveStackResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{6}
+	return file_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ResolveStackResponse) GetFrames() []*StackFrame {
@@ -648,7 +736,7 @@ const file_service_proto_rawDesc = "" +
 	"\n" +
 	"categories\x18\x01 \x03(\x0e2\x11.ptop.v1.CategoryR\n" +
 	"categories\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\xb1\x01\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\xd9\x01\n" +
 	"\n" +
 	"TargetInfo\x12'\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x13.ptop.v1.TargetModeR\x04mode\x12\x10\n" +
@@ -656,7 +744,13 @@ const file_service_proto_rawDesc = "" +
 	"\vcgroup_path\x18\x03 \x01(\tR\n" +
 	"cgroupPath\x12\x1b\n" +
 	"\tcgroup_id\x18\x04 \x01(\x04R\bcgroupId\x12*\n" +
-	"\x06probes\x18\x05 \x03(\v2\x12.ptop.v1.ProbeInfoR\x06probes\"z\n" +
+	"\x06probes\x18\x05 \x03(\v2\x12.ptop.v1.ProbeInfoR\x06probes\x12&\n" +
+	"\x04ptop\x18\x06 \x01(\v2\x12.ptop.v1.PtopBuildR\x04ptop\"\\\n" +
+	"\tPtopBuild\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
+	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x1d\n" +
+	"\n" +
+	"build_date\x18\x03 \x01(\tR\tbuildDate\"z\n" +
 	"\tProbeInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12)\n" +
 	"\x05state\x18\x02 \x01(\x0e2\x13.ptop.v1.ProbeStateR\x05state\x12\x16\n" +
@@ -706,39 +800,41 @@ func file_service_proto_rawDescGZIP() []byte {
 }
 
 var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_service_proto_goTypes = []any{
 	(TargetMode)(0),              // 0: ptop.v1.TargetMode
 	(ProbeState)(0),              // 1: ptop.v1.ProbeState
 	(*SubscribeRequest)(nil),     // 2: ptop.v1.SubscribeRequest
 	(*TargetInfo)(nil),           // 3: ptop.v1.TargetInfo
-	(*ProbeInfo)(nil),            // 4: ptop.v1.ProbeInfo
-	(*StreamMeta)(nil),           // 5: ptop.v1.StreamMeta
-	(*SubscribeResponse)(nil),    // 6: ptop.v1.SubscribeResponse
-	(*ResolveStackRequest)(nil),  // 7: ptop.v1.ResolveStackRequest
-	(*ResolveStackResponse)(nil), // 8: ptop.v1.ResolveStackResponse
-	(Category)(0),                // 9: ptop.v1.Category
-	(*Event)(nil),                // 10: ptop.v1.Event
-	(*StackFrame)(nil),           // 11: ptop.v1.StackFrame
+	(*PtopBuild)(nil),            // 4: ptop.v1.PtopBuild
+	(*ProbeInfo)(nil),            // 5: ptop.v1.ProbeInfo
+	(*StreamMeta)(nil),           // 6: ptop.v1.StreamMeta
+	(*SubscribeResponse)(nil),    // 7: ptop.v1.SubscribeResponse
+	(*ResolveStackRequest)(nil),  // 8: ptop.v1.ResolveStackRequest
+	(*ResolveStackResponse)(nil), // 9: ptop.v1.ResolveStackResponse
+	(Category)(0),                // 10: ptop.v1.Category
+	(*Event)(nil),                // 11: ptop.v1.Event
+	(*StackFrame)(nil),           // 12: ptop.v1.StackFrame
 }
 var file_service_proto_depIdxs = []int32{
-	9,  // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
+	10, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
 	0,  // 1: ptop.v1.TargetInfo.mode:type_name -> ptop.v1.TargetMode
-	4,  // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
-	1,  // 3: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
-	3,  // 4: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
-	10, // 5: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
-	5,  // 6: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	11, // 7: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
-	2,  // 8: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	7,  // 9: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
-	6,  // 10: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
-	8,  // 11: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
-	10, // [10:12] is the sub-list for method output_type
-	8,  // [8:10] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	5,  // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
+	4,  // 3: ptop.v1.TargetInfo.ptop:type_name -> ptop.v1.PtopBuild
+	1,  // 4: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
+	3,  // 5: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
+	11, // 6: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
+	6,  // 7: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
+	12, // 8: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
+	2,  // 9: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	8,  // 10: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
+	7,  // 11: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	9,  // 12: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
+	11, // [11:13] is the sub-list for method output_type
+	9,  // [9:11] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -747,7 +843,7 @@ func file_service_proto_init() {
 		return
 	}
 	file_event_proto_init()
-	file_service_proto_msgTypes[4].OneofWrappers = []any{
+	file_service_proto_msgTypes[5].OneofWrappers = []any{
 		(*SubscribeResponse_Event)(nil),
 		(*SubscribeResponse_Meta)(nil),
 	}
@@ -757,7 +853,7 @@ func file_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

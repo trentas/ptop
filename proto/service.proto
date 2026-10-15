@@ -56,6 +56,33 @@ message TargetInfo {
   // comparing two captures must compare their probe sets before their numbers,
   // or it reports the change of instrumentation as a change in behaviour.
   repeated ProbeInfo probes = 5;
+  // The ptop that produced this stream (#145). Absent from a server older than
+  // this field.
+  //
+  // What a field MEANS changes between releases, in ways the wire alone does
+  // not show: until v1.8.1 a NetConn's latency_ms was never a measurement and a
+  // seeded connection's bytes were an unmeasured 0 (#144); a syscall's
+  // latency_ns was always 0 (#143). A consumer comparing two captures must
+  // know which side of such a change each one is on — the same reason it
+  // compares their probe sets — or it reads a change of instrumentation as a
+  // change of behaviour.
+  PtopBuild ptop = 6;
+}
+
+// PtopBuild identifies a ptop binary. Every field is empty when unknown.
+message PtopBuild {
+  // The release tag ("v1.9.0"). A build that is not a release carries the
+  // version Go derives from its checkout — a pseudo-version such as
+  // "v1.8.2-0.20261015…-f8d8ad318f29", "+dirty" for a modified tree — or
+  // "dev" when there is none.
+  string version = 1;
+  // The git commit it was built from. A dev build built from a checkout
+  // carries it too (Go's embedded VCS info), suffixed "+dirty" when the tree
+  // had uncommitted changes.
+  string commit = 2;
+  // When it was built (a release) or when its commit was made (a dev build),
+  // RFC 3339.
+  string build_date = 3;
 }
 
 // ProbeState is what became of one collector for one target (#112).

@@ -23,14 +23,6 @@ import (
 	"github.com/trentas/ptop/pkg/symbol"
 )
 
-// Variables injected via -ldflags in the release build (goreleaser).
-// In dev (`go build`/`go run`), they stay as "dev"/"none"/"unknown".
-var (
-	version   = "dev"
-	commit    = "none"
-	buildDate = "unknown"
-)
-
 func main() {
 	pid := flag.Int("pid", 0, "PID of the process to inspect (required)")
 	fps := flag.Int("fps", 5, "TUI refresh rate (frames per second)")
@@ -67,7 +59,7 @@ func main() {
 	}
 
 	if *showVer {
-		fmt.Printf("ptop %s (commit %s, built %s)\n", version, commit, buildDate)
+		fmt.Println(versionLine(buildIdentity()))
 		os.Exit(0)
 	}
 
@@ -245,7 +237,7 @@ func main() {
 			target = serve.TargetCgroup(path, id)
 		}
 
-		opts := serve.Options{TLS: serveTLS}
+		opts := serve.Options{TLS: serveTLS, Build: buildIdentity()}
 		if *export {
 			// Absolute, because a --serve process rarely shares a working
 			// directory with whoever will go looking for the file.

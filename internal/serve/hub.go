@@ -19,6 +19,7 @@ type Hub struct {
 	target  Target
 	buildID string          // target exec build-id, stamped onto every StackRef (#54)
 	probes  []*pb.ProbeInfo // what became of each collector, for the handshake (#112)
+	build   *pb.PtopBuild   // which ptop this is, for the handshake (#145); nil = unknown
 	mu      sync.Mutex
 	sinks   map[Sink]struct{}
 
@@ -43,8 +44,8 @@ func NewHub(target Target, buildID string, set *collector.Set) *Hub {
 }
 
 // targetInfo renders the handshake every subscriber receives before its first
-// event, so a consumer knows the scope of what follows (#94) and which probes
-// produced it (#112).
+// event, so a consumer knows the scope of what follows (#94), which probes
+// produced it (#112) and which ptop did (#145).
 func (h *Hub) targetInfo() *pb.TargetInfo {
 	if h.target.IsCgroup() {
 		return &pb.TargetInfo{
@@ -52,12 +53,14 @@ func (h *Hub) targetInfo() *pb.TargetInfo {
 			CgroupPath: h.target.CgroupPath,
 			CgroupId:   h.target.CgroupID,
 			Probes:     h.probes,
+			Ptop:       h.build,
 		}
 	}
 	return &pb.TargetInfo{
 		Mode:   pb.TargetMode_TARGET_MODE_PID,
 		Pid:    int32(h.target.PID),
 		Probes: h.probes,
+		Ptop:   h.build,
 	}
 }
 
