@@ -1,223 +1,51 @@
-//go:build linux
-
 package collector
 
-import "fmt"
+import (
+	"sort"
+	"strconv"
+)
 
-// syscallName resolves syscall_id → human-readable name. The table is
-// arch-specific on Linux: aarch64 and amd64 map different numbers to the
-// same syscalls.
-//
-// We use a curated table with the ~50 most common syscalls that appear in
-// any typical userspace process — what will dominate the top-N in the
-// mockup. Syscalls not listed return "syscall_<id>".
-//
-// Sources:
-//   - aarch64: arch/arm64/include/uapi/asm/unistd.h + asm-generic
-//   - amd64:   arch/x86/entry/syscalls/syscall_64.tbl
-//
-// Maintained manually rather than generated from /usr/include/asm/unistd_64.h
-// to avoid build-time deps on libc headers.
+//go:generate go run ../../internal/syscalltbl/gen.go
 
-func syscallName(id uint32, isARM64 bool) string {
-	var table map[uint32]string
-	if isARM64 {
-		table = syscallsARM64
-	} else {
-		table = syscallsAMD64
+// syscallTable returns the number → name table for a binary built for goarch,
+// or nil for an architecture without one.
+//
+// The binary's own GOARCH is the right key: the eBPF objects are per
+// architecture (#123), so the lane that reports syscall numbers only ever runs
+// on a kernel of the architecture it was built for. What it reports is the
+// 64-bit native number; a 32-bit (compat) target's numbers come from another
+// table and are not translated.
+//
+// The tables are generated from the kernel's own syscall.tbl files
+// (syscall_names_gen.go, internal/syscalltbl). They used to be a hand-curated
+// list of the ~50 syscalls expected to dominate a top-N, and the most frequent
+// syscall of a real Go process — epoll_pwait — was not on it (#139).
+func syscallTable(goarch string) []string {
+	switch goarch {
+	case "amd64":
+		return syscallsAMD64[:]
+	case "arm64":
+		return syscallsARM64[:]
 	}
-	if name, ok := table[id]; ok {
-		return name
-	}
-	return fmt.Sprintf("syscall_%d", id)
+	return nil
 }
 
-// AArch64 (arm64) uses the "asm-generic" table — same as RISC-V.
-// Numbers from arch/arm64/include/uapi/asm/unistd.h.
-var syscallsARM64 = map[uint32]string{
-	17:  "getcwd",
-	19:  "eventfd2",
-	20:  "epoll_create1",
-	21:  "epoll_ctl",
-	22:  "epoll_pwait",
-	23:  "dup",
-	24:  "dup3",
-	25:  "fcntl",
-	29:  "ioctl",
-	32:  "flock",
-	38:  "renameat",
-	40:  "mount",
-	48:  "faccessat",
-	49:  "chdir",
-	53:  "fchmodat",
-	56:  "openat",
-	57:  "close",
-	59:  "pipe2",
-	61:  "getdents64",
-	62:  "lseek",
-	63:  "read",
-	64:  "write",
-	65:  "readv",
-	66:  "writev",
-	67:  "pread64",
-	68:  "pwrite64",
-	72:  "pselect6",
-	73:  "ppoll",
-	78:  "readlinkat",
-	79:  "fstatat",
-	80:  "fstat",
-	82:  "fsync",
-	83:  "fdatasync",
-	93:  "exit",
-	94:  "exit_group",
-	98:  "futex",
-	101: "nanosleep",
-	113: "clock_gettime",
-	115: "clock_nanosleep",
-	124: "sched_yield",
-	131: "tgkill",
-	134: "rt_sigaction",
-	135: "rt_sigprocmask",
-	139: "rt_sigreturn",
-	160: "uname",
-	172: "getpid",
-	173: "getppid",
-	174: "getuid",
-	175: "geteuid",
-	176: "getgid",
-	178: "gettid",
-	198: "socket",
-	199: "socketpair",
-	200: "bind",
-	201: "listen",
-	202: "accept",
-	203: "connect",
-	204: "getsockname",
-	205: "getpeername",
-	206: "sendto",
-	207: "recvfrom",
-	208: "setsockopt",
-	209: "getsockopt",
-	210: "shutdown",
-	211: "sendmsg",
-	212: "recvmsg",
-	213: "readahead",
-	214: "brk",
-	215: "munmap",
-	216: "mremap",
-	220: "clone",
-	221: "execve",
-	222: "mmap",
-	226: "mprotect",
-	233: "madvise",
-	235: "mbind",
-	236: "get_mempolicy",
-	237: "set_mempolicy",
-	241: "perf_event_open",
-	242: "accept4",
-	243: "recvmmsg",
-	260: "wait4",
-	261: "prlimit64",
-	262: "fanotify_init",
-	269: "sendmmsg",
-	277: "seccomp",
-	278: "getrandom",
-	281: "execveat",
-	283: "membarrier",
-	285: "copy_file_range",
-	291: "statx",
-	293: "rseq",
-	424: "pidfd_send_signal",
-	434: "pidfd_open",
-	435: "clone3",
-	436: "close_range",
-	439: "faccessat2",
-	440: "process_madvise",
-	441: "epoll_pwait2",
-	451: "cachestat",
+// syscallName resolves a syscall number through table, falling back to
+// "syscall_<id>" for a number the table does not assign.
+func syscallName(id uint32, table []string) string {
+	if uint64(id) < uint64(len(table)) && table[id] != "" {
+		return table[id]
+	}
+	return "syscall_" + strconv.FormatUint(uint64(id), 10)
 }
 
-// AMD64 (x86_64) — numbers from arch/x86/entry/syscalls/syscall_64.tbl.
-var syscallsAMD64 = map[uint32]string{
-	0:   "read",
-	1:   "write",
-	2:   "open",
-	3:   "close",
-	4:   "stat",
-	5:   "fstat",
-	6:   "lstat",
-	7:   "poll",
-	8:   "lseek",
-	9:   "mmap",
-	10:  "mprotect",
-	11:  "munmap",
-	12:  "brk",
-	13:  "rt_sigaction",
-	14:  "rt_sigprocmask",
-	16:  "ioctl",
-	17:  "pread64",
-	18:  "pwrite64",
-	19:  "readv",
-	20:  "writev",
-	21:  "access",
-	22:  "pipe",
-	23:  "select",
-	24:  "sched_yield",
-	28:  "madvise",
-	32:  "dup",
-	33:  "dup2",
-	35:  "nanosleep",
-	39:  "getpid",
-	41:  "socket",
-	42:  "connect",
-	43:  "accept",
-	44:  "sendto",
-	45:  "recvfrom",
-	46:  "sendmsg",
-	47:  "recvmsg",
-	49:  "bind",
-	50:  "listen",
-	54:  "setsockopt",
-	55:  "getsockopt",
-	56:  "clone",
-	59:  "execve",
-	60:  "exit",
-	61:  "wait4",
-	62:  "kill",
-	63:  "uname",
-	72:  "fcntl",
-	73:  "flock",
-	74:  "fsync",
-	75:  "fdatasync",
-	78:  "getdents",
-	79:  "getcwd",
-	80:  "chdir",
-	83:  "mkdir",
-	86:  "link",
-	87:  "unlink",
-	89:  "readlink",
-	102: "getuid",
-	104: "getgid",
-	107: "geteuid",
-	108: "getegid",
-	110: "getppid",
-	186: "gettid",
-	202: "futex",
-	217: "getdents64",
-	228: "clock_gettime",
-	230: "clock_nanosleep",
-	231: "exit_group",
-	232: "epoll_wait",
-	233: "epoll_ctl",
-	257: "openat",
-	262: "newfstatat",
-	273: "set_robust_list",
-	291: "epoll_create1",
-	292: "dup3",
-	293: "pipe2",
-	302: "prlimit64",
-	318: "getrandom",
-	332: "statx",
-	334: "rseq",
-	435: "clone3",
+// sortSyscallRows orders a snapshot busiest first, ties by name, so the order
+// is stable from one snapshot to the next.
+func sortSyscallRows(rows []SyscallEvent) {
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Count != rows[j].Count {
+			return rows[i].Count > rows[j].Count
+		}
+		return rows[i].Name < rows[j].Name
+	})
 }

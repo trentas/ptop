@@ -1,4 +1,4 @@
-.PHONY: all build build-ebpf run gen proto proto-lint clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest bench probe-cost
+.PHONY: all build build-ebpf run gen proto proto-lint syscalls clean dev test test-all vet lint install install-bare install-ebpf uninstall ebpf-selftest bench probe-cost
 
 .DEFAULT_GOAL := all
 
@@ -168,6 +168,16 @@ proto:
 
 proto-lint:
 	$(BUF) lint
+
+# ─── syscall names ────────────────────────────────────────────────────────────
+
+# Re-fetch the kernel's syscall tables at the tag pinned in
+# internal/syscalltbl/gen.go and regenerate pkg/collector/syscall_names_gen.go
+# (#139). Needs network; a build never does — the tables and the generated file
+# are committed. `go generate ./pkg/collector` regenerates from the committed
+# tables without fetching.
+syscalls:
+	$(GO) run ./internal/syscalltbl/gen.go -fetch
 
 # ─── builds ──────────────────────────────────────────────────────────────────
 

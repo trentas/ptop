@@ -135,6 +135,9 @@ ptop/
 │   │   ├── stackid.go             wire stack-id namespace + combined resolver (#89)
 │   │   ├── service.go             EventStream gRPC service impl
 │   │   └── mapper.go              collector value → streampb.Event
+│   ├── syscalltbl/                the kernel's syscall tables, pinned (#139)
+│   │   ├── amd64.tbl, arm64.tbl   verbatim from the tag named in gen.go
+│   │   └── gen.go                 → pkg/collector/syscall_names_gen.go (`make syscalls`)
 │   └── tui/                       Bubbletea + Lipgloss
 │       ├── model.go               root model: state + msg routing
 │       ├── keys.go                keybindings F1-F7, q, p, /, s, e
@@ -194,7 +197,8 @@ ptop/
 │       ├── security_decode.go     prot/kind/detail decode (build-tag-free)
 │       ├── fds.go                 /proc/<pid>/fd + fdinfo + events
 │       ├── sockets.go             inode → host:port via the target's /proc/<pid>/net/* (#140)
-│       ├── syscall_names.go       syscall id → name table
+│       ├── syscall_names.go       syscall id → name, table picked by GOARCH (build-tag-free)
+│       ├── syscall_names_gen.go   generated from internal/syscalltbl — do not edit
 │       └── *_test.go, *_stub.go
 │   └── symbol/                    ELF→symbol resolution (addr → func/file:line, #54)
 │       ├── elf.go                 OS-agnostic ELF/gosym core (Module, build-id)
@@ -237,10 +241,10 @@ type CpuSample struct {
     Timestamp time.Time
 }
 
-type SyscallEvent struct {
+type SyscallEvent struct { // published as []SyscallEvent, cumulative since attach
     Name      string
     Count     uint64
-    LatencyNs uint64
+    LatencyNs uint64 // SUMMED over the Count calls (and across threads) — not per call
 }
 
 type NetConn struct {
@@ -496,6 +500,25 @@ The rule for any new probe: measure what it costs the target
 (`make bench`, `bench/README.md`), and if the cost scales with something the
 target does often, sample it rather than shipping a probe that replaces the
 program it observes.
+
+### A table someone curated is a guess about the target (#139)
+
+Syscall names used to come from a hand-picked list of the ~50 syscalls "that
+will dominate the top-N", and the most frequent syscall of a real Go process —
+`epoll_pwait` on amd64 — was not on it, so the one row that says "this process
+is idle" came out `syscall_281`. The tables are now the kernel's own
+`syscall.tbl` files, committed verbatim under `internal/syscalltbl` at a pinned
+tag and turned into Go by `gen.go`; `TestSyscallNamesCoverKernelTables` reads
+the `.tbl` files back, so an entry the kernel lists cannot go unnamed. Anything
+that maps kernel numbers to names (errnos, signals, ioctls) should follow the
+same shape: generate from the kernel's table, never from expectations.
+
+The same report found `latency_ns` shipped as 0 on every row — measured by the
+kernel, dropped by the collector — and a consumer dividing it by `count` and
+publishing `avg_latency_ns: 0`. It is now exported, and it is `optional` on the
+wire: absent says "not measured", which is the only way a scalar can refuse to
+be read as zero. That is the general fix whenever a field might not be measured.
+It is a sum over threads too, so it can exceed the capture's wall time.
 
 ---
 

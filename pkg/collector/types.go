@@ -107,10 +107,23 @@ type CPUProfile struct {
 
 // ─── Syscalls ─────────────────────────────────────────────────────────────────
 
+// SyscallEvent is one syscall's row of the syscalls snapshot, which the eBPF
+// collector publishes as []SyscallEvent, busiest first.
+//
+// Count and LatencyNs cover the SAME calls — every call that returned since the
+// collector attached — so LatencyNs/Count is the mean time per call, and the
+// difference between two snapshots gives both for the interval between them.
+// A call is counted when it returns: one still blocked at snapshot time is in
+// neither field yet, and exit/exit_group, which never return, never appear.
+//
+// LatencyNs is wall-clock time from entry to return, blocking included. An idle
+// event loop's epoll_pwait has a large mean, and that is a wait, not a slow
+// syscall. It is summed across threads, so it can exceed the elapsed time:
+// eight threads parked in futex for a second add eight seconds (#139).
 type SyscallEvent struct {
 	Name      string
 	Count     uint64
-	LatencyNs uint64
+	LatencyNs uint64 // summed over the Count calls, not per call
 }
 
 // ─── Network ─────────────────────────────────────────────────────────────────

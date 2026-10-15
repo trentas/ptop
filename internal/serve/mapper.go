@@ -43,12 +43,15 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			OmittedSamples:    x.OmittedSamples,
 		}}
 
-	case map[string]uint64: // syscall counts
+	case []collector.SyscallEvent:
 		ev.TsUnixNano = nowNano()
 		ev.Category = pb.Category_CATEGORY_SYSCALL
-		stats := make([]*pb.SyscallStat, 0, len(x))
-		for name, count := range x {
-			stats = append(stats, &pb.SyscallStat{Name: name, Count: count})
+		stats := make([]*pb.SyscallStat, len(x))
+		for i, s := range x {
+			// Always set: the only syscall source times every call it counts,
+			// and an unset latency_ns is how the wire says "not measured" (#139).
+			lat := s.LatencyNs
+			stats[i] = &pb.SyscallStat{Name: s.Name, Count: s.Count, LatencyNs: &lat}
 		}
 		ev.Payload = &pb.Event_Syscalls{Syscalls: &pb.SyscallSnapshot{Stats: stats}}
 

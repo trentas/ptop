@@ -309,11 +309,15 @@ func stableSyscallEntries(counts map[string]uint64, names []string) []syscallEnt
 	return all
 }
 
-// renderSyscallTable: full version for F2 (all syscalls + percentage + total).
-// Shows ALL syscalls — in F2 reordering by count is desirable (the whole
-// screen is dedicated). To reduce oscillation, we use a cumulative max (the
-// peak ever seen) instead of the current max.
-func renderSyscallTable(counts map[string]uint64, w, h int) string {
+// renderSyscallTable: full version for F2 (all syscalls + mean latency +
+// percentage + total). Shows ALL syscalls — in F2 reordering by count is
+// desirable (the whole screen is dedicated). To reduce oscillation, we use a
+// cumulative max (the peak ever seen) instead of the current max.
+//
+// AVG is latencyNs/count: wall-clock per call, blocking included, so a wait
+// syscall's large mean is idleness rather than slowness. A syscall with no
+// entry in latencyNs was never timed and shows "—", not "0ns" (#139).
+func renderSyscallTable(counts, latencyNs map[string]uint64, w, h int) string {
 	all := sortedSyscalls(counts)
 	if len(all) == 0 {
 		return MutedStyle.Render("(no data)")
@@ -327,10 +331,13 @@ func renderSyscallTable(counts map[string]uint64, w, h int) string {
 		maxCount = 1
 	}
 
-	const nameW = 14
+	// The names come from the kernel's own table now, and many are longer
+	// than the curated list's were (sched_getaffinity, clock_nanosleep).
+	const nameW = 18
 	const countW = 8
+	const avgW = 9
 	const pctW = 7
-	barW := w - nameW - countW - pctW - 3
+	barW := w - nameW - countW - avgW - pctW - 4
 	if barW < 5 {
 		barW = 5
 	}
@@ -339,6 +346,7 @@ func renderSyscallTable(counts map[string]uint64, w, h int) string {
 		padRight("SYSCALL", nameW) + " " +
 			padRight("FREQUENCY", barW) + " " +
 			lipgloss.NewStyle().Width(countW).Background(ColorPanel).Align(lipgloss.Right).Render("COUNT") + " " +
+			lipgloss.NewStyle().Width(avgW).Background(ColorPanel).Align(lipgloss.Right).Render("AVG") + " " +
 			lipgloss.NewStyle().Width(pctW).Background(ColorPanel).Align(lipgloss.Right).Render("%"),
 	)
 
@@ -358,6 +366,13 @@ func renderSyscallTable(counts map[string]uint64, w, h int) string {
 		count := lipgloss.NewStyle().
 			Foreground(ColorText).Background(ColorPanel).Width(countW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%d", s.count))
+		avgText, avgColor := "—", ColorDim
+		if lat, timed := latencyNs[s.name]; timed && s.count > 0 {
+			avgText, avgColor = fmtNs(float64(lat)/float64(s.count)), ColorText
+		}
+		avg := lipgloss.NewStyle().
+			Foreground(avgColor).Background(ColorPanel).Width(avgW).Align(lipgloss.Right).
+			Render(avgText)
 		pct := 0.0
 		if total > 0 {
 			pct = float64(s.count) / float64(total) * 100
@@ -365,7 +380,7 @@ func renderSyscallTable(counts map[string]uint64, w, h int) string {
 		pctStr := lipgloss.NewStyle().
 			Foreground(ColorMuted).Background(ColorPanel).Width(pctW).Align(lipgloss.Right).
 			Render(fmt.Sprintf("%.1f%%", pct))
-		lines = append(lines, panelRow(name, bar, count, pctStr))
+		lines = append(lines, panelRow(name, bar, count, avg, pctStr))
 
 	}
 

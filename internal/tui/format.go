@@ -69,6 +69,21 @@ func fmtBytesPerSec(bps float64) string {
 	}
 }
 
+// fmtNs formats a duration in nanoseconds in the unit that keeps it short:
+// 850 → "850ns", 12400 → "12.4µs", 3_500_000 → "3.5ms", 2e9 → "2.00s".
+func fmtNs(ns float64) string {
+	switch {
+	case ns >= 1e9:
+		return fmt.Sprintf("%.2fs", ns/1e9)
+	case ns >= 1e6:
+		return fmt.Sprintf("%.1fms", ns/1e6)
+	case ns >= 1e3:
+		return fmt.Sprintf("%.1fµs", ns/1e3)
+	default:
+		return fmt.Sprintf("%.0fns", ns)
+	}
+}
+
 // fmtAgeMs converts an age in milliseconds to a compact string.
 // E.g.: 12000 → "12s", 90000 → "1m", 4000000 → "1h".
 func fmtAgeMs(ms int64) string {

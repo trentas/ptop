@@ -64,7 +64,7 @@ func isPerOccurrenceValue(v interface{}) bool {
 	default:
 		// Snapshots — CpuSample, MemStats, HeapStats, []ThreadInfo,
 		// []LockEntry, []NetConn, []FDEntry, IOWaitSample,
-		// IOThroughputSample, IOEBPFSnapshot, ProcContext, syscall counts —
+		// IOThroughputSample, IOEBPFSnapshot, ProcContext, []SyscallEvent —
 		// and anything added later, which is the safe default: a new value is
 		// protected from shedding rather than silently starved.
 		return false
