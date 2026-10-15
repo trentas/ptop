@@ -19,8 +19,18 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 	}{
 		{"cpu", collector.CpuSample{UsagePct: 42, Timestamp: time.Unix(1, 0)},
 			pb.Category_CATEGORY_CPU, func(e *pb.Event) bool { return e.GetCpu().GetUsagePct() == 42 }},
-		{"syscalls", map[string]uint64{"read": 3, "write": 5},
-			pb.Category_CATEGORY_SYSCALL, func(e *pb.Event) bool { return len(e.GetSyscalls().GetStats()) == 2 }},
+		// latency_ns is present on every row, including a measured 0: absence
+		// is what says "not measured" (#139).
+		{"syscalls", []collector.SyscallEvent{
+			{Name: "epoll_pwait", Count: 4, LatencyNs: 8000},
+			{Name: "getpid", Count: 2, LatencyNs: 0},
+		}, pb.Category_CATEGORY_SYSCALL, func(e *pb.Event) bool {
+			s := e.GetSyscalls().GetStats()
+			return len(s) == 2 &&
+				s[0].GetName() == "epoll_pwait" && s[0].GetCount() == 4 &&
+				s[0].LatencyNs != nil && s[0].GetLatencyNs() == 8000 &&
+				s[1].LatencyNs != nil && s[1].GetLatencyNs() == 0
+		}},
 		{"network", []collector.NetConn{{FD: 7, Type: "TCP", Remote: "1.2.3.4:80"}},
 			pb.Category_CATEGORY_NETWORK, func(e *pb.Event) bool {
 				c := e.GetNetwork().GetConns()

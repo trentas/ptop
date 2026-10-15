@@ -9,7 +9,7 @@ import (
 // renderSyscallsView (F2) — assets/mockup.jsx → SyscallView
 //
 //   ┌── Syscall Frequency (2/3) ────────────┬── Event Stream (1/3) ───┐
-//   │ name      ▇▇▇▇▇▇▇▇  count  pct        │ 12:34:56 SYS read fd=3  │
+//   │ name   ▇▇▇▇▇▇▇▇  count  avg  pct      │ 12:34:56 SYS read fd=3  │
 //   │ ...                                   │ ...                     │
 //   └───────────────────────────────────────┴─────────────────────────┘
 func renderSyscallsView(m Model, w, h int) string {
@@ -28,7 +28,7 @@ func renderSyscallsView(m Model, w, h int) string {
 	rightW := w - leftW
 
 	freq := Panel("Syscall Frequency",
-		renderSyscallTable(m.SyscallCounts, leftW-2, h-3),
+		renderSyscallTable(m.SyscallCounts, m.SyscallLatNs, leftW-2, h-3),
 		leftW, h)
 
 	stream := Panel("Event Stream",

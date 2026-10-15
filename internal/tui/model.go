@@ -113,7 +113,7 @@ type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
 type FDEventMsg collector.FDEvent
-type SyscallsMsg map[string]uint64
+type SyscallsMsg []collector.SyscallEvent
 type IOEBPFMsg collector.IOEBPFSnapshot
 type FSEventMsg collector.FSEvent
 type NetMsg []collector.NetConn
@@ -151,6 +151,7 @@ type Model struct {
 	// and cannot be recovered from the rate histories the panel draws.
 	NetThroughput  collector.NetThroughputSample
 	SyscallCounts  map[string]uint64
+	SyscallLatNs   map[string]uint64 // latency summed over the same calls (#139); a missing name was not timed, which is not fast
 	NetConns       []collector.NetConn
 	NetErrors      []collector.NetError // eBPF RST/retransmit anomalies (#56), newest-first
 	MemStats       collector.MemStats
@@ -297,6 +298,7 @@ func NewModel(cfg Config) Model {
 		ActiveTab:     TabOverview,
 		FDFilter:      "all",
 		SyscallCounts: make(map[string]uint64),
+		SyscallLatNs:  make(map[string]uint64),
 		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
 		render:        &renderState{},
 	}
@@ -525,7 +527,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SyscallsMsg:
 		// Full snapshot of the syscall_count map coming from the eBPF tracer.
 		// We overwrite the entire counts: the tracer keeps the per-pid cumulative.
-		m.SyscallCounts = map[string]uint64(v)
+		counts := make(map[string]uint64, len(v))
+		lat := make(map[string]uint64, len(v))
+		for _, s := range v {
+			counts[s.Name] += s.Count
+			lat[s.Name] += s.LatencyNs
+		}
+		m.SyscallCounts, m.SyscallLatNs = counts, lat
 		m.usingMockSyscalls = false
 		return m, m.waitBus()
 
@@ -1395,7 +1403,7 @@ func busMsg(v interface{}) tea.Msg {
 		return IOWaitMsg(t)
 	case collector.IOThroughputSample:
 		return IOThroughputMsg(t)
-	case map[string]uint64:
+	case []collector.SyscallEvent:
 		return SyscallsMsg(t)
 	case collector.IOEBPFSnapshot:
 		return IOEBPFMsg(t)

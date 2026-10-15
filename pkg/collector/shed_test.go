@@ -31,7 +31,7 @@ func TestIsPerOccurrenceValue(t *testing.T) {
 		IOWaitSample{},
 		IOThroughputSample{},
 		ProcContext{},
-		map[string]uint64{},
+		[]SyscallEvent{},
 	}
 	for _, v := range snapshots {
 		if isPerOccurrenceValue(v) {

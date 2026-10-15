@@ -45,6 +45,8 @@ function useSimulatedData() {
     { func:"libc.so.6",                          file:"",               samples:120 },
   ]};
   const [syscallCounts,    setSyscallCounts]    = useState(()=>Object.fromEntries(SYSCALLS.map(s=>[s,Math.floor(Math.random()*200)])));
+  // Mean wall-clock ns per call (#139). Wait syscalls park for milliseconds; the rest return in microseconds.
+  const [syscallAvgNs]                          = useState(()=>Object.fromEntries(SYSCALLS.map(s=>[s,/wait|poll|select|futex|sleep/.test(s)?2e6+Math.random()*80e6:300+Math.random()*20e3])));
   // Network throughput trend. Derived from the cumulative per-connection
   // counters the table below shows — a total cannot show a transfer starting
   // or stopping, which is what this row is for.
@@ -161,7 +163,7 @@ function useSimulatedData() {
     return ()=>clearInterval(iv);
   },[]);
 
-  return { tick, cpuHistory, cpuSites, syscallCounts, netEvents, netTxHistory, netRxHistory, memStats, threads, ioReadHistory, ioWriteHistory, ioFiles, ioTotals, ioLatencyBuckets, fds, fdCountHistory, fdEvents, timeline, activeTab, setActiveTab };
+  return { tick, cpuHistory, cpuSites, syscallCounts, syscallAvgNs, netEvents, netTxHistory, netRxHistory, memStats, threads, ioReadHistory, ioWriteHistory, ioFiles, ioTotals, ioLatencyBuckets, fds, fdCountHistory, fdEvents, timeline, activeTab, setActiveTab };
 }
 
 // ─── Shared primitives ────────────────────────────────────────────────────────
@@ -183,6 +185,13 @@ function fmt(b) {
   if (b>1048576) return `${(b/1048576).toFixed(1)}MB`;
   if (b>1024)    return `${(b/1024).toFixed(1)}KB`;
   return `${Math.floor(b)}B`;
+}
+
+function fmtNs(ns) {
+  if (ns>=1e9) return `${(ns/1e9).toFixed(2)}s`;
+  if (ns>=1e6) return `${(ns/1e6).toFixed(1)}ms`;
+  if (ns>=1e3) return `${(ns/1e3).toFixed(1)}µs`;
+  return `${Math.round(ns)}ns`;
 }
 
 function fmtAge(s) {
@@ -486,12 +495,13 @@ function SyscallView({ data }) {
     <div style={{ display:"flex", flex:1, gap:1, overflow:"hidden", padding:1 }}>
       <Box title="▸ Syscall Frequency" flex={2} style={{ overflow:"auto" }}>
         <div style={{ padding:"6px 12px" }}>
-          <div style={{ display:"flex", fontSize:9, color:COLORS.muted, marginBottom:4 }}><span style={{ width:100 }}>SYSCALL</span><span style={{ flex:1 }}>FREQUENCY</span><span style={{ width:60, textAlign:"right" }}>COUNT</span><span style={{ width:50, textAlign:"right" }}>%</span></div>
+          <div style={{ display:"flex", fontSize:9, color:COLORS.muted, marginBottom:4 }}><span style={{ width:100 }}>SYSCALL</span><span style={{ flex:1 }}>FREQUENCY</span><span style={{ width:60, textAlign:"right" }}>COUNT</span><span style={{ width:64, textAlign:"right" }}>AVG</span><span style={{ width:50, textAlign:"right" }}>%</span></div>
           {sorted.map(([name,count],i)=>(
             <div key={name} style={{ display:"flex", alignItems:"center", gap:8, marginBottom:5, fontSize:10 }}>
               <span style={{ width:100, color:pal[i%pal.length] }}>{name}</span>
               <div style={{ flex:1, height:10, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden" }}><div style={{ width:`${(count/max)*100}%`, height:"100%", backgroundColor:pal[i%pal.length], opacity:0.8, transition:"width 0.4s" }}/></div>
               <span style={{ width:60, textAlign:"right", color:COLORS.text }}>{count}</span>
+              <span style={{ width:64, textAlign:"right", color:data.syscallAvgNs[name]!=null?COLORS.text:COLORS.dim }}>{data.syscallAvgNs[name]!=null?fmtNs(data.syscallAvgNs[name]):"—"}</span>
               <span style={{ width:50, textAlign:"right", color:COLORS.muted }}>{((count/total)*100).toFixed(1)}%</span>
             </div>
           ))}

@@ -46,7 +46,7 @@ func TestBusMsgCoversEveryConsumedValue(t *testing.T) {
 		{"threads", []collector.ThreadInfo{{TID: 9}}, ThreadsMsg([]collector.ThreadInfo{{TID: 9}})},
 		{"fds", []collector.FDEntry{{FD: 4}}, FDMsg([]collector.FDEntry{{FD: 4}})},
 		{"fd event", collector.FDEvent{Message: "open"}, FDEventMsg(collector.FDEvent{Message: "open"})},
-		{"syscalls", map[string]uint64{"read": 2}, SyscallsMsg(map[string]uint64{"read": 2})},
+		{"syscalls", []collector.SyscallEvent{{Name: "read", Count: 2}}, SyscallsMsg([]collector.SyscallEvent{{Name: "read", Count: 2}})},
 		{"net", []collector.NetConn{{FD: 5}}, NetMsg([]collector.NetConn{{FD: 5}})},
 		{"locks", []collector.LockEntry{{UAddr: 1}}, LockGraphMsg([]collector.LockEntry{{UAddr: 1}})},
 	}

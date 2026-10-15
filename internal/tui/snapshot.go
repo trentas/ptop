@@ -58,6 +58,7 @@ type Snapshot struct {
 type SnapshotData struct {
 	CPUHistory     []float64                      `json:"cpu_history"`
 	SyscallCounts  map[string]uint64              `json:"syscall_counts"`
+	SyscallLatNs   map[string]uint64              `json:"syscall_latency_ns"` // summed over the same calls (#139); a missing name was not timed
 	NetConns       []collector.NetConn            `json:"network_connections"`
 	NetErrors      []collector.NetError           `json:"network_errors"`
 	MemStats       collector.MemStats             `json:"memory"`
@@ -116,6 +117,7 @@ func buildSnapshot(m Model) Snapshot {
 		Data: SnapshotData{
 			CPUHistory:     append([]float64(nil), m.CPUHistory...),
 			SyscallCounts:  copyUintMap(m.SyscallCounts),
+			SyscallLatNs:   copyUintMap(m.SyscallLatNs),
 			NetConns:       append([]collector.NetConn(nil), m.NetConns...),
 			NetErrors:      append([]collector.NetError(nil), m.NetErrors...),
 			MemStats:       m.MemStats,

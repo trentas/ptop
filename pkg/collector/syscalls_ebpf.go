@@ -12,8 +12,8 @@ import (
 )
 
 // SyscallsEBPFCollector consumes the syscall_count map from the eBPF
-// syscalls program (internal/bpf/syscalls.go) and publishes a
-// map[name]Stat snapshot every 500ms to the Model.
+// syscalls program (internal/bpf/syscalls.go) and publishes a []SyscallEvent
+// snapshot — count and summed latency per syscall — every 500ms.
 //
 // Runs only on Linux with -tags=ebpf. In other builds, the non-Linux Stub
 // returns nil from New and Start always fails.
@@ -22,15 +22,15 @@ type SyscallsEBPFCollector struct {
 	ch     chan interface{}
 	stop   chan struct{}
 
-	mu      sync.Mutex
-	isARM64 bool
+	mu    sync.Mutex
+	names []string // syscall number → name, for the architecture this binary runs on
 }
 
 func NewSyscallsEBPFCollector() *SyscallsEBPFCollector {
 	return &SyscallsEBPFCollector{
-		ch:      make(chan interface{}, 16),
-		stop:    make(chan struct{}),
-		isARM64: runtime.GOARCH == "arm64",
+		ch:    make(chan interface{}, 16),
+		stop:  make(chan struct{}),
+		names: syscallTable(runtime.GOARCH),
 	}
 }
 
@@ -79,10 +79,10 @@ func (c *SyscallsEBPFCollector) loop() {
 	}
 }
 
-// snapshot reads the syscall_count map and returns {name → count}.
-// Latency is available but not exported for now — the Model only consumes
-// counts today. When F2 grows a LAT/MED column, we revisit this.
-func (c *SyscallsEBPFCollector) snapshot() (map[string]uint64, error) {
+// snapshot reads the syscall_count map and returns one row per syscall,
+// busiest first. The kernel bumps both counters at the same exit, since attach,
+// so each row's LatencyNs covers exactly its Count calls (#139).
+func (c *SyscallsEBPFCollector) snapshot() ([]SyscallEvent, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.tracer == nil {
@@ -92,9 +92,14 @@ func (c *SyscallsEBPFCollector) snapshot() (map[string]uint64, error) {
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[string]uint64, len(stats))
+	out := make([]SyscallEvent, 0, len(stats))
 	for id, st := range stats {
-		out[syscallName(id, c.isARM64)] = st.Count
+		out = append(out, SyscallEvent{
+			Name:      syscallName(id, c.names),
+			Count:     st.Count,
+			LatencyNs: st.TotalLatNs,
+		})
 	}
+	sortSyscallRows(out)
 	return out, nil
 }

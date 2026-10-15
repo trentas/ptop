@@ -201,10 +201,29 @@ message CpuProfile {
 }
 
 // ─── Syscalls ───────────────────────────────────────────────────────────────
+
+// SyscallStat is one syscall's totals since the collector attached. Both
+// fields only grow; difference two snapshots for an interval.
 message SyscallStat {
+  // The kernel's name for the syscall, from its own syscall table for the
+  // architecture ptop runs on (#139). "syscall_<n>" only for a number that
+  // table does not assign.
   string name = 1;
+  // Calls that RETURNED since attach. A call is counted at its exit: one still
+  // blocked when the snapshot is taken is not in it yet, and exit/exit_group,
+  // which never return, never appear.
   uint64 count = 2;
-  uint64 latency_ns = 3;
+  // Wall-clock nanoseconds from entry to return, SUMMED over exactly the calls
+  // in count — so latency_ns / count is the mean per call, and the two
+  // difference consistently. Blocking is included: an idle event loop's
+  // epoll_pwait has a large mean, which is a wait, not a slow syscall. And it
+  // is summed across threads, so it can exceed the wall time of the capture:
+  // eight threads parked in futex for one second add eight seconds.
+  //
+  // Absent means not measured — never 0. ptop before #139 never filled it, so
+  // the 0 every earlier capture carried was this absence; a source that cannot
+  // time syscalls leaves it unset too.
+  optional uint64 latency_ns = 3;
 }
 message SyscallSnapshot {
   repeated SyscallStat stats = 1;

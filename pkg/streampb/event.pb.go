@@ -1078,12 +1078,29 @@ func (x *CpuProfile) GetOmittedSamples() uint64 {
 	return 0
 }
 
-// ─── Syscalls ───────────────────────────────────────────────────────────────
+// SyscallStat is one syscall's totals since the collector attached. Both
+// fields only grow; difference two snapshots for an interval.
 type SyscallStat struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Count         uint64                 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
-	LatencyNs     uint64                 `protobuf:"varint,3,opt,name=latency_ns,json=latencyNs,proto3" json:"latency_ns,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The kernel's name for the syscall, from its own syscall table for the
+	// architecture ptop runs on (#139). "syscall_<n>" only for a number that
+	// table does not assign.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Calls that RETURNED since attach. A call is counted at its exit: one still
+	// blocked when the snapshot is taken is not in it yet, and exit/exit_group,
+	// which never return, never appear.
+	Count uint64 `protobuf:"varint,2,opt,name=count,proto3" json:"count,omitempty"`
+	// Wall-clock nanoseconds from entry to return, SUMMED over exactly the calls
+	// in count — so latency_ns / count is the mean per call, and the two
+	// difference consistently. Blocking is included: an idle event loop's
+	// epoll_pwait has a large mean, which is a wait, not a slow syscall. And it
+	// is summed across threads, so it can exceed the wall time of the capture:
+	// eight threads parked in futex for one second add eight seconds.
+	//
+	// Absent means not measured — never 0. ptop before #139 never filled it, so
+	// the 0 every earlier capture carried was this absence; a source that cannot
+	// time syscalls leaves it unset too.
+	LatencyNs     *uint64 `protobuf:"varint,3,opt,name=latency_ns,json=latencyNs,proto3,oneof" json:"latency_ns,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1133,8 +1150,8 @@ func (x *SyscallStat) GetCount() uint64 {
 }
 
 func (x *SyscallStat) GetLatencyNs() uint64 {
-	if x != nil {
-		return x.LatencyNs
+	if x != nil && x.LatencyNs != nil {
+		return *x.LatencyNs
 	}
 	return 0
 }
@@ -3632,12 +3649,13 @@ const file_event_proto_rawDesc = "" +
 	"\x11requested_rate_hz\x18\x06 \x01(\x01R\x0frequestedRateHz\x12\x1f\n" +
 	"\vtotal_sites\x18\a \x01(\rR\n" +
 	"totalSites\x12'\n" +
-	"\x0fomitted_samples\x18\b \x01(\x04R\x0eomittedSamples\"V\n" +
+	"\x0fomitted_samples\x18\b \x01(\x04R\x0eomittedSamples\"j\n" +
 	"\vSyscallStat\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05count\x18\x02 \x01(\x04R\x05count\x12\x1d\n" +
+	"\x05count\x18\x02 \x01(\x04R\x05count\x12\"\n" +
 	"\n" +
-	"latency_ns\x18\x03 \x01(\x04R\tlatencyNs\"=\n" +
+	"latency_ns\x18\x03 \x01(\x04H\x00R\tlatencyNs\x88\x01\x01B\r\n" +
+	"\v_latency_ns\"=\n" +
 	"\x0fSyscallSnapshot\x12*\n" +
 	"\x05stats\x18\x01 \x03(\v2\x14.ptop.v1.SyscallStatR\x05stats\"\xc2\x01\n" +
 	"\aNetConn\x12\x0e\n" +
@@ -3982,6 +4000,7 @@ func file_event_proto_init() {
 		(*Event_CpuProfile)(nil),
 		(*Event_NetThroughput)(nil),
 	}
+	file_event_proto_msgTypes[6].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
