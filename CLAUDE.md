@@ -76,7 +76,6 @@ ptop/
 │   ├── event.proto                unified Event + payloads
 │   └── service.proto              EventStream gRPC service
 ├── cmd/ptop/main.go               entrypoint: parse flags, start model
-├── cmd/ptop/build.go              version/commit/date: -ldflags, else Go's VCS info (#145)
 ├── cmd/ebpfselftest/              root-only eBPF self-diagnostic
 ├── internal/
 │   ├── bpf/                       eBPF programs + loader (build tag `ebpf`)
