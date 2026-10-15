@@ -717,7 +717,8 @@ observe a subtree (syscalls, io, network, futex, cpu, security) — the
 `CgroupTargeter` interface in `types.go` is what marks them, and the ones left
 out are listed there with the reason. Every subscriber gets a `TargetInfo`
 handshake as the first `StreamMeta`, before any event: **the first item on a
-stream is now a meta, not an event** — consumers must handle that.
+stream is now a meta, not an event** — consumers must handle that. It names the
+ptop that produced the stream too (`TargetInfo.ptop`, #145).
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
 streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of
@@ -927,8 +928,14 @@ target, not once per consumer of it.** Several collectors reading the same
 binary is the normal shape here, not an edge case.
 
 Version metadata is injected via `-ldflags` at release time
-(`main.version`, `main.commit`, `main.buildDate`). In dev they stay as
-`"dev"`/`"none"`/`"unknown"`.
+(`main.version`, `main.commit`, `main.buildDate`, declared in
+`cmd/ptop/build.go`). In dev they stay as `"dev"`/`"none"`/`"unknown"`, and
+`buildIdentity` fills what it can from the VCS info Go embeds in a build from a
+checkout (Go's version for it, the commit, `+dirty`). The result is what
+`--version` prints and what every handshake carries as `TargetInfo.ptop` (#145):
+a field's meaning changes between releases (#143, #144), so a consumer comparing
+captures needs to know which ptop made each. Unknown is empty, never
+`none`/`unknown`, on the wire.
 
 ---
 

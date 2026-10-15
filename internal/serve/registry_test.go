@@ -76,7 +76,7 @@ func TestOnDemandRefcount(t *testing.T) {
 	defer cancel()
 
 	f := newTestFactory()
-	reg := newOnDemandRegistry(ctx, f.make, 4)
+	reg := newOnDemandRegistry(ctx, f.make, 4, PtopBuild{})
 	pid := os.Getpid()
 
 	hub1, _, release1, err := reg.acquire(pid)
@@ -128,7 +128,7 @@ func TestOnDemandRejections(t *testing.T) {
 	defer cancel()
 
 	f := newTestFactory()
-	reg := newOnDemandRegistry(ctx, f.make, 1) // cap of one target
+	reg := newOnDemandRegistry(ctx, f.make, 1, PtopBuild{}) // cap of one target
 
 	// No pid at all: this server has no target of its own to fall back on.
 	if _, _, _, err := reg.acquire(0); statusCode(t, err) != codes.InvalidArgument {
@@ -170,7 +170,7 @@ func TestOnDemandFactoryFailure(t *testing.T) {
 
 	f := newTestFactory()
 	f.err = context.DeadlineExceeded
-	reg := newOnDemandRegistry(ctx, f.make, 4)
+	reg := newOnDemandRegistry(ctx, f.make, 4, PtopBuild{})
 
 	if _, _, _, err := reg.acquire(os.Getpid()); statusCode(t, err) != codes.Internal {
 		t.Errorf("acquire with a failing factory = %v, want Internal", err)
@@ -187,7 +187,7 @@ func TestOnDemandLookupNeverStarts(t *testing.T) {
 	defer cancel()
 
 	f := newTestFactory()
-	reg := newOnDemandRegistry(ctx, f.make, 4)
+	reg := newOnDemandRegistry(ctx, f.make, 4, PtopBuild{})
 	pid := os.Getpid()
 
 	if _, _, ok := reg.lookup(pid); ok {

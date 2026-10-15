@@ -70,6 +70,11 @@ type Options struct {
 	// target — there is only ever one.
 	MaxTargets int
 
+	// Build identifies this ptop in every handshake (#145): a consumer needs it
+	// to tell which side of a change in a field's meaning a capture is on. The
+	// zero value is sent as "unknown".
+	Build PtopBuild
+
 	// Ready, if set, is closed once the endpoint is bound and the server is
 	// about to serve. It exists so a caller that runs Run in a goroutine can
 	// tell "up" from "failed at startup" without racing a timer — everything
@@ -109,7 +114,7 @@ func Run(ctx context.Context, addr string, target Target, feed *collector.Feed, 
 	}
 	defer cleanup()
 
-	reg := fixedTargetRegistry(ctx, target, feed, resolver)
+	reg := fixedTargetRegistry(ctx, target, feed, resolver, opts.Build)
 	return runServer(ctx, lis, creds, mode, reg, reg.hub, opts)
 }
 
@@ -144,12 +149,12 @@ func RunOnDemand(ctx context.Context, addr string, factory FeedFactory, opts Opt
 	}
 	defer cleanup()
 
-	return runServer(ctx, lis, creds, mode, newOnDemandRegistry(ctx, factory, opts.MaxTargets), nil, opts)
+	return runServer(ctx, lis, creds, mode, newOnDemandRegistry(ctx, factory, opts.MaxTargets, opts.Build), nil, opts)
 }
 
 // fixedTargetRegistry starts the hub for a server whose target was named on the
 // command line, and wraps it in the registry the service talks to.
-func fixedTargetRegistry(ctx context.Context, target Target, feed *collector.Feed, resolver StackResolver) *fixedRegistry {
+func fixedTargetRegistry(ctx context.Context, target Target, feed *collector.Feed, resolver StackResolver, build PtopBuild) *fixedRegistry {
 	buildID := ""
 	if resolver != nil {
 		buildID = resolver.ProcessBuildID()
@@ -162,6 +167,7 @@ func fixedTargetRegistry(ctx context.Context, target Target, feed *collector.Fee
 		set, bus = feed.Set, feed.Bus
 	}
 	hub := NewHub(target, buildID, set)
+	hub.build = build.wire()
 	hub.Start(ctx, bus)
 	return &fixedRegistry{target: target, hub: hub, resolver: resolver}
 }

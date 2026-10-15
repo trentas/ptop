@@ -43,7 +43,8 @@ func TestServeUnixEndToEnd(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, addr, TargetPID(99), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil, Options{})
+		runErr <- Run(ctx, addr, TargetPID(99), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil,
+			Options{Build: PtopBuild{Version: "v9.9.9", Commit: "abc123", BuildDate: "2026-10-15T00:00:00Z"}})
 	}()
 
 	// Wait for the listener socket to appear before dialing.
@@ -81,6 +82,12 @@ func TestServeUnixEndToEnd(t *testing.T) {
 	}
 	if ti.GetMode() != pb.TargetMode_TARGET_MODE_PID || ti.GetPid() != 99 {
 		t.Errorf("handshake = %v, want pid mode for pid 99", ti)
+	}
+	// And which ptop produced the stream (#145): a field's meaning changes
+	// between releases, and a consumer comparing captures must know which side
+	// of such a change each one is on.
+	if b := ti.GetPtop(); b.GetVersion() != "v9.9.9" || b.GetCommit() != "abc123" || b.GetBuildDate() != "2026-10-15T00:00:00Z" {
+		t.Errorf("handshake build = %v, want v9.9.9 / abc123 / 2026-10-15T00:00:00Z", b)
 	}
 
 	resp, err := stream.Recv()
@@ -209,7 +216,8 @@ func TestServeJSONLExport(t *testing.T) {
 
 	runErr := make(chan error, 1)
 	go func() {
-		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil, Options{JSONLPath: jsonl})
+		runErr <- Run(ctx, "unix://"+sock, TargetPID(5), &collector.Feed{Bus: collector.StartBus(ctx, []collector.Collector{f})}, nil,
+			Options{JSONLPath: jsonl, Build: PtopBuild{Version: "v9.9.9"}})
 	}()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
@@ -232,8 +240,8 @@ func TestServeJSONLExport(t *testing.T) {
 	if !sc.Scan() {
 		t.Fatal("empty export: no target header")
 	}
-	if ti := unmarshalResponse(t, sc.Bytes()).GetMeta().GetTarget(); ti.GetPid() != 5 {
-		t.Errorf("header target = %v, want pid 5", ti)
+	if ti := unmarshalResponse(t, sc.Bytes()).GetMeta().GetTarget(); ti.GetPid() != 5 || ti.GetPtop().GetVersion() != "v9.9.9" {
+		t.Errorf("header target = %v, want pid 5 from ptop v9.9.9 — an export must say what produced it (#145)", ti)
 	}
 
 	var lines int
@@ -299,7 +307,7 @@ func TestServeOnDemandTwoTargets(t *testing.T) {
 
 	f := newTestFactory()
 	runErr := make(chan error, 1)
-	go func() { runErr <- RunOnDemand(ctx, addr, f.make, Options{}) }()
+	go func() { runErr <- RunOnDemand(ctx, addr, f.make, Options{Build: PtopBuild{Version: "v9.9.9"}}) }()
 	waitFor(t, func() bool { _, err := os.Stat(sock); return err == nil })
 
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
@@ -340,6 +348,9 @@ func TestServeOnDemandTwoTargets(t *testing.T) {
 		target := resp.GetMeta().GetTarget()
 		if target.GetMode() != pb.TargetMode_TARGET_MODE_PID || target.GetPid() != int32(tc.pid) {
 			t.Fatalf("%s handshake target = %v, want pid %d", tc.name, target, tc.pid)
+		}
+		if target.GetPtop().GetVersion() != "v9.9.9" {
+			t.Errorf("%s handshake build = %v, want v9.9.9 — every target's handshake names the ptop (#145)", tc.name, target.GetPtop())
 		}
 	}
 
