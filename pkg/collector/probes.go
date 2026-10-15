@@ -46,7 +46,9 @@ type ProbeStatus struct {
 	// the same measurement.
 	Source string
 	// Detail is why a probe that is not ACTIVE is not running: the attach error,
-	// or the flag that switched it off. Prose, not a key.
+	// or the flag that switched it off. On an ACTIVE probe it is a caveat — what
+	// the probe attached and still could not see (#140) — and empty when there is
+	// none. Prose, not a key.
 	Detail string
 }
 
@@ -74,6 +76,17 @@ func (l *probeLog) set(st ProbeStatus) {
 
 func (l *probeLog) active(name, source string) {
 	l.set(ProbeStatus{Name: name, State: ProbeActive, Source: source})
+}
+
+// caveat qualifies a probe already recorded as ACTIVE. It does not go through
+// set, which refuses to touch an active status: the caveat belongs to the very
+// lane that succeeded. Anything but an active probe is left alone — its Detail
+// already says why it is not running.
+func (l *probeLog) caveat(name, note string) {
+	if st, ok := l.m[name]; ok && st.State == ProbeActive {
+		st.Detail = note
+		l.m[name] = st
+	}
 }
 
 func (l *probeLog) disabled(name, why string) {

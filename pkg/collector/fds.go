@@ -53,6 +53,9 @@ func (c *FDCollector) Start(pid int) error {
 	if _, err := os.Stat(fmt.Sprintf("/proc/%d/fd", pid)); err != nil {
 		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
+	// The target's socket tables, not ours: in another network namespace its
+	// sockets would never resolve and every one would read "socket:[N]" (#140).
+	c.resolver.ForPID(pid)
 	go c.loop()
 	return nil
 }

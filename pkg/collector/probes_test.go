@@ -168,3 +168,45 @@ func TestNoEBPFLeavesIOActiveOnItsProcLane(t *testing.T) {
 		t.Errorf("io = %+v, want active on %s", st, SourceProc)
 	}
 }
+
+// caveatedFake is a collector that attached and still missed part of its subject.
+type caveatedFake struct{ note string }
+
+func (c caveatedFake) Caveat() string { return c.note }
+
+func TestActiveProbeCarriesItsCollectorsCaveat(t *testing.T) {
+	// #140: the network probe attached, its bootstrap seeded nothing, and the
+	// status said only "active" — so fan_out 0 read as a measurement.
+	s := &Set{}
+	s.markActive(SubsystemNetwork, caveatedFake{note: "connections opened before the capture were not seeded"})
+	st := statusMap(t, s.Probes())[SubsystemNetwork]
+	if st.State != ProbeActive || st.Source != "eBPF" {
+		t.Fatalf("status %+v, want active via eBPF — a caveat does not demote the probe", st)
+	}
+	if st.Detail == "" {
+		t.Error("the collector's caveat did not reach the probe status")
+	}
+}
+
+func TestActiveProbeWithoutCaveatHasNoDetail(t *testing.T) {
+	s := &Set{}
+	s.markActive(SubsystemNetwork, caveatedFake{})
+	s.markActive(SubsystemSyscalls, struct{}{}) // a collector with no Caveat at all
+	m := statusMap(t, s.Probes())
+	for _, name := range []string{SubsystemNetwork, SubsystemSyscalls} {
+		if m[name].Detail != "" {
+			t.Errorf("%s: detail %q on a probe with nothing to qualify", name, m[name].Detail)
+		}
+	}
+}
+
+func TestCaveatDoesNotOverwriteAFailure(t *testing.T) {
+	// A failed probe's Detail is the attach error; a caveat is about what an
+	// ACTIVE probe missed and has no business replacing it.
+	var l probeLog
+	l.failed(SubsystemNetwork, errors.New("permission denied"), true)
+	l.caveat(SubsystemNetwork, "not seeded")
+	if got := l.statuses()[0].Detail; got != "permission denied" {
+		t.Errorf("detail %q, want the attach error to survive", got)
+	}
+}

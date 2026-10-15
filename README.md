@@ -297,7 +297,7 @@ overlay shows which one is active per tab.
 |---|---|---|
 | **F1 Overview** | ✅ CPU + Mem + Threads + I/O + FDs | ✅ refined by tracepoints |
 | **F2 Syscalls** | ❌ no `/proc` source | ✅ raw_syscalls tracepoint |
-| **F3 Network**  | ✅ via `/proc/net/{tcp,udp,unix}` | ✅ + per-conn RTT/bytes |
+| **F3 Network**  | ✅ via `/proc/<pid>/net/{tcp,udp,unix}` | ✅ + per-conn RTT/bytes |
 | **F4 Threads**  | ✅ state + CPU% + wchan | ✅ + futex lock graph |
 | **F5 I/O**      | ✅ throughput + iowait | ✅ + top files + histogram |
 | **F6 FDs**      | ✅ resolved sockets, bytes, active | ✅ same + active socket detection |
@@ -310,7 +310,8 @@ overlay shows which one is active per tab.
 - `mem_proc.go` — `/proc/<pid>/statm` + page faults
 - `iowait_proc.go` — `/proc/<pid>/stat` field 42 (delayacct_blkio_ticks)
 - `io_proc.go` — `/proc/<pid>/io`
-- `fds.go` + `sockets.go` — `/proc/<pid>/fd`, `/proc/net/{tcp,tcp6,udp,udp6,unix}`
+- `fds.go` + `sockets.go` — `/proc/<pid>/fd`, and the target's own socket tables
+  `/proc/<pid>/net/{tcp,tcp6,udp,udp6,unix}` (its network namespace, not ptop's — #140)
 - `proccontext_linux.go` — `/proc/<pid>/{status,cgroup,ns/*}` → namespace +
   cgroup + uid/gid (the execution/container context, #60). When the target runs
   in a container the derived id (`docker:…`, `containerd:…`, `kubepods:…`, …)

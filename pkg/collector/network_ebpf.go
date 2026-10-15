@@ -45,7 +45,14 @@ type NetworkEBPFCollector struct {
 	// stamps first_seen_ns with. A connection first seen after it was born
 	// under observation, so its counters are new traffic and not history.
 	attachedNs uint64
+	// caveat is what this probe could not see, decided by the first bootstrap
+	// (#140). Written in start, before Start returns, and read after it.
+	caveat string
 }
+
+// Caveat reports what an ACTIVE network probe could not see — pre-existing
+// connections it failed to seed — or "" when there is nothing to qualify.
+func (c *NetworkEBPFCollector) Caveat() string { return c.caveat }
 
 func NewNetworkEBPFCollector() *NetworkEBPFCollector {
 	return &NetworkEBPFCollector{
@@ -84,7 +91,14 @@ func (c *NetworkEBPFCollector) start(t bpf.Target, pid int) error {
 	// Synchronous bootstrap: populates the map with TCP connections that
 	// already exist in /proc/<pid>/net/tcp{,6} before the first snapshot.
 	// Without this, processes with keep-alive look empty until some transition.
-	c.bootstrapFromProc()
+	// The tables are the TARGET's — ptop may live in another network namespace,
+	// where its own /proc/net/tcp holds none of the target's sockets (#140).
+	c.resolver.ForPID(pid)
+	if pid > 0 {
+		c.caveat = c.bootstrapFromProc().caveat(pid)
+	} else {
+		c.caveat = cgroupSeedCaveat
+	}
 	go c.publishLoop()
 	// Drain net-error events. tracer is passed explicitly (not read from the
 	// field) so Stop()'s `c.tracer = nil` can't race this goroutine; Close()
@@ -152,20 +166,24 @@ func (c *NetworkEBPFCollector) readLoop(tracer *bpf.NetTracer) {
 }
 
 // bootstrapFromProc enumerates /proc/<pid>/fd/, identifies the process's
-// socket FDs, resolves their inodes via /proc/net/tcp{,6} (SocketResolver)
-// and seeds the eBPF net_conn_map with BPF_NOEXIST — existing entries
-// (coming from the tracepoint) are preserved with their real state/RTT/bytes.
+// socket FDs, resolves their inodes in the target's /proc/<pid>/net/tcp{,6}
+// (SocketResolver, #140) and seeds the eBPF net_conn_map with BPF_NOEXIST —
+// existing entries (coming from the tracepoint) are preserved with their real
+// state/RTT/bytes. It returns what it managed, which the first call turns into
+// the probe's caveat.
 //
 // Pre-existing seeded connections have zeroed tx/rx and zero RTT — without
 // skaddr we can't correlate them with the kprobes. That's the trade-off of
 // this approach (the alternative would be iterating sock objects via vmlinux.h).
-func (c *NetworkEBPFCollector) bootstrapFromProc() {
+func (c *NetworkEBPFCollector) bootstrapFromProc() seedReport {
+	var rep seedReport
 	if c.tracer == nil || c.pid <= 0 {
-		return
+		return rep
 	}
 	fds, err := os.ReadDir(fmt.Sprintf("/proc/%d/fd", c.pid))
 	if err != nil {
-		return
+		rep.fdErr = err
+		return rep
 	}
 	// Collect inodes of the process's socket FDs.
 	inodes := make(map[uint64]struct{}, 16)
@@ -178,8 +196,9 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 			inodes[inode] = struct{}{}
 		}
 	}
+	rep.sockets = len(inodes)
 	if len(inodes) == 0 {
-		return
+		return rep
 	}
 	// Resolve via SocketResolver. The resolver has a 2s cache, but we call it
 	// once here — forces a refresh if stale.
@@ -188,6 +207,7 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 		if !ok {
 			continue
 		}
+		rep.resolved++
 		if info.Family != "TCP" {
 			continue
 		}
@@ -203,6 +223,7 @@ func (c *NetworkEBPFCollector) bootstrapFromProc() {
 		}
 		_ = c.tracer.SeedConnection(key, info.StateNum)
 	}
+	return rep
 }
 
 // snapshot reads the map and converts each entry into a NetConn. Filters

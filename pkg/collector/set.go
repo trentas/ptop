@@ -307,7 +307,7 @@ func NewSet(cfg SetConfig) *Set {
 				s.probes.failed(name, err, bpf.Available)
 				return
 			}
-			s.probes.active(name, "eBPF")
+			s.markActive(name, c)
 			onOK()
 		}
 
@@ -424,6 +424,27 @@ type ebpfStarter interface {
 	Start(pid int) error
 }
 
+// caveated is an eBPF collector that can attach and still not see everything it
+// is meant to (#140): the network probe whose bootstrap could not seed the
+// connections that predate the capture. Optional, so a collector without such a
+// gap — and the stub and darwin builds — implement nothing.
+type caveated interface {
+	Caveat() string
+}
+
+// markActive records an eBPF probe as active, with the collector's caveat when
+// it has one. Without the caveat an attached probe that missed part of its
+// subject reads exactly like one that saw all of it, and its zeros read as
+// measurements.
+func (s *Set) markActive(name string, c any) {
+	s.probes.active(name, "eBPF")
+	if cv, ok := c.(caveated); ok {
+		if note := cv.Caveat(); note != "" {
+			s.probes.caveat(name, note)
+		}
+	}
+}
+
 // startCgroup starts the collectors that can observe a whole cgroup subtree
 // (#94). It is deliberately a smaller set than PID mode, and the omissions are
 // structural rather than unfinished work:
@@ -496,7 +517,7 @@ func (s *Set) startCgroupCollector(name string, c CgroupTargeter, cfg SetConfig)
 		s.probes.failed(name, err, bpf.Available)
 		return false
 	}
-	s.probes.active(name, "eBPF")
+	s.markActive(name, c)
 	return true
 }
 
