@@ -17,7 +17,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          # The same source as release.yml: the toolchain the binary ships with is the one CI tests.
+          go-version-file: go.mod
           cache: true
 
       # ─── Default lane (no eBPF) ───────────────────────────────────────────
@@ -68,7 +69,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          # The same source as release.yml: the toolchain the binary ships with is the one CI tests.
+          go-version-file: go.mod
           cache: true
 
       # buf is pinned via `go run @version` (keep in sync with the Makefile's
