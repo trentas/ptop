@@ -83,7 +83,7 @@ func suite() []selfCase {
 		{"syscalls", "a known count is named and counted exactly, a known sleep is timed (#139)", checkSyscalls},
 		{"futex", "waits on a known word: counted, timed, named by the waiter (#89)", checkFutex},
 		{"goalloc", "two call sites at a known rate and ratio, and the census adds up (#108, #109)", checkGoAlloc},
-		{"io", "reads that block for a known time land in that latency bucket (writes: #159)", checkIO},
+		{"io", "blocking reads land in their latency bucket; writes and unlinks are seen on every CPU (#159)", checkIO},
 		{"net", "socket ownership and bytes, against a peer in another process (#135, #142)", checkNetwork},
 		{"blind", "a probe switched off says disabled, one that cannot attach says failed (#112)", checkBlind},
 	}

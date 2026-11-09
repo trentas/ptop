@@ -24,31 +24,31 @@
 //   /proc/<pid>/fd. Trade-off: we show syscall-level I/O (includes cache hits),
 //   which is what the user sees in "files accessed" and matches the F5 mockup.
 //
-// syscalls/sys_enter_X tracepoints are arch-independent (the kernel resolves
-// by name, not by number) — code compiled on x86_64 works on arm64.
+// Why raw_syscalls/sys_{enter,exit} and not syscalls/sys_enter_<name> (#159):
+//   on kernel 7.0 the per-syscall events for write, openat, unlinkat and
+//   renameat* copy the user buffer or path into the event, and on that path the
+//   BPF program never ran for calls made on any CPU but the first: measured,
+//   20 of 20 writes and unlinks seen on CPU 0, 0 of 20 on CPU 1, every run.
+//   read, whose event copies nothing, was seen on both. raw_syscalls carries
+//   only the number and the six raw arguments, so nothing on its path reads
+//   user memory, and the syscalls axis has counted exactly on every CPU through
+//   it. The cost is that it fires for EVERY syscall on the host, so the number
+//   is tested first and the target filter only after it.
+//
+//   The numbers come from the kernel's own <asm/unistd.h>, for the architecture
+//   the object is compiled on (see "Build tags" in CLAUDE.md, #123). They are
+//   the 64-bit native table: a 32-bit (compat) task numbers its syscalls from
+//   another one, so the loader refuses a 32-bit target in pid mode (io.go).
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
+#include <asm/unistd.h>
 #include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
-// Tracepoint structures. Stable layout from
-// /sys/kernel/debug/tracing/events/syscalls/sys_enter_read/format:
-//
-//   common_type/flags/preempt_count/pid    (8 bytes)
-//   __syscall_nr int + padding              (8 bytes)
-//   fd unsigned long                        (8 bytes)
-//   buf char*                               (8 bytes)
-//   count size_t                            (8 bytes)
-struct sys_enter_rw_args {
-    unsigned long long _pad;
-    long id;
-    unsigned long fd;
-    unsigned long buf;
-    unsigned long count;
-};
-
+// raw_syscalls/sys_exit layout: common header (8B), the syscall number, the
+// return value. sys_enter's is struct sys_enter_args, below.
 struct sys_exit_args {
     unsigned long long _pad;
     long id;
@@ -139,38 +139,6 @@ static __always_inline void exit_io(long ret)
     bpf_map_delete_elem(&io_inflight_map, &pid_tgid);
 }
 
-SEC("tracepoint/syscalls/sys_enter_read")
-int handle_enter_read(struct sys_enter_rw_args *ctx)
-{
-    enter_io(OP_READ, (__u32)ctx->fd, ctx->count);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_exit_read")
-int handle_exit_read(struct sys_exit_args *ctx)
-{
-    if (!is_io_target())
-        return 0;
-    exit_io(ctx->ret);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_write")
-int handle_enter_write(struct sys_enter_rw_args *ctx)
-{
-    enter_io(OP_WRITE, (__u32)ctx->fd, ctx->count);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_exit_write")
-int handle_exit_write(struct sys_exit_args *ctx)
-{
-    if (!is_io_target())
-        return 0;
-    exit_io(ctx->ret);
-    return 0;
-}
-
 // ─── #57 filesystem semantics: permission denials, deletes, renames ───────────
 //
 // These syscalls run in process context, so they reuse is_io_target(). We stash
@@ -189,9 +157,9 @@ int handle_exit_write(struct sys_exit_args *ctx)
 
 #define FS_PATH_MAX 256
 
-// Generic sys_enter layout: common header (8B) + syscall nr (widened to 8B) +
-// up to 6 args, each widened to unsigned long in the tracepoint record (the
-// same widening the read/write sys_enter_rw_args above relies on).
+// raw_syscalls/sys_enter layout: common header (8B), the syscall number, and
+// its six arguments as unsigned long — whatever the syscall, which is why one
+// program can serve read, write and the fs-semantics calls alike.
 struct sys_enter_args {
     unsigned long long _pad;
     long id;
@@ -280,99 +248,89 @@ static __always_inline void fs_exit(long ret)
     bpf_ringbuf_submit(e, 0);
 }
 
-// open(filename, …) → args[0]; openat(dfd, filename, …) → args[1]. Modern glibc
-// routes open()→openat, and arm64 has no open/unlink/rename — the Go loader
-// attaches the legacy variants non-fatally for raw-syscall callers on x86_64.
-SEC("tracepoint/syscalls/sys_enter_openat")
-int handle_enter_openat(struct sys_enter_args *ctx)
+// ─── dispatch ────────────────────────────────────────────────────────────────
+//
+// One pair for every syscall on the host (#159). The number is tested before
+// anything else: almost no syscall is one of these, and almost none is the
+// target's. The per-op argument positions:
+//   read/write(fd, buf, count)                          fd args[0], count args[2]
+//   open(path, …)                  unlink(path)         path args[0]
+//   openat(dfd, path, …)           unlinkat(dfd, path, flag)   path args[1]
+//   rename(old, new)                                    args[0], args[1]
+//   renameat/renameat2(olddfd, old, newdfd, new, …)     args[1], args[3]
+// Modern libcs route open/unlink/rename to the *at forms, and arm64 has none of
+// the legacy three; they are matched where the architecture defines them.
+
+SEC("tracepoint/raw_syscalls/sys_enter")
+int handle_sys_enter(struct sys_enter_args *ctx)
 {
-    fs_enter(FS_OP_OPEN_DENIED, ctx->args[1], 0);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_openat")
-int handle_exit_openat(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
+    switch (ctx->id) {
+    case __NR_read:
+        enter_io(OP_READ, (__u32)ctx->args[0], ctx->args[2]);
+        break;
+    case __NR_write:
+        enter_io(OP_WRITE, (__u32)ctx->args[0], ctx->args[2]);
+        break;
+    case __NR_openat:
+        fs_enter(FS_OP_OPEN_DENIED, ctx->args[1], 0);
+        break;
+    case __NR_unlinkat:
+        fs_enter(FS_OP_UNLINK, ctx->args[1], 0);
+        break;
+    case __NR_renameat2:
+        fs_enter(FS_OP_RENAME, ctx->args[1], ctx->args[3]);
+        break;
+#ifdef __NR_renameat
+    case __NR_renameat:
+        fs_enter(FS_OP_RENAME, ctx->args[1], ctx->args[3]);
+        break;
+#endif
+#ifdef __NR_open
+    case __NR_open:
+        fs_enter(FS_OP_OPEN_DENIED, ctx->args[0], 0);
+        break;
+#endif
+#ifdef __NR_unlink
+    case __NR_unlink:
+        fs_enter(FS_OP_UNLINK, ctx->args[0], 0);
+        break;
+#endif
+#ifdef __NR_rename
+    case __NR_rename:
+        fs_enter(FS_OP_RENAME, ctx->args[0], ctx->args[1]);
+        break;
+#endif
+    }
     return 0;
 }
 
-SEC("tracepoint/syscalls/sys_enter_open")
-int handle_enter_open(struct sys_enter_args *ctx)
+// The exits need no target filter of their own: only a target thread's enter
+// stashed an in-flight entry, and the lookup is keyed by the thread.
+SEC("tracepoint/raw_syscalls/sys_exit")
+int handle_sys_exit(struct sys_exit_args *ctx)
 {
-    fs_enter(FS_OP_OPEN_DENIED, ctx->args[0], 0);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_open")
-int handle_exit_open(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
-    return 0;
-}
-
-// unlink(pathname) → args[0]; unlinkat(dfd, pathname, flag) → args[1].
-SEC("tracepoint/syscalls/sys_enter_unlinkat")
-int handle_enter_unlinkat(struct sys_enter_args *ctx)
-{
-    fs_enter(FS_OP_UNLINK, ctx->args[1], 0);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_unlinkat")
-int handle_exit_unlinkat(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_unlink")
-int handle_enter_unlink(struct sys_enter_args *ctx)
-{
-    fs_enter(FS_OP_UNLINK, ctx->args[0], 0);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_unlink")
-int handle_exit_unlink(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
-    return 0;
-}
-
-// rename(old, new) → args[0],args[1]; renameat/renameat2(olddfd, old, newdfd,
-// new, …) → args[1],args[3].
-SEC("tracepoint/syscalls/sys_enter_renameat2")
-int handle_enter_renameat2(struct sys_enter_args *ctx)
-{
-    fs_enter(FS_OP_RENAME, ctx->args[1], ctx->args[3]);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_renameat2")
-int handle_exit_renameat2(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_renameat")
-int handle_enter_renameat(struct sys_enter_args *ctx)
-{
-    fs_enter(FS_OP_RENAME, ctx->args[1], ctx->args[3]);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_renameat")
-int handle_exit_renameat(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_enter_rename")
-int handle_enter_rename(struct sys_enter_args *ctx)
-{
-    fs_enter(FS_OP_RENAME, ctx->args[0], ctx->args[1]);
-    return 0;
-}
-SEC("tracepoint/syscalls/sys_exit_rename")
-int handle_exit_rename(struct sys_exit_args *ctx)
-{
-    fs_exit(ctx->ret);
+    switch (ctx->id) {
+    case __NR_read:
+    case __NR_write:
+        exit_io(ctx->ret);
+        break;
+    case __NR_openat:
+    case __NR_unlinkat:
+    case __NR_renameat2:
+#ifdef __NR_renameat
+    case __NR_renameat:
+#endif
+#ifdef __NR_open
+    case __NR_open:
+#endif
+#ifdef __NR_unlink
+    case __NR_unlink:
+#endif
+#ifdef __NR_rename
+    case __NR_rename:
+#endif
+        fs_exit(ctx->ret);
+        break;
+    }
     return 0;
 }

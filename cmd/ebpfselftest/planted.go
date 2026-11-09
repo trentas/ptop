@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand/v2"
+	"os"
 	"runtime"
 	"sort"
 	"strings"
@@ -656,15 +657,33 @@ func topFuncs(sites []collector.HeapCallSite) string {
 // netpoller, so the read returns EAGAIN at once and the wait happens in
 // epoll_pwait, where this axis does not look.
 //
-// Only the reads are graded. This case is what found #159: on kernel 7.0 the
-// probe loses every write made on a CPU other than the first, because
-// sys_enter_write now copies the user buffer and something on that path skips
-// the BPF program there. The fix adds the write grade, planted on every CPU.
+// The writer is a thread of its own sleeping in clock_nanosleep, not a goroutine
+// in time.Sleep. A Go timer can fire late: while the reader holds its P inside
+// the syscall, a timer on that P waits for sysmon to retake it, and an idle
+// sysmon sleeps up to 10ms — one planted 10ms read measured over 20ms that way.
+//
+// Then, on every CPU this process may run on, a thread pinned there writes a
+// file of its own and unlinks files of its own. A probe that only runs on some
+// CPUs drops whatever the target did on the others, and an unpinned workload
+// reads that as a random fraction of writes going missing (#159). Pinned, the
+// miss names the CPU.
 func checkIO(g *grader, pid int) {
 	const (
 		reads   = 30
 		ioDelay = 10 * time.Millisecond // mid-bucket: 5-20ms either side of any reasonable jitter
+		perCPU  = 20                    // writes, and unlinks, planted on each CPU
 	)
+	cpus, err := allowedCPUs()
+	if err != nil {
+		g.broken("io", "the CPUs this process may run on", err)
+		return
+	}
+	dir, err := os.MkdirTemp("", "ptop-selftest-io-")
+	if err != nil {
+		g.broken("io", "a scratch directory", err)
+		return
+	}
+	defer os.RemoveAll(dir)
 	var fds [2]int
 	if err := unix.Pipe2(fds[:], unix.O_CLOEXEC); err != nil {
 		g.broken("io", "pipe", err)
@@ -679,15 +698,20 @@ func checkIO(g *grader, pid int) {
 	}
 	pipePath := fmt.Sprintf("pipe:[%d]", st.Ino) // what /proc/<pid>/fd links it as
 
+	var pinErr error
+	var held []int // the per-CPU files' fds, closed once the collector has stopped
 	c := collector.NewIOEBPFCollector()
 	vals, err := collect(c, pid, 700*time.Millisecond, func() {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			for i := 0; i < reads; i++ {
-				time.Sleep(ioDelay)
-				_, _ = unix.Write(fds[1], []byte{1})
-			}
+			quietThread(func() {
+				nap := unix.NsecToTimespec(int64(ioDelay))
+				for i := 0; i < reads; i++ {
+					_ = unix.ClockNanosleep(unix.CLOCK_MONOTONIC, 0, &nap, nil)
+					_, _ = unix.Write(fds[1], []byte{1})
+				}
+			})
 		}()
 		quietThread(func() {
 			buf := make([]byte, 1)
@@ -696,9 +720,51 @@ func checkIO(g *grader, pid int) {
 			}
 		})
 		<-done
+
+		// The collector names a file by reading /proc/<pid>/fd/<n> when it
+		// processes the event, and remembers the answer by fd NUMBER for a
+		// couple of seconds. So every file written here is opened before any
+		// is written and stays open until the collector stops: a file closed
+		// by then reads as "fd=N", and a number reused within the cache's
+		// lifetime is credited to the file that held it before.
+		for _, cpu := range cpus {
+			fd, err := unix.Open(writePath(dir, cpu), unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC, 0o600)
+			if err != nil {
+				pinErr = fmt.Errorf("cpu %d: open: %w", cpu, err)
+				return
+			}
+			held = append(held, fd)
+		}
+		for i, cpu := range cpus {
+			for j := 0; j < perCPU; j++ {
+				// open+close and nothing else: os.WriteFile would issue a
+				// zero-length write(2) on the way.
+				if fd, err := unix.Open(unlinkPath(dir, cpu, j), unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC, 0o600); err == nil {
+					_ = unix.Close(fd)
+				}
+			}
+			fd := held[i]
+			if err := onCPU(cpu, func() {
+				for j := 0; j < perCPU; j++ {
+					_, _ = unix.Write(fd, []byte{1})
+				}
+				for j := 0; j < perCPU; j++ {
+					_ = unix.Unlinkat(unix.AT_FDCWD, unlinkPath(dir, cpu, j), 0)
+				}
+			}); err != nil && pinErr == nil {
+				pinErr = fmt.Errorf("cpu %d: %w", cpu, err)
+			}
+		}
 	})
+	for _, fd := range held {
+		_ = unix.Close(fd)
+	}
 	if err != nil {
 		g.broken("io", "attach", err)
+		return
+	}
+	if pinErr != nil {
+		g.broken("io", "pin a thread to each CPU", pinErr)
 		return
 	}
 
@@ -706,20 +772,26 @@ func checkIO(g *grader, pid int) {
 	buckets := make(map[string]collector.LatencyBucket)
 	var row collector.IOFileStats
 	found := false
+	writes := make(map[string]uint64) // path → writes; rows are cumulative, the last wins
+	deleted := make(map[string]bool)
 	for _, v := range vals {
-		snap, ok := v.(collector.IOEBPFSnapshot)
-		if !ok {
-			continue
-		}
-		for _, b := range snap.Buckets {
-			acc := buckets[b.Label]
-			acc.Read += b.Read
-			acc.Write += b.Write
-			buckets[b.Label] = acc
-		}
-		for _, f := range snap.TopFiles {
-			if f.Path == pipePath {
-				row, found = f, true
+		switch v := v.(type) {
+		case collector.IOEBPFSnapshot:
+			for _, b := range v.Buckets {
+				acc := buckets[b.Label]
+				acc.Read += b.Read
+				acc.Write += b.Write
+				buckets[b.Label] = acc
+			}
+			for _, f := range v.TopFiles {
+				if f.Path == pipePath {
+					row, found = f, true
+				}
+				writes[f.Path] = f.Writes
+			}
+		case collector.FSEvent:
+			if v.Op == "deleted" {
+				deleted[v.Path] = true
 			}
 		}
 	}
@@ -731,6 +803,56 @@ func checkIO(g *grader, pid int) {
 	// planted reads the whole of that bucket.
 	g.check("io", fmt.Sprintf("reads in the 5-20ms bucket (%d planted at %v)", reads, ioDelay),
 		buckets["5-20ms"].Read == reads, fmt.Sprint(reads), readHistogram(buckets))
+
+	for _, cpu := range cpus {
+		w := writes[writePath(dir, cpu)]
+		g.check("io", fmt.Sprintf("writes made on CPU %d (#159)", cpu), w == perCPU, fmt.Sprint(perCPU), fmt.Sprint(w))
+		n := 0
+		for i := 0; i < perCPU; i++ {
+			if deleted[unlinkPath(dir, cpu, i)] {
+				n++
+			}
+		}
+		g.check("io", fmt.Sprintf("unlinks made on CPU %d, as fs events (#159)", cpu), n == perCPU,
+			fmt.Sprint(perCPU), fmt.Sprint(n))
+	}
+}
+
+func writePath(dir string, cpu int) string     { return fmt.Sprintf("%s/w%d", dir, cpu) }
+func unlinkPath(dir string, cpu, i int) string { return fmt.Sprintf("%s/u%d-%d", dir, cpu, i) }
+
+// allowedCPUs lists the CPUs this process may be scheduled on.
+func allowedCPUs() ([]int, error) {
+	var set unix.CPUSet
+	if err := unix.SchedGetaffinity(0, &set); err != nil {
+		return nil, err
+	}
+	var cpus []int
+	for i := 0; i < len(set)*64; i++ {
+		if set.IsSet(i) {
+			cpus = append(cpus, i)
+		}
+	}
+	return cpus, nil
+}
+
+// onCPU runs f on a signal-quiet thread pinned to cpu, and gives the thread its
+// previous affinity back before releasing it.
+func onCPU(cpu int, f func()) error {
+	var err error
+	quietThread(func() {
+		var prev, only unix.CPUSet
+		if err = unix.SchedGetaffinity(0, &prev); err != nil {
+			return
+		}
+		only.Set(cpu)
+		if err = unix.SchedSetaffinity(0, &only); err != nil {
+			return
+		}
+		defer func() { _ = unix.SchedSetaffinity(0, &prev) }()
+		f()
+	})
+	return err
 }
 
 // readHistogram renders the summed read histogram, in bucket order.
