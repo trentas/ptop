@@ -85,6 +85,7 @@ ptop/
 │   │   ├── programs/obj/<goarch>/ compiled .bpf.o, per target arch (gitignored)
 │   │   ├── programs/              .bpf.c sources, compiled by `make gen`
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
+│   │   │   ├── restart.bpf.h      a call the kernel re-runs after a signal is one call (#160)
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
@@ -614,14 +615,15 @@ because it raised the score without being right. So:
 
 - **A blocking planted call runs with signals blocked** (`quietThread`). The Go
   runtime sends SIGURG to its own threads, most during a GC: a sleep or a timed
-  wait then ends in EINTR and is re-issued, and a read restarted under
-  SA_RESTART is counted twice (#160). Unprotected, an exact count holds only
-  when no signal happened to arrive.
+  wait then ends in EINTR and is re-issued, which is one more real call.
+  Unprotected, an exact count holds only when no signal happened to arrive. The
+  `restart` case plants its signals on purpose (#160).
 
 What it found on its way in: a raw futex wait from Go named
 `syscall.Syscall6` as its lock (`isLockInfraFunc` now steps over the syscall
 wrappers); #159, where the io probe loses writes and fs events made on any
-CPU but the first on kernel 7.0 (fixed: see below); and #160.
+CPU but the first on kernel 7.0 (fixed: see below); and #160, a read the
+kernel re-runs after a signal counted twice (fixed: see below).
 
 A new axis, or a fix to one, adds its planted case in the same PR.
 `sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.
@@ -698,6 +700,44 @@ Each of the three fixes, reverted on its own, fails its own check.
 
 When a counter is charged at the end of an interval, ask what a window that sees
 no end reads.
+
+### A call the kernel re-runs after a signal is one call (#160)
+
+A signal that lands on a blocking `read` stops it with `-ERESTARTSYS`, and the
+exit tracepoint fires with that code before the kernel decides what the
+program gets. With no handler or an `SA_RESTART` one (every Go handler), the
+kernel rewinds to the syscall instruction and the same call enters again: one
+call. Without `SA_RESTART`, it returns EINTR at that exit, and a retry is a
+second call. The io and syscalls axes counted every exit, so a re-run read was
+two reads with its wait split in two. The first amd64 CI run of the selftest
+counted 31 reads for 30.
+
+`restart.bpf.h` holds the rule both probes now share. At a restart code they
+stop the clock but neither count nor forget the call. Two later events settle
+it:
+
+- **The same call enters again with the same first argument:** it is the
+  re-run, and it keeps the first entry's start time.
+- **`rt_sigreturn` exits with `-EINTR`:** the handler is returning EINTR to the
+  call, which ended at the exit already seen. `rt_sigreturn` returns the
+  register it restores. That is `-EINTR` in this case and the re-run's first
+  argument (arm64) or syscall number (x86) otherwise. Its exit carries id -1 on
+  both, since restoring the frame forgets the syscall, so io matches `-1` as
+  well as `__NR_rt_sigreturn`. The syscalls axis takes the id from its entry.
+
+Everything between them, including a handler's own syscalls, leaves the pending
+call alone. The maps that hold one are LRU, because a thread killed inside the
+call never settles it.
+
+The selftest's `restart` case reads a pipe while a writer signals it mid-wait,
+alternating SIGURG (re-run) with SIGUSR1 stripped of `SA_RESTART` (EINTR, re-issued).
+It grades the count against the calls the program made, and the latency against
+the program's own clock. Without the rule both axes read 40 for 30. Without the
+`rt_sigreturn` verdict they read 20, each EINTR merged into its retry.
+
+The futex axis has the same defect: 10 waits counted for 5 untimed waits, each
+hit by one SIGURG. It hooks the per-syscall futex events, which do not see
+`rt_sigreturn`, so it needs a design of its own (#164).
 
 ---
 
