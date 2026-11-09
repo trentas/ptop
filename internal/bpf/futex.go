@@ -91,6 +91,8 @@ func OpenFutexTracer(target Target) (*FutexTracer, error) {
 	tracepoints := []struct{ group, name, prog string }{
 		{"syscalls", "sys_enter_futex", "handle_enter_futex"},
 		{"syscalls", "sys_exit_futex", "handle_exit_futex"},
+		// Settles a wait a signal stopped: re-run or EINTR (#164).
+		{"signal", "signal_deliver", "handle_signal_deliver"},
 	}
 	for _, tp := range tracepoints {
 		p := coll.Programs[tp.prog]

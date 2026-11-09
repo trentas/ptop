@@ -82,11 +82,10 @@ func collect(c collector.Collector, pid int, settle time.Duration, workload func
 //
 // A signal that lands on a blocking planted call changes what the call is: a
 // sleep or a timed futex wait ends early with EINTR and has to be re-issued (one
-// more real call), and an untimed futex wait the kernel re-runs is still
-// counted twice by the futex axis (#164). The Go runtime sends SIGURG to its own
-// threads for preemption, most of all during a GC, so without this an exact
-// count holds only when no signal happened to arrive — measured once in CI, 31
-// reads for 30, before the io axis counted a re-run read once (#160). The
+// more real call). The Go runtime sends SIGURG to its own threads for
+// preemption, most of all during a GC, so without this an exact count holds
+// only when no signal happened to arrive — measured once in CI, 31 reads for
+// 30, before the axes counted a call the kernel re-runs once (#160, #164). The
 // restart case plants the signals on purpose instead.
 func quietThread(f func()) {
 	runtime.LockOSThread()
@@ -409,6 +408,7 @@ func rowOrNames(found bool, rows []collector.SyscallEvent) string {
 var plantedFutexWord uint32
 
 const futexWaitPrivate = 0 | 128 // FUTEX_WAIT | FUTEX_PRIVATE_FLAG
+const futexWakePrivate = 1 | 128 // FUTEX_WAKE | FUTEX_PRIVATE_FLAG
 
 // plantedFutexWait blocks on plantedFutexWord until the timeout. Nobody wakes
 // it, so every call is one wait of exactly the timeout, at least.

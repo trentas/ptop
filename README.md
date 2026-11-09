@@ -325,7 +325,7 @@ eBPF programs in `internal/bpf/programs/`:
 - `io.bpf.c` — read/write + filesystem semantics (denials/deletes/renames), on `raw_syscalls` (#159)
 - `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit); reads the socket's address through the kernel's BTF
 - `threads.bpf.c` — sched_switch → per-thread time on-CPU, asleep and runnable (by `prev_state`), with the interval still open counted at read time (#150)
-- `futex.bpf.c` — wait/wake → lock graph
+- `futex.bpf.c` — wait/wake → lock graph; `signal:signal_deliver` settles a wait a signal stopped (#164)
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
 - `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume),
