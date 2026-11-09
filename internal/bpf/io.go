@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -68,6 +67,11 @@ func OpenIOTracer(target Target) (*IOTracer, error) {
 	if err := target.validate(); err != nil {
 		return nil, err
 	}
+	if !target.IsCgroup() {
+		if err := refuseCompatTarget(target.PID); err != nil {
+			return nil, err
+		}
+	}
 	if err := rlimit.RemoveMemlock(); err != nil {
 		return nil, fmt.Errorf("rlimit: %w", err)
 	}
@@ -98,88 +102,26 @@ func OpenIOTracer(target Target) (*IOTracer, error) {
 		return nil, fmt.Errorf("set io_target_pid: %w", err)
 	}
 
-	// Attach 4 tracepoints (enter/exit × read/write)
-	attachments := []struct {
-		group, name, prog string
-	}{
-		{"syscalls", "sys_enter_read", "handle_enter_read"},
-		{"syscalls", "sys_exit_read", "handle_exit_read"},
-		{"syscalls", "sys_enter_write", "handle_enter_write"},
-		{"syscalls", "sys_exit_write", "handle_exit_write"},
-	}
-	for _, a := range attachments {
+	// One raw_syscalls pair serves read/write and the fs-semantics calls alike
+	// (#159). The per-syscall events this replaced copy user memory into the
+	// event on kernel 7.0 for write, openat, unlinkat and renameat*, and the
+	// program never ran for those calls made on any CPU but the first — the
+	// selftest's io case plants them on every CPU to keep it that way.
+	for _, a := range []struct{ name, prog string }{
+		{"sys_enter", "handle_sys_enter"},
+		{"sys_exit", "handle_sys_exit"},
+	} {
 		prog := coll.Programs[a.prog]
 		if prog == nil {
 			t.Close()
 			return nil, fmt.Errorf("program %s missing", a.prog)
 		}
-		l, err := link.Tracepoint(a.group, a.name, prog, nil)
+		l, err := link.Tracepoint("raw_syscalls", a.name, prog, nil)
 		if err != nil {
 			t.Close()
-			return nil, fmt.Errorf("attach %s/%s: %w", a.group, a.name, err)
+			return nil, fmt.Errorf("attach raw_syscalls/%s: %w", a.name, err)
 		}
 		t.links = append(t.links, l)
-	}
-
-	// fs-semantics tracepoints (#57), grouped by operation family. Within a
-	// family the *at variant exists on every supported arch and covers all
-	// libc-routed filesystem calls; the legacy non-*at syscall
-	// (open/unlink/rename) is simply absent on arm64 and other asm-generic
-	// arches, where attaching it is *expected* to fail and means nothing. So we
-	// try every variant NON-fatally (a miss must not kill the throughput tracer)
-	// but only warn when a whole family ends up uncovered — i.e. even its *at
-	// variant failed to attach, the one case that is a genuine capture loss.
-	type fsVariant struct{ enterName, enterProg, exitName, exitProg string }
-	attachPair := func(v fsVariant) error {
-		ep, xp := coll.Programs[v.enterProg], coll.Programs[v.exitProg]
-		if ep == nil || xp == nil {
-			return fmt.Errorf("program %s/%s missing", v.enterProg, v.exitProg)
-		}
-		el, err := link.Tracepoint("syscalls", v.enterName, ep, nil)
-		if err != nil {
-			return fmt.Errorf("%s: %w", v.enterName, err)
-		}
-		xl, err := link.Tracepoint("syscalls", v.exitName, xp, nil)
-		if err != nil {
-			el.Close() // don't leave a half-attached enter probe behind
-			return fmt.Errorf("%s: %w", v.exitName, err)
-		}
-		t.links = append(t.links, el, xl)
-		return nil
-	}
-	fsFamilies := []struct {
-		op       string
-		variants []fsVariant // ordered modern (*at) → legacy
-	}{
-		{"open", []fsVariant{
-			{"sys_enter_openat", "handle_enter_openat", "sys_exit_openat", "handle_exit_openat"},
-			{"sys_enter_open", "handle_enter_open", "sys_exit_open", "handle_exit_open"},
-		}},
-		{"unlink", []fsVariant{
-			{"sys_enter_unlinkat", "handle_enter_unlinkat", "sys_exit_unlinkat", "handle_exit_unlinkat"},
-			{"sys_enter_unlink", "handle_enter_unlink", "sys_exit_unlink", "handle_exit_unlink"},
-		}},
-		{"rename", []fsVariant{
-			{"sys_enter_renameat2", "handle_enter_renameat2", "sys_exit_renameat2", "handle_exit_renameat2"},
-			{"sys_enter_renameat", "handle_enter_renameat", "sys_exit_renameat", "handle_exit_renameat"},
-			{"sys_enter_rename", "handle_enter_rename", "sys_exit_rename", "handle_exit_rename"},
-		}},
-	}
-	for _, fam := range fsFamilies {
-		covered := false
-		var firstErr error
-		for _, v := range fam.variants {
-			if err := attachPair(v); err != nil {
-				if firstErr == nil {
-					firstErr = err // the *at variant's failure — the meaningful one
-				}
-				continue
-			}
-			covered = true
-		}
-		if !covered {
-			fmt.Fprintf(os.Stderr, "io: %s fs-semantics unavailable (%v); fs semantics degraded\n", fam.op, firstErr)
-		}
 	}
 
 	// Open ring buffer reader. Reads block until an event arrives or Close.
@@ -279,6 +221,16 @@ func (t *IOTracer) Close() error {
 	if t.coll != nil {
 		t.coll.Close()
 		t.coll = nil
+	}
+	return nil
+}
+
+// refuseCompatTarget fails for a 32-bit process; see compatExecutable for why.
+// Pid mode only: a cgroup subtree has no single executable to read, so a 32-bit
+// process inside one is not caught (documented in CLAUDE.md).
+func refuseCompatTarget(pid int) error {
+	if compatExecutable(fmt.Sprintf("/proc/%d/exe", pid)) {
+		return fmt.Errorf("pid %d is a 32-bit process: the io probe matches syscalls by the 64-bit table's numbers and would misread its calls", pid)
 	}
 	return nil
 }

@@ -88,7 +88,7 @@ ptop/
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
-│   │   │   ├── io.bpf.c           VFS read/write/fsync
+│   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159)
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135)
 │   │   │   ├── threads.bpf.c      sched_switch
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
@@ -617,10 +617,44 @@ because it raised the score without being right. So:
 What it found on its way in: a raw futex wait from Go named
 `syscall.Syscall6` as its lock (`isLockInfraFunc` now steps over the syscall
 wrappers); #159, where the io probe loses writes and fs events made on any
-CPU but the first on kernel 7.0; and #160.
+CPU but the first on kernel 7.0 (fixed: see below); and #160.
 
 A new axis, or a fix to one, adds its planted case in the same PR.
 `sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.
+
+### A probe that only runs on some CPUs drops what the target did on the others (#159)
+
+On kernel 7.0 the per-syscall events for `write`, `openat`, `unlinkat` and
+`renameat*` copy the user buffer or path into the event, and the BPF program
+attached to them never ran for calls made on any CPU but the first. Measured on
+a 2-CPU host, pinned: 20 of 20 writes and unlinks seen on CPU 0, 0 of 20 on
+CPU 1, every run, while `read` (whose event copies nothing) was seen on both.
+Unpinned, it looks like a random fraction of writes going missing, and the
+kernel's own counters showed it too: `handle_enter_write` ran 474k times a
+second against `handle_exit_write`'s 1.09M. The mechanism in the kernel was not
+pinned down. `trace_syscalls.c` alone does not explain a CPU-dependent skip.
+
+`io.bpf.c` now attaches one `raw_syscalls/sys_enter`/`sys_exit` pair, whose
+event carries only the number and the raw arguments, and matches the number
+against the kernel's own `<asm/unistd.h>` for the architecture it is compiled
+on. Two consequences, both deliberate:
+
+- **It runs for every syscall on the host**, so the number is tested before the
+  target filter. Measured with `bench/probecost` while a non-target process
+  made ~3.3M `getppid` a second beside a `dd` target: the io programs went from
+  ~10% to ~23% of a core. The syscalls axis, which already hooks
+  `raw_syscalls` with the target test first, costs ~28% in the same run. That is
+  about 40ns per host syscall: 0.4% of a core at 100k syscalls a second.
+- **A 32-bit target is refused in pid mode** (`refuseCompatTarget`). A compat
+  task numbers its syscalls from another table, so on x86_64 its `exit(1)` would
+  read as `write`. The per-syscall events skipped compat tasks, so the axis was
+  blind to them. Matching by number would make it wrong, and failed-with-a-reason
+  is the honest of the two. A 32-bit process inside a cgroup target is not caught.
+
+The selftest's io case plants writes and unlinks on every CPU the process may
+run on, pinned, and grades each CPU separately. Any probe on a
+`syscalls:sys_enter_*` event whose format has a `__data_loc` field needs the
+same treatment before it is trusted.
 
 ---
 

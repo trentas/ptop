@@ -322,7 +322,7 @@ eBPF programs in `internal/bpf/programs/`:
 
 - `syscalls.bpf.c` — raw_syscalls/sys_{enter,exit}
 - `cpu.bpf.c` — sched_switch → the target's on-CPU nanoseconds
-- `io.bpf.c` — VFS read/write/fsync + filesystem semantics (denials/deletes/renames)
+- `io.bpf.c` — read/write + filesystem semantics (denials/deletes/renames), on `raw_syscalls` (#159)
 - `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit); reads the socket's address through the kernel's BTF
 - `threads.bpf.c` — sched_switch
 - `futex.bpf.c` — wait/wake → lock graph
