@@ -203,6 +203,23 @@ func TestPickLockSiteDistinguishesTwoGoCallers(t *testing.T) {
 	}
 }
 
+// Go code that waits on its own futex word reaches the kernel through the
+// syscall package, so the wrapper is on every such stack. Named by it, every
+// lock taken that way would share one name (#155).
+func TestPickLockSiteStepsOverGoSyscallWrappers(t *testing.T) {
+	frames := map[uint64]symbol.Frame{
+		0x1000: {Func: "internal/runtime/syscall/linux.Syscall6", Module: "ordersvc"},
+		0x1100: {Func: "syscall.RawSyscall6", Module: "ordersvc"},
+		0x1200: {Func: "syscall.Syscall6", Module: "ordersvc"},
+		0x1300: {Func: "golang.org/x/sys/unix.Syscall6", Module: "ordersvc"},
+		0x2000: {Func: "github.com/o/svc/shm.(*Ring).wait", File: "github.com/o/svc/shm/ring.go", Line: 51, Module: "ordersvc"},
+	}
+	site := pickLockSite([]uint64{0x1000, 0x1100, 0x1200, 0x1300, 0x2000}, symbolTable(frames))
+	if site.frame.Func != "github.com/o/svc/shm.(*Ring).wait" {
+		t.Errorf("site = %q, want the caller of the syscall wrapper", site.frame.Func)
+	}
+}
+
 // The libc lane keeps working the way it did: the pthread wrappers live in
 // their own module, so the module check is what steps over them.
 func TestPickLockSiteSkipsLibcFrames(t *testing.T) {
@@ -249,6 +266,7 @@ func TestIsLockInfraFunc(t *testing.T) {
 	infra := []string{
 		"runtime.futex", "runtime.lock2", "internal/runtime/atomic.Xchg",
 		"sync.(*Mutex).Lock", "sync.runtime_SemacquireMutex", "internal/sync.(*HashTrieMap).Load",
+		"syscall.Syscall6", "syscall.RawSyscall6", "golang.org/x/sys/unix.Syscall6",
 	}
 	for _, n := range infra {
 		if !isLockInfraFunc(n) {
@@ -257,7 +275,7 @@ func TestIsLockInfraFunc(t *testing.T) {
 	}
 	app := []string{
 		"", "main.worker", "github.com/o/svc/pool.(*Pool).acquire",
-		"syncpool.Get", "runtimex.Lock", "worker_run",
+		"syncpool.Get", "runtimex.Lock", "worker_run", "syscallx.Wait",
 	}
 	for _, n := range app {
 		if isLockInfraFunc(n) {
