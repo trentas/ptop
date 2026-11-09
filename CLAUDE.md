@@ -600,6 +600,19 @@ because it raised the score without being right. So:
   test. `-run` with a name that matches no case exits 2 instead of running
   nothing, since an empty suite passes.
 
+- **Grade the collector's value, not the tracer's.** The new cases read what a
+  collector publishes, because that is where #109, #121 and #139 lived. A check
+  over a census (sites + omitted = total) needs a workload that overflows the
+  list, or it only ever sees `omitted == 0` and passes by vacuity.
+- **A planted workload must not have a period.** A fixed cycle sampled at a
+  nearby fixed rate splits samples by phase: twelve 1ms slices gave six of
+  twelve functions every sample. Draw slice lengths at random.
+
+What it found on its way in: a raw futex wait from Go named
+`syscall.Syscall6` as its lock (`isLockInfraFunc` now steps over the syscall
+wrappers), and #159, where the io probe loses writes and fs events made on any
+CPU but the first on kernel 7.0.
+
 A new axis, or a fix to one, adds its planted case in the same PR.
 `sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.
 

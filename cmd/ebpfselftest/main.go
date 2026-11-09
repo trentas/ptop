@@ -79,7 +79,13 @@ func suite() []selfCase {
 		{"filter", "the pid and cgroup filters match this process (#94)", checkFilters},
 		{"cpu", "on-CPU time agrees with the kernel's own accounting, quiet and busy (#108)", checkCPUAccuracy},
 		{"cpusite", "CPU samples name the function that burned them (#125)", checkCPUAttribution},
+		{"cpuprof", "the published profile splits a planted 60/30/10 burn within its binomial interval (#125)", checkCPUProfile},
+		{"syscalls", "a known count is named and counted exactly, a known sleep is timed (#139)", checkSyscalls},
+		{"futex", "waits on a known word: counted, timed, named by the waiter (#89)", checkFutex},
+		{"goalloc", "two call sites at a known rate and ratio, and the census adds up (#108, #109)", checkGoAlloc},
+		{"io", "reads that block for a known time land in that latency bucket (writes: #159)", checkIO},
 		{"net", "socket ownership and bytes, against a peer in another process (#135, #142)", checkNetwork},
+		{"blind", "a probe switched off says disabled, one that cannot attach says failed (#112)", checkBlind},
 	}
 }
 
