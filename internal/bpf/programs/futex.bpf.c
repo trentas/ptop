@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-2.0
 //
 // futex.bpf.c — traces target PID's futex operations via the
-// syscalls:sys_enter_futex / sys_exit_futex tracepoints.
+// syscalls:sys_enter_futex / sys_exit_futex tracepoints, plus
+// signal:signal_deliver to settle a wait a signal stopped (#164).
 //
 // Purpose:
 //   Every userspace synchronization primitive on Linux (pthread_mutex,
@@ -19,6 +20,8 @@
 //                                 lat_sum_ns, lat_count, last_wait_tid,
 //                                 last_wake_tid}
 //   futex_stacks        STACK_TRACE  user stacks captured at the WAIT call site
+//   futex_restarting    LRU_HASH  tgid_pid → a call stopped by a signal that
+//                                 the kernel may re-run (#164, restart.bpf.h)
 //
 // Why the key carries a stack id (#89):
 //   uaddr alone identifies a lock only inside the live process — ASLR and
@@ -37,6 +40,7 @@
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include "target.bpf.h"
+#include "restart.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -87,6 +91,26 @@ struct futex_inflight {
     __s32 stack_id; // wait-site user stack (<0 → unknown, or a wake op)
 };
 
+// A call stopped by a restart code, waiting to learn whether it is re-run.
+struct futex_pending {
+    struct futex_inflight inf;
+    __u64 end_ns; // when it stopped: its end, if it returned EINTR
+    __s64 ret;    // the restart code, which with the handler decides
+};
+
+// Layout of the signal:signal_deliver tracepoint: the handler and flags the
+// kernel is about to apply to the signal it dequeued.
+// /sys/kernel/tracing/events/signal/signal_deliver/format
+struct signal_deliver_args {
+    unsigned long long _pad;
+    int sig;
+    int errno_;
+    int code;
+    int _pad2;
+    unsigned long sa_handler;
+    unsigned long sa_flags;
+};
+
 // futex_stats key. A hash key is compared byte-wise, so _pad must be zeroed on
 // every lookup/update — always build it as `struct futex_key k = {};`.
 // Mirrored by FutexKey in internal/bpf/futex.go.
@@ -133,6 +157,14 @@ struct {
     __uint(max_entries, 4096);
 } futex_stacks SEC(".maps");
 
+// LRU: a thread killed inside the call never settles it.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, __u64);
+    __type(value, struct futex_pending);
+    __uint(max_entries, 8192);
+} futex_restarting SEC(".maps");
+
 static __always_inline int is_futex_target(void)
 {
     return pid_is_target(&futex_target_pid);
@@ -151,46 +183,13 @@ static __always_inline int is_wake_op(__u32 op)
            op == FUTEX_WAKE_OP || op == FUTEX_UNLOCK_PI;
 }
 
-SEC("tracepoint/syscalls/sys_enter_futex")
-int handle_enter_futex(struct sys_enter_futex_args *ctx)
+// account_futex counts one finished call against its (uaddr, site) row.
+static __always_inline void account_futex(const struct futex_inflight *inf, __u32 tid, __u64 lat_ns)
 {
-    if (!is_futex_target())
-        return 0;
-
-    __u32 base_op = (__u32)(ctx->op & FUTEX_CMD_MASK);
-    if (!is_wait_op(base_op) && !is_wake_op(base_op))
-        return 0;
-
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct futex_inflight inf = {
-        .uaddr    = ctx->uaddr,
-        .ts_ns    = bpf_ktime_get_ns(),
-        .op       = base_op,
-        // Only a WAIT names a lock (the caller is blocking ON it); a WAKE is
-        // the release path and would only add noise plus a stack walk.
-        .stack_id = is_wait_op(base_op)
-                        ? (__s32)bpf_get_stackid(ctx, &futex_stacks, BPF_F_USER_STACK)
-                        : -1,
-    };
-    bpf_map_update_elem(&futex_inflight, &pid_tgid, &inf, BPF_ANY);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_exit_futex")
-int handle_exit_futex(struct sys_exit_args *ctx)
-{
-    __u64 pid_tgid = bpf_get_current_pid_tgid();
-    struct futex_inflight *inf = bpf_map_lookup_elem(&futex_inflight, &pid_tgid);
-    if (!inf)
-        return 0;
-
-    __u64 lat_ns = bpf_ktime_get_ns() - inf->ts_ns;
     __u32 op = inf->op;
-    __u32 tid = (__u32)pid_tgid;
     struct futex_key key = {}; // zero-init: the padding is part of the hash key
     key.uaddr = inf->uaddr;
     key.stack_id = inf->stack_id;
-    bpf_map_delete_elem(&futex_inflight, &pid_tgid);
 
     struct futex_stat *s = bpf_map_lookup_elem(&futex_stats, &key);
     if (!s) {
@@ -205,7 +204,7 @@ int handle_exit_futex(struct sys_exit_args *ctx)
         ns.lat_sum_ns = lat_ns;
         ns.lat_count = 1;
         bpf_map_update_elem(&futex_stats, &key, &ns, BPF_ANY);
-        return 0;
+        return;
     }
     if (is_wait_op(op)) {
         __sync_fetch_and_add(&s->wait_count, 1);
@@ -216,5 +215,76 @@ int handle_exit_futex(struct sys_exit_args *ctx)
     }
     __sync_fetch_and_add(&s->lat_sum_ns, lat_ns);
     __sync_fetch_and_add(&s->lat_count, 1);
+}
+
+SEC("tracepoint/syscalls/sys_enter_futex")
+int handle_enter_futex(struct sys_enter_futex_args *ctx)
+{
+    if (!is_futex_target())
+        return 0;
+
+    __u32 base_op = (__u32)(ctx->op & FUTEX_CMD_MASK);
+    if (!is_wait_op(base_op) && !is_wake_op(base_op))
+        return 0;
+
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct futex_inflight inf = {
+        .uaddr = ctx->uaddr,
+        .ts_ns = bpf_ktime_get_ns(),
+        .op    = base_op,
+    };
+    // The kernel re-running a wait a signal stopped: one wait, timed from its
+    // first entry, from the same site (#164).
+    struct futex_pending *r = bpf_map_lookup_elem(&futex_restarting, &pid_tgid);
+    if (r && r->inf.uaddr == inf.uaddr && r->inf.op == base_op) {
+        inf.ts_ns = r->inf.ts_ns;
+        inf.stack_id = r->inf.stack_id;
+        bpf_map_delete_elem(&futex_restarting, &pid_tgid);
+    } else {
+        // Only a WAIT names a lock (the caller is blocking ON it); a WAKE is
+        // the release path and would only add noise plus a stack walk.
+        inf.stack_id = is_wait_op(base_op)
+                           ? (__s32)bpf_get_stackid(ctx, &futex_stacks, BPF_F_USER_STACK)
+                           : -1;
+    }
+    bpf_map_update_elem(&futex_inflight, &pid_tgid, &inf, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_futex")
+int handle_exit_futex(struct sys_exit_args *ctx)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct futex_inflight *inf = bpf_map_lookup_elem(&futex_inflight, &pid_tgid);
+    if (!inf)
+        return 0;
+
+    __u64 now = bpf_ktime_get_ns();
+    if (ret_restarts(ctx->ret)) {
+        // Not over yet, or over with EINTR: settled at signal_deliver or at
+        // the re-entry (restart.bpf.h).
+        struct futex_pending r = {.inf = *inf, .end_ns = now, .ret = ctx->ret};
+        bpf_map_update_elem(&futex_restarting, &pid_tgid, &r, BPF_ANY);
+    } else {
+        account_futex(inf, (__u32)pid_tgid, now - inf->ts_ns);
+    }
+    bpf_map_delete_elem(&futex_inflight, &pid_tgid);
+    return 0;
+}
+
+// The per-syscall events never see rt_sigreturn's exit (they are dispatched
+// by its id, -1 by then), so the verdict is taken where the kernel takes it:
+// the handler and flags of the signal it is about to deliver to the thread.
+SEC("tracepoint/signal/signal_deliver")
+int handle_signal_deliver(struct signal_deliver_args *ctx)
+{
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct futex_pending *r = bpf_map_lookup_elem(&futex_restarting, &pid_tgid);
+    if (!r)
+        return 0;
+    if (!signal_returns_eintr(r->ret, ctx->sa_handler, ctx->sa_flags))
+        return 0;
+    account_futex(&r->inf, (__u32)pid_tgid, r->end_ns - r->inf.ts_ns);
+    bpf_map_delete_elem(&futex_restarting, &pid_tgid);
     return 0;
 }

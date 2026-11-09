@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
  * restart.bpf.h — a syscall the kernel re-runs after a signal is ONE call
- * (#160), for the probes that count at the syscall exit (io, syscalls).
+ * (#160), for the probes that count at the syscall exit (io, syscalls, futex).
  *
  * A signal that lands on a blocking call stops it with one of the restart
  * codes below, and the exit tracepoint fires with that code before the kernel
@@ -24,6 +24,12 @@
  *     returns the register it restores, which is -EINTR in that case and the
  *     re-run's first argument (arm64) or syscall number (x86) otherwise.
  *
+ * A probe on the per-syscall events cannot see that exit: they are dispatched
+ * by the syscall id, which rt_sigreturn's exit carries as -1. The futex probe
+ * (#164) takes the same verdict one step earlier, at signal:signal_deliver,
+ * from the handler and flags the kernel is about to apply
+ * (signal_returns_eintr).
+ *
  * Anything else in between (the handler's own syscalls, a write to a
  * self-pipe) leaves the pending call alone. A call never settled (the thread
  * killed in it, or a handler that leaves by siglongjmp) is never counted, and
@@ -45,6 +51,26 @@ static __always_inline int ret_restarts(long ret)
 {
     return ret == -PTOP_ERESTARTSYS || ret == -PTOP_ERESTARTNOINTR ||
            ret == -PTOP_ERESTARTNOHAND;
+}
+
+#define PTOP_SIG_DFL   0
+#define PTOP_SIG_IGN   1
+#define PTOP_SA_RESTART 0x10000000
+
+/* signal_returns_eintr is the kernel's choice at handle_signal: a call
+ * stopped with ret returns EINTR when the signal has a handler, unless the
+ * code is -ERESTARTNOINTR, or -ERESTARTSYS under SA_RESTART. An ignored
+ * signal, or one taking its default action, leaves the call to be re-run. */
+static __always_inline int signal_returns_eintr(long ret, unsigned long handler,
+                                                unsigned long flags)
+{
+    if (handler == PTOP_SIG_DFL || handler == PTOP_SIG_IGN)
+        return 0;
+    if (ret == -PTOP_ERESTARTNOINTR)
+        return 0;
+    if (ret == -PTOP_ERESTARTSYS && (flags & PTOP_SA_RESTART))
+        return 0;
+    return 1;
 }
 
 #endif /* PTOP_RESTART_BPF_H */

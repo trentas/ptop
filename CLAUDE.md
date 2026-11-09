@@ -95,7 +95,7 @@ ptop/
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
 │   │   │   ├── goalloc.bpf.c      runtime.mallocgc uprobe → Go alloc sites, byte-sampled (#108)
-│   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site
+│   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site; signal_deliver settles a re-run (#164)
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
 │   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
 │   │   │   ├── proc.bpf.c         sched fork/exec/exit → exec lineage subtree (#60)
@@ -712,7 +712,7 @@ second call. The io and syscalls axes counted every exit, so a re-run read was
 two reads with its wait split in two. The first amd64 CI run of the selftest
 counted 31 reads for 30.
 
-`restart.bpf.h` holds the rule both probes now share. At a restart code they
+`restart.bpf.h` holds the rule the io, syscalls and futex probes share. At a restart code they
 stop the clock but neither count nor forget the call. Two later events settle
 it:
 
@@ -735,9 +735,19 @@ It grades the count against the calls the program made, and the latency against
 the program's own clock. Without the rule both axes read 40 for 30. Without the
 `rt_sigreturn` verdict they read 20, each EINTR merged into its retry.
 
-The futex axis has the same defect: 10 waits counted for 5 untimed waits, each
-hit by one SIGURG. It hooks the per-syscall futex events, which do not see
-`rt_sigreturn`, so it needs a design of its own (#164).
+The futex axis had the same defect: 10 waits counted for 5 untimed waits, each
+hit by one SIGURG (#164). It hooks the per-syscall futex events, and those never
+fire for `rt_sigreturn`'s exit: they are dispatched by the syscall id, and it is
+-1 by then (traced on arm64: `sys_enter_rt_sigreturn` fires, its exit does not,
+and `raw_syscalls/sys_exit` shows `NR -1`). So `futex.bpf.c` takes the verdict
+one step earlier, at `signal:signal_deliver`, from the handler and flags the
+kernel is about to apply (`signal_returns_eintr`): a handler returns EINTR to a
+call stopped with `-ERESTARTNOHAND`, or with `-ERESTARTSYS` and no `SA_RESTART`.
+An ignored signal, or one taking its default action, leaves the call to be
+re-run. That event is rare, so it costs nothing on the syscall path that moving
+the futex exit to `raw_syscalls` would have. The `restart` case plants the same
+alternation on untimed `FUTEX_WAIT`s. Without the rule it read 40 for 30,
+without the verdict 20, and with `SA_RESTART` ignored 40.
 
 ---
 

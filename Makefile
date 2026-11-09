@@ -101,7 +101,11 @@ CLANG  ?= clang
 # `-O2 -g`: optimization + dwarf info (BPF verifier uses the DWARF)
 # `-D__TARGET_ARCH_*`: define used by bpf_tracing.h for pt_regs offsets
 # `-I/usr/include/$GNU_TRIPLE`: required to find `asm/types.h` etc.
-$(BPF_OBJ_DIR)/%.bpf.o: internal/bpf/programs/%.bpf.c | $(BPF_OBJ_DIR)
+# Every object depends on the shared headers too: a header changed on its own
+# (target.bpf.h, restart.bpf.h) must rebuild the programs that include it, or
+# the embedded objects keep the old code.
+BPF_HEADERS := $(wildcard internal/bpf/programs/*.bpf.h)
+$(BPF_OBJ_DIR)/%.bpf.o: internal/bpf/programs/%.bpf.c $(BPF_HEADERS) | $(BPF_OBJ_DIR)
 	$(CLANG) -O2 -g -target bpf \
 		-D__TARGET_ARCH_$(BPF_ARCH) \
 		-I/usr/include \
