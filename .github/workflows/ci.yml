@@ -59,6 +59,60 @@ jobs:
       - name: go build (ebpf tag)
         run: go build -tags=ebpf -o /tmp/ptop-ebpf ./cmd/ptop
 
+  # ─── Planted-behaviour suite (#155) ─────────────────────────────────────
+  # `go test -tags=ebpf` compiles the probes and never loads one: it runs as
+  # an unprivileged user. Every accuracy bug in the axes so far (#108, #109,
+  # #121, #135, #139) passed that lane. This job loads the programs as root
+  # against workloads whose answer is known, and fails when a reading is wrong,
+  # not merely absent.
+  #
+  # Both architectures, natively, for the reason release.yml compiles natively:
+  # #123 was an arm64-only wrong answer that loaded and attached cleanly.
+  selftest:
+    name: ebpf selftest (${{ matrix.goarch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goarch: amd64
+            runner: ubuntu-latest
+          - goarch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: install eBPF toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libbpf-dev
+
+      - name: the runner is the architecture it is testing
+        run: |
+          test "$(go env GOARCH)" = "${{ matrix.goarch }}" || {
+            echo "runner is $(go env GOARCH), expected ${{ matrix.goarch }}"
+            exit 1
+          }
+
+      # The kernel decides which lanes exist (BTF, the 6.4 byte tracepoints),
+      # so a failure is unreadable without it.
+      - name: kernel
+        run: |
+          uname -a
+          nproc
+          test -r /sys/kernel/btf/vmlinux && echo "BTF: present" || echo "BTF: absent"
+
+      - name: make ebpf-selftest
+        run: make ebpf-selftest
+
+      - name: run as root
+        run: sudo ./bin/ebpf-selftest
+
   proto:
     name: buf lint · format · generate · breaking
     runs-on: ubuntu-latest
