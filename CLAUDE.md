@@ -608,10 +608,16 @@ because it raised the score without being right. So:
   nearby fixed rate splits samples by phase: twelve 1ms slices gave six of
   twelve functions every sample. Draw slice lengths at random.
 
+- **A blocking planted call runs with signals blocked** (`quietThread`). The Go
+  runtime sends SIGURG to its own threads, most during a GC: a sleep or a timed
+  wait then ends in EINTR and is re-issued, and a read restarted under
+  SA_RESTART is counted twice (#160). Unprotected, an exact count holds only
+  when no signal happened to arrive.
+
 What it found on its way in: a raw futex wait from Go named
 `syscall.Syscall6` as its lock (`isLockInfraFunc` now steps over the syscall
-wrappers), and #159, where the io probe loses writes and fs events made on any
-CPU but the first on kernel 7.0.
+wrappers); #159, where the io probe loses writes and fs events made on any
+CPU but the first on kernel 7.0; and #160.
 
 A new axis, or a fix to one, adds its planted case in the same PR.
 `sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.

@@ -76,6 +76,28 @@ func collect(c collector.Collector, pid int, settle time.Duration, workload func
 	return vals, nil
 }
 
+// quietThread runs f on a thread of its own with every signal blocked, and
+// restores the mask before releasing the thread.
+//
+// A signal that lands on a blocking planted call changes what the call is: a
+// sleep or a timed futex wait ends early with EINTR and has to be re-issued (one
+// more real call), and a read restarted under SA_RESTART is counted twice by
+// the io axis (#160). The Go runtime sends SIGURG to its own threads for
+// preemption, most of all during a GC, so without this an exact count holds
+// only when no signal happened to arrive — measured once in CI, 31 reads for 30.
+func quietThread(f func()) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	var all, old unix.Sigset_t
+	for i := range all.Val {
+		all.Val[i] = ^uint64(0)
+	}
+	if err := unix.PthreadSigmask(unix.SIG_BLOCK, &all, &old); err == nil {
+		defer func() { _ = unix.PthreadSigmask(unix.SIG_SETMASK, &old, nil) }()
+	}
+	f()
+}
+
 // ─── cpuprof: a planted 60/30/10 split (#125) ───────────────────────────────
 
 // The three burners are identical but for their names, so any difference in
@@ -311,11 +333,12 @@ func checkSyscalls(g *grader, pid int) {
 		for i := 0; i < quick; i++ {
 			_ = unix.Getppid()
 		}
-		ts := unix.NsecToTimespec(int64(nap))
-		for i := 0; i < naps; i++ {
-			for unix.ClockNanosleep(unix.CLOCK_MONOTONIC, 0, &ts, nil) == unix.EINTR {
+		quietThread(func() {
+			ts := unix.NsecToTimespec(int64(nap))
+			for i := 0; i < naps; i++ {
+				_ = unix.ClockNanosleep(unix.CLOCK_MONOTONIC, 0, &ts, nil)
 			}
-		}
+		})
 	})
 	if err != nil {
 		g.broken("syscalls", "attach", err)
@@ -407,11 +430,11 @@ func checkFutex(g *grader, pid int) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
-				runtime.LockOSThread()
-				defer runtime.UnlockOSThread()
-				for j := 0; j < waits; j++ {
-					plantedFutexWait(timeout)
-				}
+				quietThread(func() {
+					for j := 0; j < waits; j++ {
+						plantedFutexWait(timeout)
+					}
+				})
 			}()
 		}
 		wg.Wait()
@@ -666,10 +689,12 @@ func checkIO(g *grader, pid int) {
 				_, _ = unix.Write(fds[1], []byte{1})
 			}
 		}()
-		buf := make([]byte, 1)
-		for i := 0; i < reads; i++ {
-			_, _ = unix.Read(fds[0], buf)
-		}
+		quietThread(func() {
+			buf := make([]byte, 1)
+			for i := 0; i < reads; i++ {
+				_, _ = unix.Read(fds[0], buf)
+			}
+		})
 		<-done
 	})
 	if err != nil {
