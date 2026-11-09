@@ -17,7 +17,7 @@ in the target.
 | **F1 Overview** | CPU sparkline, top syscalls, threads, I/O, FDs, network, heap/leak, events | aggregate |
 | **F2 Syscalls** | per-call frequency, latency, live event stream | `raw_syscalls:sys_{enter,exit}` |
 | **F3 Network**  | TCP/UDP/UNIX connections with state, RTT, Tx/Rx | `sock:inet_sock_set_state` + `sock:sock_{send,recv}_length` (kprobes before 6.4) |
-| **F4 Threads**  | per-TID state, on-CPU%, lock graph (futex) | `sched:sched_switch` + futex tracepoints |
+| **F4 Threads**  | per-TID state; on-CPU, asleep and run-queue % of each window; lock graph (futex) | `sched:sched_switch` + futex tracepoints |
 | **F5 I/O**      | dual throughput, top files, latency histogram | VFS read/write/fsync syscall tracking |
 | **F6 FDs**      | live FD table by type, with bytes and active flag | `/proc/<pid>/fd` + open/close events |
 | **F7 Timeline** | unified event stream tagged by category | all of the above |
@@ -298,7 +298,7 @@ overlay shows which one is active per tab.
 | **F1 Overview** | ✅ CPU + Mem + Threads + I/O + FDs | ✅ refined by tracepoints |
 | **F2 Syscalls** | ❌ no `/proc` source | ✅ raw_syscalls tracepoint |
 | **F3 Network**  | ✅ via `/proc/<pid>/net/{tcp,udp,unix}` | ✅ + per-conn RTT/bytes |
-| **F4 Threads**  | ✅ state + CPU% + wchan | ✅ + futex lock graph |
+| **F4 Threads**  | ✅ state + CPU% + wchan | ✅ + off-CPU and run-queue % + futex lock graph |
 | **F5 I/O**      | ✅ throughput + iowait | ✅ + top files + histogram |
 | **F6 FDs**      | ✅ resolved sockets, bytes, active | ✅ same + active socket detection |
 | **F7 Timeline** | partial — only `fd` events | ✅ all categories |
@@ -324,7 +324,7 @@ eBPF programs in `internal/bpf/programs/`:
 - `cpu.bpf.c` — sched_switch → the target's on-CPU nanoseconds
 - `io.bpf.c` — read/write + filesystem semantics (denials/deletes/renames), on `raw_syscalls` (#159)
 - `network.bpf.c` — sock tracepoints + tcp kprobes + connection errors (RST/retransmit); reads the socket's address through the kernel's BTF
-- `threads.bpf.c` — sched_switch
+- `threads.bpf.c` — sched_switch → per-thread time on-CPU, asleep and runnable (by `prev_state`), with the interval still open counted at read time (#150)
 - `futex.bpf.c` — wait/wake → lock graph
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects

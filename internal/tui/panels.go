@@ -454,8 +454,9 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 	const stateW = 10
 	const cpuW = 5
 	const offW = 5
+	const runqW = 5
 	const waitW = 18
-	barW := w - 2 - nameW - stateW - cpuW - offW - waitW - 6
+	barW := w - 2 - nameW - stateW - cpuW - offW - runqW - waitW - 7
 	if barW < 5 {
 		barW = 5
 	}
@@ -469,6 +470,7 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 			padRight("CPU", barW) + " " +
 			rightCol("ON%") + " " +
 			rightCol("OFF%") + " " +
+			rightCol("RUNQ%") + " " +
 			padRight("WAITING ON", waitW),
 	)
 
@@ -507,6 +509,18 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 		}
 		offStr := lipgloss.NewStyle().Foreground(offColor).Background(ColorPanel).Width(offW).Align(lipgloss.Right).Render(offLabel)
 
+		// run-queue%: runnable but not on a CPU after a preemption (#150) —
+		// the thread had work and waited for a core, not for something else.
+		runqLabel := "--"
+		runqColor := ColorMuted
+		if t.RunqWaitPct > 0 {
+			runqLabel = fmt.Sprintf("%.0f%%", t.RunqWaitPct)
+			if t.RunqWaitPct >= 25 {
+				runqColor = ColorAmber
+			}
+		}
+		runqStr := lipgloss.NewStyle().Foreground(runqColor).Background(ColorPanel).Width(runqW).Align(lipgloss.Right).Render(runqLabel)
+
 		wait := "–"
 		waitColor := ColorDim
 		if t.Waiting != "" {
@@ -515,7 +529,7 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 		}
 		waitStr := lipgloss.NewStyle().Foreground(waitColor).Background(ColorPanel).Width(waitW).Render(truncate(wait, waitW))
 
-		lines = append(lines, panelRow(gly+name, state, bar, cpuStr, offStr, waitStr))
+		lines = append(lines, panelRow(gly+name, state, bar, cpuStr, offStr, runqStr, waitStr))
 
 	}
 	return strings.Join(lines, "\n")

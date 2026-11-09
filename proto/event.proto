@@ -460,10 +460,19 @@ message ThreadInfo {
   double cpu_pct = 4;
   string waiting = 5; // blocking lock/syscall name, empty if none
   uint64 ctx_switches = 6; // eBPF-only; 0 via /proc
-  // off_cpu_pct: % of the window the thread spent off-CPU (blocked/waiting,
-  // not merely idle). eBPF-only; 0 via /proc. Does NOT sum to 100% with
-  // cpu_pct — the remainder is time runnable-but-unscheduled or non-existent.
+  // off_cpu_pct: % of the window the thread spent switched out asleep (S, D,
+  // T...): waiting on a lock, I/O, a timer or for work to arrive. The kernel
+  // does not tell a stall from idleness; `waiting` says on what. It includes
+  // the wait for a CPU after the wakeup that ended the sleep. A sleep still
+  // going on when the window closes counts in that window. eBPF-only; 0 via
+  // /proc.
   double off_cpu_pct = 7;
+  // runq_wait_pct: % of the window the thread was runnable but not on a CPU
+  // after being preempted: saturation, where off_cpu_pct is waiting on
+  // something else. eBPF-only; 0 via /proc. cpu_pct + off_cpu_pct +
+  // runq_wait_pct is 100 for a thread seen for the whole window; less is a
+  // thread that did not exist for all of it or was not seen yet.
+  double runq_wait_pct = 8;
 }
 message ThreadSnapshot {
   repeated ThreadInfo threads = 1;

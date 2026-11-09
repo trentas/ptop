@@ -18,17 +18,19 @@ import (
 //
 //   - /proc/<pid>/task/<tid>/{stat,wchan} → textual state, comm, wchan
 //     (info that only /proc has in canonical form)
-//   - eBPF tid_state via tracepoint sched:sched_switch → CPU% based on
-//     real on-CPU time + per-TID context switch count in the window
+//   - eBPF tid_state via tracepoint sched:sched_switch → each thread's time
+//     on a CPU, asleep and waiting for a CPU, plus its context switches
 //
-// Result: ThreadInfo with everything /proc gave + window ctx_switches +
-// more accurate CPU% (window-based instead of cumulative).
+// Result: ThreadInfo with everything /proc gave + window ctx_switches + the
+// share of the window each thread spent on-CPU, off-CPU and in the run queue,
+// counting the interval still open when the window closes (#150).
 //
 // Lifecycle:
 //   - tick every 1s
 //   - read /proc/<pid>/task/ → collect state/wchan/name + list of live TIDs
 //   - prune tid_state for TIDs that have exited
-//   - read tid_state from BPF, compute deltas vs previous snapshot
+//   - read the tracer's totals, the open interval included, and turn them
+//     into shares of each thread's window (threadWindows)
 //   - publish []ThreadInfo
 type ThreadsEBPFCollector struct {
 	tracer *bpf.ThreadsTracer
@@ -36,20 +38,15 @@ type ThreadsEBPFCollector struct {
 	ch     chan interface{}
 	stop   chan struct{}
 
-	mu           sync.Mutex
-	prevOnNs     map[uint32]uint64 // tid → on_cpu_ns_total at last sample
-	prevOffNs    map[uint32]uint64 // tid → off_cpu_ns_total at last sample
-	prevSwitch   map[uint32]uint64 // tid → ctx_switches at last sample
-	lastSampleAt time.Time
+	mu      sync.Mutex
+	windows *threadWindows
 }
 
 func NewThreadsEBPFCollector() *ThreadsEBPFCollector {
 	return &ThreadsEBPFCollector{
-		ch:         make(chan interface{}, 4),
-		stop:       make(chan struct{}),
-		prevOnNs:   make(map[uint32]uint64),
-		prevOffNs:  make(map[uint32]uint64),
-		prevSwitch: make(map[uint32]uint64),
+		ch:      make(chan interface{}, 4),
+		stop:    make(chan struct{}),
+		windows: newThreadWindows(),
 	}
 }
 
@@ -104,19 +101,15 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	now := time.Now()
-	elapsed := 0.0
-	if !c.lastSampleAt.IsZero() {
-		elapsed = now.Sub(c.lastSampleAt).Seconds()
-	}
-
 	// 1st pass: read /proc/task/* and build TID list + metadata.
 	type procData struct {
 		comm  string
 		state byte
+		ticks uint64
 		wchan string
 	}
 	procByTID := make(map[uint32]procData, len(entries))
+	alive := make(map[uint32]bool, len(entries))
 	tidList := make([]int, 0, len(entries))
 	for _, e := range entries {
 		tid, err := strconv.Atoi(e.Name())
@@ -127,7 +120,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		if err != nil {
 			continue
 		}
-		comm, state, _, ok := parseThreadStat(statData)
+		comm, state, ticks, ok := parseThreadStat(statData)
 		if !ok {
 			continue
 		}
@@ -138,7 +131,8 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 				wchan = ""
 			}
 		}
-		procByTID[uint32(tid)] = procData{comm: comm, state: state, wchan: wchan}
+		procByTID[uint32(tid)] = procData{comm: comm, state: state, ticks: ticks, wchan: wchan}
+		alive[uint32(tid)] = true
 		tidList = append(tidList, tid)
 	}
 
@@ -148,55 +142,37 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		_ = err
 	}
 
-	// 2nd pass: read tid_state and compute deltas.
-	stats, err := c.tracer.Stats()
+	// 2nd pass: the tracer's totals, then the clock that closes the window
+	// for the threads it has no entry for.
+	totals, err := c.tracer.Totals()
 	if err != nil {
-		stats = nil
+		// Without the totals every thread would read as unseen, and a running
+		// one as asleep. Publish /proc's view with no shares instead.
+		totals = nil
 	}
+	endAt, clockErr := bpf.MonotonicNanos()
 
 	out := make([]ThreadInfo, 0, len(procByTID))
 	for tid, pd := range procByTID {
-		s := stats[tid]
-		var cpuPct, offCpuPct float64
-		var switches uint64
-
-		if elapsed > 0 {
-			deltaOn := s.OnCpuNsTotal - c.prevOnNs[tid]
-			cpuPct = (float64(deltaOn) / 1e9) / elapsed * 100
-			if cpuPct > 100 {
-				cpuPct = 100 // ceiling — single thread on multi-core can't exceed 100%
-			}
-			deltaOff := s.OffCpuNsTotal - c.prevOffNs[tid]
-			offCpuPct = (float64(deltaOff) / 1e9) / elapsed * 100
-			if offCpuPct > 100 {
-				offCpuPct = 100 // same single-thread ceiling
-			}
-			switches = s.CtxSwitches - c.prevSwitch[tid]
+		var sh threadShare
+		if tt, ok := totals[tid]; ok {
+			sh = c.windows.known(tid, tt)
+		} else if err == nil && clockErr == nil {
+			sh = c.windows.unseen(tid, pd.state, pd.ticks, endAt, clkTck)
 		}
-		c.prevOnNs[tid] = s.OnCpuNsTotal
-		c.prevOffNs[tid] = s.OffCpuNsTotal
-		c.prevSwitch[tid] = s.CtxSwitches
-
 		out = append(out, ThreadInfo{
 			TID:         int(tid),
 			Name:        pd.comm,
 			State:       mapThreadState(pd.state),
-			CPUPct:      cpuPct,
+			CPUPct:      sh.on,
 			Waiting:     pd.wchan,
-			CtxSwitches: switches,
-			OffCpuPct:   offCpuPct,
+			CtxSwitches: sh.switches,
+			OffCpuPct:   sh.off,
+			RunqWaitPct: sh.runq,
 		})
 	}
-
-	// Garbage collect prev maps for TIDs that disappeared.
-	for tid := range c.prevOnNs {
-		if _, alive := procByTID[tid]; !alive {
-			delete(c.prevOnNs, tid)
-			delete(c.prevOffNs, tid)
-			delete(c.prevSwitch, tid)
-		}
+	if clockErr == nil {
+		c.windows.end(endAt, alive)
 	}
-
-	c.lastSampleAt = now
 	return out, nil
 }

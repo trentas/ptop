@@ -12,18 +12,8 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-// ThreadState mirrors `struct thread_state` in programs/threads.bpf.c 1:1.
-// 40 bytes aligned (5 × u64).
-type ThreadState struct {
-	LastOnCpuNs   uint64
-	LastOffCpuNs  uint64
-	OnCpuNsTotal  uint64
-	OffCpuNsTotal uint64
-	CtxSwitches   uint64
-}
-
 // ThreadsTracer loads threads.bpf.o, attaches sched:sched_switch, and exposes
-// Stats() to read tid_state (keyed by the target's namespace-local TIDs).
+// Totals() to read tid_state (keyed by the target's namespace-local TIDs).
 type ThreadsTracer struct {
 	coll     *ebpf.Collection
 	link     link.Link
@@ -120,18 +110,28 @@ func (t *ThreadsTracer) PruneDeadTIDs(live []int) error {
 	return nil
 }
 
-// Stats returns a complete snapshot of the tid_state map, keyed by the
-// target's namespace-local TIDs.
-func (t *ThreadsTracer) Stats() (map[uint32]ThreadState, error) {
+// Totals returns each known thread's on-CPU, asleep and run-queue time since
+// the tracer attached, with the interval still open added up to the moment
+// that thread's entry was read (ThreadTotals.At). Keyed by the target's
+// namespace-local TIDs. A thread absent from the result has not been switched
+// out since the attach (see threads.bpf.c).
+//
+// The clock is read right after each entry is copied, so every stamp in it
+// is at or before At and the open part is never negative.
+func (t *ThreadsTracer) Totals() (map[uint32]ThreadTotals, error) {
 	if t == nil || t.stateMap == nil {
 		return nil, errors.New("tracer not initialized")
 	}
-	out := make(map[uint32]ThreadState, 64)
+	out := make(map[uint32]ThreadTotals, 64)
 	var k uint32
 	var v ThreadState
 	iter := t.stateMap.Iterate()
 	for iter.Next(&k, &v) {
-		out[k] = v
+		at, err := monotonicNanos()
+		if err != nil {
+			return out, err
+		}
+		out[k] = v.closeAt(at)
 	}
 	if err := iter.Err(); err != nil {
 		return out, err

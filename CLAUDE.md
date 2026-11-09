@@ -90,7 +90,7 @@ ptop/
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
 │   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159)
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135)
-│   │   │   ├── threads.bpf.c      sched_switch
+│   │   │   ├── threads.bpf.c      sched_switch → on-CPU / asleep / run-queue per thread (#150)
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
 │   │   │   ├── goalloc.bpf.c      runtime.mallocgc uprobe → Go alloc sites, byte-sampled (#108)
@@ -119,7 +119,7 @@ ptop/
 │   │   ├── memory.go              memory counter loader
 │   │   ├── heap.go                libc allocator uprobe loader (#53)
 │   │   ├── tls.go                 libssl uprobe loader → TLS plaintext (#55)
-│   │   ├── threads.go             sched_switch loader
+│   │   ├── threads.go             sched_switch loader; Totals() adds the open interval
 │   │   ├── futex.go               futex wait/wake loader + contention stacks
 │   │   ├── signal.go              signal_generate loader (#58)
 │   │   ├── proc.go                sched fork/exec/exit loader → exec lineage (#60)
@@ -176,7 +176,8 @@ ptop/
 │       ├── cpu_ebpf.go            eBPF on-CPU time → CPU%
 │       ├── cpu_rate.go            on-CPU ns → single-core % (build-tag-free)
 │       ├── threads_proc.go        /proc/<pid>/task/*/stat + wchan
-│       ├── threads_ebpf.go        sched_switch → CPU% real-time
+│       ├── threads_ebpf.go        sched_switch → on/off/run-queue % per thread
+│       ├── threads_window.go      per-thread windows; threads the tracer has not seen (#150)
 │       ├── mem_proc.go            /proc/<pid>/statm + faults
 │       ├── mem_ebpf.go            kprobe + syscall tracepoints
 │       ├── heap_ebpf.go           libc malloc/free pairing, or the Go lane (#53)
@@ -276,11 +277,14 @@ type FDEntry struct {
 }
 
 type ThreadInfo struct {
-    TID     int
-    Name    string
-    State   string // "running" | "blocked" | "sleeping"
-    CPUPct  float64
-    Waiting string
+    TID         int
+    Name        string
+    State       string // "running" | "blocked" | "sleeping"
+    CPUPct      float64
+    Waiting     string
+    CtxSwitches uint64  // eBPF-only, per window
+    OffCpuPct   float64 // eBPF-only: switched out asleep
+    RunqWaitPct float64 // eBPF-only: runnable, waiting for a CPU (#150)
 }
 
 type TimelineEvent struct {
@@ -655,6 +659,45 @@ The selftest's io case plants writes and unlinks on every CPU the process may
 run on, pinned, and grades each CPU separately. Any probe on a
 `syscalls:sys_enter_*` event whose format has a `__data_loc` field needs the
 same treatment before it is trusted.
+
+### A total charged when an interval ends reads a long one as zero (#150)
+
+`threads.bpf.c` adds a slice to a thread's on-CPU total when the thread is
+switched out, and its off-CPU time when it is switched back in. A thread asleep
+for a whole window had nothing to add in it and read 0% off-CPU; the whole sleep
+then landed in the window it woke in, clamped to 100. A thread on a CPU for a
+whole window had the same shape in `cpu_pct`. The CPU axis had the answer
+already (`cpu_on_since`), the threads axis did not.
+
+- **The open interval is counted at read time.** The later of two stamps says
+  which interval is open and since when, and `ThreadsTracer.Totals` adds the
+  open part up to the moment each entry is read. The collector divides each
+  thread's growth by the span between its own two readings, so the three shares
+  of a thread seen for the whole window add up to 100%.
+- **A thread the tracer has never seen switched out is read from `/proc`.** No
+  entry means no switch-out since the attach. If it is not running now, it has
+  been asleep the whole time, because going back to sleep after running would
+  have been a switch-out. Every runtime thread parked since before ptop attached
+  read 0% off-CPU forever before this. A running one gets its on-CPU from the
+  tick counters.
+- **Off-CPU is split by `prev_state`.** Switched out runnable (preempted, or a
+  yield) is a wait for a CPU, `runq_wait_pct`, which is saturation. Switched out
+  asleep is `off_cpu_pct`. They point at opposite fixes, and the docs already
+  promised the split the program did not make. The wait between a wakeup and
+  the switch-in after it is still inside `off_cpu_pct` until a `sched_wakeup`
+  probe exists (#151).
+- **A read can tear.** The totals sit before the stamps in `thread_state` and
+  the program writes a stamp before the total it closes into, so a lookup copying
+  in address order cannot see an interval twice. Nothing guarantees that order,
+  so the collector keeps a high-water mark per thread: a torn read moves a slice
+  into the next window and never counts it twice in sum.
+
+The selftest's `threads` case plants a thread asleep since before the attach,
+one asleep since mid-case after running, and two burners pinned to one CPU.
+Each of the three fixes, reverted on its own, fails its own check.
+
+When a counter is charged at the end of an interval, ask what a window that sees
+no end reads.
 
 ---
 
