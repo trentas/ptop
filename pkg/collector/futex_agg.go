@@ -75,13 +75,21 @@ func pickLockSite(frames []uint64, resolve func(uint64) symbol.Frame) lockSite {
 // and internal/sync are in here beside the runtime because they are the
 // primitive, not its caller: a lock named sync.(*Mutex).Lock says no more than
 // runtime.futex does.
+//
+// The syscall wrappers are here for the same reason. Go code that waits on a
+// futex word of its own goes through syscall.Syscall6 (directly, or by way of
+// golang.org/x/sys/unix), so on that path the wrapper is what every lock has in
+// common — the selftest's planted futex was named syscall.Syscall6 until it was
+// listed (#155).
 func isLockInfraFunc(name string) bool {
 	if name == "" {
 		return false // unresolved: treat as application code, not as machinery
 	}
 	return isGoRuntimeFunc(name) ||
 		strings.HasPrefix(name, "sync.") ||
-		strings.HasPrefix(name, "internal/sync.")
+		strings.HasPrefix(name, "internal/sync.") ||
+		strings.HasPrefix(name, "syscall.") ||
+		strings.HasPrefix(name, "golang.org/x/sys/unix.")
 }
 
 // lockSample is one row of the kernel's futex_stats map: everything a single
