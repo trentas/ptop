@@ -2150,10 +2150,19 @@ type ThreadInfo struct {
 	CpuPct      float64                `protobuf:"fixed64,4,opt,name=cpu_pct,json=cpuPct,proto3" json:"cpu_pct,omitempty"`
 	Waiting     string                 `protobuf:"bytes,5,opt,name=waiting,proto3" json:"waiting,omitempty"`                             // blocking lock/syscall name, empty if none
 	CtxSwitches uint64                 `protobuf:"varint,6,opt,name=ctx_switches,json=ctxSwitches,proto3" json:"ctx_switches,omitempty"` // eBPF-only; 0 via /proc
-	// off_cpu_pct: % of the window the thread spent off-CPU (blocked/waiting,
-	// not merely idle). eBPF-only; 0 via /proc. Does NOT sum to 100% with
-	// cpu_pct — the remainder is time runnable-but-unscheduled or non-existent.
-	OffCpuPct     float64 `protobuf:"fixed64,7,opt,name=off_cpu_pct,json=offCpuPct,proto3" json:"off_cpu_pct,omitempty"`
+	// off_cpu_pct: % of the window the thread spent switched out asleep (S, D,
+	// T...): waiting on a lock, I/O, a timer or for work to arrive. The kernel
+	// does not tell a stall from idleness; `waiting` says on what. It includes
+	// the wait for a CPU after the wakeup that ended the sleep. A sleep still
+	// going on when the window closes counts in that window. eBPF-only; 0 via
+	// /proc.
+	OffCpuPct float64 `protobuf:"fixed64,7,opt,name=off_cpu_pct,json=offCpuPct,proto3" json:"off_cpu_pct,omitempty"`
+	// runq_wait_pct: % of the window the thread was runnable but not on a CPU
+	// after being preempted: saturation, where off_cpu_pct is waiting on
+	// something else. eBPF-only; 0 via /proc. cpu_pct + off_cpu_pct +
+	// runq_wait_pct is 100 for a thread seen for the whole window; less is a
+	// thread that did not exist for all of it or was not seen yet.
+	RunqWaitPct   float64 `protobuf:"fixed64,8,opt,name=runq_wait_pct,json=runqWaitPct,proto3" json:"runq_wait_pct,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2233,6 +2242,13 @@ func (x *ThreadInfo) GetCtxSwitches() uint64 {
 func (x *ThreadInfo) GetOffCpuPct() float64 {
 	if x != nil {
 		return x.OffCpuPct
+	}
+	return 0
+}
+
+func (x *ThreadInfo) GetRunqWaitPct() float64 {
+	if x != nil {
+		return x.RunqWaitPct
 	}
 	return 0
 }
@@ -3759,7 +3775,7 @@ const file_event_proto_rawDesc = "" +
 	"\x13omitted_alloc_count\x18\n" +
 	" \x01(\x04R\x11omittedAllocCount\x12.\n" +
 	"\x13omitted_alloc_bytes\x18\v \x01(\x04R\x11omittedAllocBytes\x12,\n" +
-	"\x12omitted_live_bytes\x18\f \x01(\x04R\x10omittedLiveBytes\"\xbe\x01\n" +
+	"\x12omitted_live_bytes\x18\f \x01(\x04R\x10omittedLiveBytes\"\xe2\x01\n" +
 	"\n" +
 	"ThreadInfo\x12\x10\n" +
 	"\x03tid\x18\x01 \x01(\x05R\x03tid\x12\x12\n" +
@@ -3768,7 +3784,8 @@ const file_event_proto_rawDesc = "" +
 	"\acpu_pct\x18\x04 \x01(\x01R\x06cpuPct\x12\x18\n" +
 	"\awaiting\x18\x05 \x01(\tR\awaiting\x12!\n" +
 	"\fctx_switches\x18\x06 \x01(\x04R\vctxSwitches\x12\x1e\n" +
-	"\voff_cpu_pct\x18\a \x01(\x01R\toffCpuPct\"?\n" +
+	"\voff_cpu_pct\x18\a \x01(\x01R\toffCpuPct\x12\"\n" +
+	"\rrunq_wait_pct\x18\b \x01(\x01R\vrunqWaitPct\"?\n" +
 	"\x0eThreadSnapshot\x12-\n" +
 	"\athreads\x18\x01 \x03(\v2\x13.ptop.v1.ThreadInfoR\athreads\" \n" +
 	"\fIoWaitSample\x12\x10\n" +

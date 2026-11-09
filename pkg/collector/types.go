@@ -366,15 +366,22 @@ type ThreadInfo struct {
 	// window (interval between collector publishes). Only populated when the
 	// eBPF threads collector is active; via /proc this stays zero.
 	CtxSwitches uint64
-	// OffCpuPct: % of the window the thread spent off-CPU — blocked/waiting on
-	// a lock, I/O or syscall, NOT merely idle. This is what distinguishes a
-	// stalled thread from one that simply had no work. eBPF-only (derived from
-	// off_cpu_ns_total, same window delta as CPUPct); 0 via /proc.
-	//
-	// OffCpuPct + CPUPct do NOT sum to 100%: the remainder is time the thread
-	// was runnable-but-unscheduled or didn't exist in the window. Render them
-	// as independent "on"/"off" figures, never as a split.
+	// OffCpuPct: % of the window the thread spent switched out asleep (S, D,
+	// T…): waiting on a lock, I/O, a timer, a child, or for work to arrive.
+	// The kernel does not tell a stall from idleness; Waiting and the futex
+	// and I/O axes say on what. It includes the wait for a CPU after the
+	// wakeup that ended the sleep (telling that apart needs sched_wakeup,
+	// #151). A sleep still going on when the window closes counts in the
+	// window it happened in (#150). eBPF-only; 0 via /proc.
 	OffCpuPct float64
+	// RunqWaitPct: % of the window the thread was runnable but not on a CPU
+	// after being preempted (#150) — saturation, where OffCpuPct is waiting
+	// on something else. eBPF-only; 0 via /proc.
+	//
+	// CPUPct + OffCpuPct + RunqWaitPct is 100% for a thread the tracer knew
+	// for the whole window. Less is a thread that did not exist for all of
+	// it, or whose first slice the tracer had not seen yet.
+	RunqWaitPct float64
 }
 
 // ─── Locks (futex) ───────────────────────────────────────────────────────────
