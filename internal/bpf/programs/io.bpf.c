@@ -13,6 +13,9 @@
 //   io_inflight_map     HASH       tgid_pid → {ts_ns, fd, op, count_req}
 //                                  tracks an in-flight read/write to correlate
 //                                  enter/exit
+//   io_restarting       LRU_HASH   tgid_pid → a read/write stopped by a signal
+//                                  that the kernel may re-run (restart.bpf.h,
+//                                  #160)
 //   io_events           RINGBUF    throughput channel — fd, op, bytes, latency
 //   fs_inflight_map     HASH       tgid_pid → {op, path ptr, newpath ptr} (#57)
 //   fs_events           RINGBUF    fs-semantics channel — op, ret, path(s) (#57)
@@ -44,6 +47,7 @@
 #include <bpf/bpf_helpers.h>
 #include <asm/unistd.h>
 #include "target.bpf.h"
+#include "restart.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -64,6 +68,7 @@ struct io_inflight {
     __u32 fd;
     __u32 op;
     __u64 count_req;
+    __u64 end_ns; // in io_restarting: when the signal stopped it
 };
 
 // Event published to user-space via ring buffer. Fixed layout, read with
@@ -93,6 +98,14 @@ struct {
     __uint(max_entries, 10240);
 } io_inflight_map SEC(".maps");
 
+// LRU: a thread killed inside the call never settles it.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, __u64);
+    __type(value, struct io_inflight);
+    __uint(max_entries, 10240);
+} io_restarting SEC(".maps");
+
 struct {
     __uint(type, BPF_MAP_TYPE_RINGBUF);
     __uint(max_entries, 1 << 20); // 1MB
@@ -103,10 +116,26 @@ static __always_inline int is_io_target(void)
     return pid_is_target(&io_target_pid);
 }
 
+static __always_inline void emit_io(const struct io_inflight *inf, __u64 end, long ret, __u32 tgid)
+{
+    struct io_event *e = bpf_ringbuf_reserve(&io_events, sizeof(*e), 0);
+    if (!e)
+        return;
+    e->ts_ns  = end;
+    e->lat_ns = end - inf->ts_ns;
+    e->bytes  = ret > 0 ? (__u64)ret : 0;
+    e->fd     = inf->fd;
+    e->op     = inf->op;
+    e->tgid   = tgid;
+    e->_pad   = 0;
+    bpf_ringbuf_submit(e, 0);
+}
+
 static __always_inline void enter_io(__u32 op, __u32 fd, __u64 count)
 {
     if (!is_io_target())
         return;
+
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     struct io_inflight inf = {
         .ts_ns     = bpf_ktime_get_ns(),
@@ -114,6 +143,13 @@ static __always_inline void enter_io(__u32 op, __u32 fd, __u64 count)
         .op        = op,
         .count_req = count,
     };
+    // The kernel re-running a read or write a signal stopped: one call, timed
+    // from its first entry (#160).
+    struct io_inflight *r = bpf_map_lookup_elem(&io_restarting, &pid_tgid);
+    if (r && r->op == op && r->fd == fd && r->count_req == count) {
+        inf.ts_ns = r->ts_ns;
+        bpf_map_delete_elem(&io_restarting, &pid_tgid);
+    }
     bpf_map_update_elem(&io_inflight_map, &pid_tgid, &inf, BPF_ANY);
 }
 
@@ -124,19 +160,30 @@ static __always_inline void exit_io(long ret)
     if (!inf)
         return;
 
-    struct io_event *e = bpf_ringbuf_reserve(&io_events, sizeof(*e), 0);
-    if (e) {
-        __u64 now = bpf_ktime_get_ns();
-        e->ts_ns  = now;
-        e->lat_ns = now - inf->ts_ns;
-        e->bytes  = ret > 0 ? (__u64)ret : 0;
-        e->fd     = inf->fd;
-        e->op     = inf->op;
-        e->tgid   = (__u32)(pid_tgid >> 32);
-        e->_pad   = 0;
-        bpf_ringbuf_submit(e, 0);
+    __u64 now = bpf_ktime_get_ns();
+    if (ret_restarts(ret)) {
+        // Not over yet, or over with EINTR: restart.bpf.h.
+        struct io_inflight r = *inf;
+        r.end_ns = now;
+        bpf_map_update_elem(&io_restarting, &pid_tgid, &r, BPF_ANY);
+    } else {
+        emit_io(inf, now, ret, (__u32)(pid_tgid >> 32));
     }
     bpf_map_delete_elem(&io_inflight_map, &pid_tgid);
+}
+
+// sigreturn_io settles a stopped read or write when the handler that stopped
+// it returns EINTR to it: the call ended at the exit already seen.
+static __always_inline void sigreturn_io(long ret)
+{
+    if (ret != -PTOP_EINTR)
+        return;
+    __u64 pid_tgid = bpf_get_current_pid_tgid();
+    struct io_inflight *r = bpf_map_lookup_elem(&io_restarting, &pid_tgid);
+    if (!r)
+        return;
+    emit_io(r, r->end_ns, -PTOP_EINTR, (__u32)(pid_tgid >> 32));
+    bpf_map_delete_elem(&io_restarting, &pid_tgid);
 }
 
 // ─── #57 filesystem semantics: permission denials, deletes, renames ───────────
@@ -313,6 +360,13 @@ int handle_sys_exit(struct sys_exit_args *ctx)
     case __NR_read:
     case __NR_write:
         exit_io(ctx->ret);
+        break;
+    // rt_sigreturn's exit carries the id the restored frame holds, -1 on x86
+    // and arm64 (restore_sigcontext forgets the syscall). Its return is the
+    // restored register: -EINTR when the stopped call returns EINTR (#160).
+    case -1:
+    case __NR_rt_sigreturn:
+        sigreturn_io(ctx->ret);
         break;
     case __NR_openat:
     case __NR_unlinkat:
