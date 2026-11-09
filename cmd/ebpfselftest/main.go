@@ -1,22 +1,26 @@
 //go:build linux && ebpf
 
-// ebpf-selftest verifies that ptop's eBPF collectors can actually observe
-// the target process — useful inside containers / WSL, where nested PID
-// namespaces historically broke the filter. Run as root:
+// ebpf-selftest grades ptop's eBPF axes against workloads whose answer is
+// known (#155). Run as root:
 //
-//	sudo ./bin/ebpf-selftest
+//	sudo ./bin/ebpf-selftest            every case
+//	sudo ./bin/ebpf-selftest -list      what the cases are
+//	sudo ./bin/ebpf-selftest -run cpu,net
 //
-// It targets its own process, generates a known workload (CPU burn + write
-// syscalls), and reports whether the eBPF counters moved. It then runs a
-// second, deliberately quiet workload and checks that the CPU axis agrees
-// with the kernel's own accounting of it — a counter that moves is not the
-// same as a counter that is right (#108). Last, the network axis: who owns a
-// socket and what it moved, against a peer in another process (#135, #142).
-// Exit code is 0 on PASS, 1 on FAIL — usable directly in CI / scripts.
+// It targets its own process, plants a behaviour on one axis at a time, and
+// checks the VALUE the axis reports against the planted one — a counter that
+// moves is not the same as a counter that is right (#108). Peers that must
+// live in another process (the network axis, #135) are this binary
+// re-executed. Every reading prints the axis, the claim, what was expected and
+// what was measured, so a regression names the axis and the size of the miss.
+//
+// Exit code is 0 when every graded reading passed, 1 when any failed, 2 for a
+// bad -run. CI runs it on amd64 and arm64 (ci.yml, job selftest).
 package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"sort"
@@ -32,31 +36,69 @@ func main() {
 	if spec := os.Getenv(peerEnv); spec != "" {
 		runPeer(spec) // the network phase's other process; never returns
 	}
+	runSpec := flag.String("run", "", "comma-separated cases to run, in suite order (default: all; -list names them)")
+	list := flag.Bool("list", false, "list the cases and exit")
+	flag.Parse()
+
+	cases := suite()
+	if *list {
+		for _, c := range cases {
+			fmt.Printf("%-9s %s\n", c.name, c.what)
+		}
+		return
+	}
+	selected, err := selectCases(cases, *runSpec)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
 	if d := bpf.GetCapStatus().Diagnose(); d != "" {
 		fmt.Fprint(os.Stderr, d)
 		os.Exit(1)
 	}
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+
+	pid := os.Getpid()
+	fmt.Printf("ptop eBPF self-test — target = self (pid %d)\n\n", pid)
+	g := &grader{}
+	for _, c := range selected {
+		// Each case opens and closes its own tracers, so one axis's attach
+		// failure cannot leave another reading a tracer it never set up.
+		c.run(g, pid)
+	}
+	fmt.Printf("\n%s\n", g.summary())
+	if g.failed > 0 {
+		fmt.Fprintln(os.Stderr, "eBPF self-test FAILED")
 		os.Exit(1)
+	}
+	fmt.Println("eBPF self-test PASSED")
+}
+
+// suite is every case, in the order they run.
+func suite() []selfCase {
+	return []selfCase{
+		{"filter", "the pid and cgroup filters match this process (#94)", checkFilters},
+		{"cpu", "on-CPU time agrees with the kernel's own accounting, quiet and busy (#108)", checkCPUAccuracy},
+		{"cpusite", "CPU samples name the function that burned them (#125)", checkCPUAttribution},
+		{"net", "socket ownership and bytes, against a peer in another process (#135, #142)", checkNetwork},
 	}
 }
 
-// run performs the self-test. Returning an error (instead of calling
-// os.Exit directly) ensures the deferred tracer Close() calls always run.
-func run() error {
-	pid := os.Getpid()
-	fmt.Printf("ptop eBPF self-test — target = self (pid %d)\n\n", pid)
-
+// checkFilters is the original purpose of this binary: inside containers and
+// WSL, nested PID namespaces broke the target filter, and every axis read zero
+// for a busy process. It burns CPU and makes write(2) calls for three seconds
+// and checks that the pid filter and the cgroup filter both saw them.
+func checkFilters(g *grader, pid int) {
 	cpuT, err := bpf.OpenCPUTracer(bpf.TargetPID(pid))
 	if err != nil {
-		return fmt.Errorf("cpu: OpenCPUTracer: %w", err)
+		g.broken("filter", "pid filter, cpu", fmt.Errorf("OpenCPUTracer: %w", err))
+		return
 	}
 	defer cpuT.Close()
 
 	scT, err := bpf.OpenSyscallTracer(bpf.TargetPID(pid))
 	if err != nil {
-		return fmt.Errorf("syscalls: OpenSyscallTracer: %w", err)
+		g.broken("filter", "pid filter, syscalls", fmt.Errorf("OpenSyscallTracer: %w", err))
+		return
 	}
 	defer scT.Close()
 
@@ -67,81 +109,63 @@ func run() error {
 	if cgroupSpec != "" {
 		cgT, err = bpf.OpenCPUTracer(bpf.TargetCgroup(cgroupSpec))
 		if err != nil {
-			return fmt.Errorf("cgroup: OpenCPUTracer(%s): %w", cgroupSpec, err)
+			g.broken("filter", "cgroup filter", fmt.Errorf("OpenCPUTracer(%s): %w", cgroupSpec, err))
+		} else {
+			defer cgT.Close()
+			g.note("filter", "cgroup mode targeting %s", cgroupSpec)
 		}
-		defer cgT.Close()
-		fmt.Printf("      cgroup mode targeting %s\n\n", cgroupSpec)
 	}
 
 	devnull, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
 	if err != nil {
-		return fmt.Errorf("open /dev/null: %w", err)
+		g.broken("filter", "workload", fmt.Errorf("open /dev/null: %w", err))
+		return
 	}
 	defer devnull.Close()
 
 	// Workload: CPU burn + real write(2) syscalls for 3 seconds.
 	buf := []byte("x")
-	var spin uint64
+	var spin, writes uint64
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		for i := 0; i < 50000; i++ {
 			spin++
 		}
-		_, _ = devnull.Write(buf)
+		if _, err := devnull.Write(buf); err == nil {
+			writes++
+		}
 	}
 	_ = spin
 
-	failed := false
+	onCPU, err := cpuT.OnCPUNanos()
+	g.check("filter", "pid filter, on-CPU over a 3s burn", err == nil && onCPU > 0,
+		"> 0", readErr(time.Duration(onCPU).String(), err))
 
-	onCPU, _ := cpuT.OnCPUNanos()
-	if onCPU > 0 {
-		fmt.Printf("PASS  cpu:      %v of on-CPU time observed\n", time.Duration(onCPU))
-	} else {
-		fmt.Fprintln(os.Stderr, "FAIL  cpu:      0ns on-CPU — the eBPF filter did not match this process")
-		failed = true
-	}
-
-	stats, _ := scT.Stats()
+	stats, err := scT.Stats()
 	var total uint64
 	for _, s := range stats {
 		total += s.Count
 	}
-	if total > 0 {
-		fmt.Printf("PASS  syscalls: %d events across %d syscall ids\n", total, len(stats))
-	} else {
-		fmt.Fprintln(os.Stderr, "FAIL  syscalls: 0 events — the eBPF filter did not match this process")
-		failed = true
-	}
+	g.check("filter", "pid filter, syscalls", err == nil && total >= writes,
+		fmt.Sprintf(">= %d (the write(2) calls made)", writes),
+		readErr(fmt.Sprintf("%d across %d syscall ids", total, len(stats)), err))
 
 	switch {
-	case cgT == nil:
-		fmt.Printf("SKIP  cgroup:   %s\n", cgroupWhy)
-	default:
-		if ns, _ := cgT.OnCPUNanos(); ns > 0 {
-			fmt.Printf("PASS  cgroup:   %v of on-CPU time observed via cgroup subtree filter\n", time.Duration(ns))
-		} else {
-			fmt.Fprintln(os.Stderr, "FAIL  cgroup:   0ns on-CPU — the cgroup subtree filter did not match this process")
-			failed = true
-		}
+	case cgroupSpec == "":
+		g.skip("filter", "cgroup filter", cgroupWhy)
+	case cgT != nil:
+		ns, err := cgT.OnCPUNanos()
+		g.check("filter", "cgroup filter, on-CPU over a 3s burn", err == nil && ns > 0,
+			"> 0", readErr(time.Duration(ns).String(), err))
 	}
+}
 
-	if !checkCPUAccuracy(cpuT) {
-		failed = true
+// readErr renders a reading, or the error that prevented it.
+func readErr(got string, err error) string {
+	if err != nil {
+		return "unreadable (" + err.Error() + ")"
 	}
-
-	if !checkCPUAttribution(pid) {
-		failed = true
-	}
-
-	if !checkNetwork(pid) {
-		failed = true
-	}
-
-	if failed {
-		return errors.New("eBPF self-test FAILED")
-	}
-	fmt.Println("\neBPF self-test PASSED")
-	return nil
+	return got
 }
 
 // selfCgroup returns this process's cgroup v2 path, suitable as a --cgroup
@@ -184,7 +208,14 @@ func selfCgroup() (spec, why string) {
 // over /proc/self/task/*/schedstat. That is the nanosecond-resolution form of
 // the utime+stime every `top` shows, and /proc is what a user compares ptop
 // against when they doubt it.
-func checkCPUAccuracy(t *bpf.CPUTracer) bool {
+func checkCPUAccuracy(g *grader, pid int) {
+	t, err := bpf.OpenCPUTracer(bpf.TargetPID(pid))
+	if err != nil {
+		g.broken("cpu", "on-CPU time", fmt.Errorf("OpenCPUTracer: %w", err))
+		return
+	}
+	defer t.Close()
+
 	points := []struct {
 		name string
 		on   time.Duration // busy out of every 10ms
@@ -192,12 +223,11 @@ func checkCPUAccuracy(t *bpf.CPUTracer) bool {
 		{"quiet", 250 * time.Microsecond},   // ~2.5% of a core
 		{"busier", 2500 * time.Microsecond}, // ~25% of a core
 	}
-	ok := true
 	for _, p := range points {
+		claim := fmt.Sprintf("on-CPU, %s duty cycle (%v of every 10ms)", p.name, p.on)
 		got, want, err := measureCPU(t, 3*time.Second, p.on, 10*time.Millisecond)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "FAIL  cpu%% %-7s %v\n", p.name+":", err)
-			ok = false
+			g.broken("cpu", claim, err)
 			continue
 		}
 		// 15% of the truth, or 2ms, whichever is larger — the floor keeps a
@@ -212,16 +242,10 @@ func checkCPUAccuracy(t *bpf.CPUTracer) bool {
 		if diff < 0 {
 			diff = -diff
 		}
-		if diff > tolerance {
-			fmt.Fprintf(os.Stderr, "FAIL  cpu%% %-7s axis says %v, /proc says %v — off by %v, more than the %v allowed\n",
-				p.name+":", round(got), round(want), round(diff), round(tolerance))
-			ok = false
-			continue
-		}
-		fmt.Printf("PASS  cpu%% %-7s %v on-CPU vs %v in /proc (±%v)\n",
-			p.name+":", round(got), round(want), round(tolerance))
+		g.check("cpu", claim, diff <= tolerance,
+			fmt.Sprintf("%v ±%v (/proc schedstat)", round(want), round(tolerance)),
+			fmt.Sprintf("%v (off by %v)", round(got), round(diff)))
 	}
-	return ok
 }
 
 func round(d time.Duration) time.Duration { return d.Round(time.Millisecond) }
@@ -337,24 +361,24 @@ func cpuBurnHotLoop(d time.Duration) uint64 {
 //     reporting what the target did rather than what it did once;
 //   - the ACHIEVED sampling rate is reported beside the requested one, since
 //     #108 measured them diverging by 10-20% on a quiet host.
-func checkCPUAttribution(pid int) bool {
+func checkCPUAttribution(g *grader, pid int) {
 	prof, err := bpf.OpenCPUProfiler(bpf.TargetPID(pid), bpf.CPUProfDefaultHz)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL  cpusite: OpenCPUProfiler: %v\n", err)
-		return false
+		g.broken("cpusite", "attribution", fmt.Errorf("OpenCPUProfiler: %w", err))
+		return
 	}
 	defer prof.Close()
 
 	sym, err := symbol.NewSymbolizer(pid)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL  cpusite: no symbolizer for self: %v\n", err)
-		return false
+		g.broken("cpusite", "attribution", fmt.Errorf("no symbolizer for self: %w", err))
+		return
 	}
 
 	// Clear whatever the attach window collected, then measure one burn.
 	if _, err := prof.Samples(); err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL  cpusite: Samples: %v\n", err)
-		return false
+		g.broken("cpusite", "attribution", fmt.Errorf("Samples: %w", err))
+		return
 	}
 	rate0, _ := prof.Rate()
 	start := time.Now()
@@ -363,53 +387,40 @@ func checkCPUAttribution(pid int) bool {
 
 	samples, err := prof.Samples()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL  cpusite: Samples: %v\n", err)
-		return false
+		g.broken("cpusite", "attribution", fmt.Errorf("Samples: %w", err))
+		return
 	}
 	rate1, _ := prof.Rate()
 
 	byFunc, total, unresolved := foldSamplesByFunc(prof, sym, samples)
-	if total == 0 {
-		fmt.Fprintln(os.Stderr, "FAIL  cpusite: 0 samples attributed to the target during a 3s CPU burn")
-		return false
+	if !g.check("cpusite", "samples during a 3s burn", total > 0, "> 0", fmt.Sprint(total)) {
+		return
 	}
-	if unresolved*2 > total {
-		// Not a frame-pointer problem: the leaf comes from the interrupted
-		// registers, so it resolves with or without them (measured — a C target
-		// built both ways differed only in stack depth). Reaching here means
-		// bpf_get_stackid itself failed, or nothing symbolized the leaf at all.
-		fmt.Fprintf(os.Stderr,
-			"FAIL  cpusite: %d of %d samples have no resolvable leaf — stack capture or symbolization is failing\n",
-			unresolved, total)
-		return false
+	// Not a frame-pointer problem: the leaf comes from the interrupted
+	// registers, so it resolves with or without them (measured — a C target
+	// built both ways differed only in stack depth). A miss here means
+	// bpf_get_stackid itself failed, or nothing symbolized the leaf at all.
+	if !g.check("cpusite", "samples with a resolvable leaf", unresolved*2 <= total,
+		"at least half", fmt.Sprintf("%d of %d", total-unresolved, total)) {
+		return
 	}
 
 	top, topN := topFunc(byFunc)
 	const wantFunc = "main.cpuBurnHotLoop"
 	share := float64(topN) / float64(total) * 100
-	if top != wantFunc {
-		fmt.Fprintf(os.Stderr,
-			"FAIL  cpusite: hottest function is %q (%d/%d samples, %.0f%%), want %q\n",
-			top, topN, total, share, wantFunc)
-		return false
-	}
-	// A correct axis puts nearly everything here; half is a floor that leaves
+	g.check("cpusite", "hottest function", top == wantFunc,
+		wantFunc, fmt.Sprintf("%s (%d/%d samples)", top, topN, total))
+	// A correct axis puts nearly everything there; half is a floor that leaves
 	// room for the runtime's own background work on a loaded machine.
-	if share < 50 {
-		fmt.Fprintf(os.Stderr,
-			"FAIL  cpusite: %s holds only %.0f%% of %d samples — attribution is too diffuse to trust\n",
-			wantFunc, share, total)
-		return false
-	}
-	fmt.Printf("PASS  cpusite: %s holds %d/%d samples (%.0f%%)\n", wantFunc, topN, total, share)
+	g.check("cpusite", "share of the burn in it", top == wantFunc && share >= 50,
+		">= 50%", fmt.Sprintf("%.0f%% in %s", share, top))
 
 	// The achieved rate, measured, beside the one that was asked for. Reported
 	// rather than asserted: a loaded or tickless host legitimately delivers
 	// fewer, and the point of publishing it is that nobody has to assume.
 	if fired := rate1.Fired - rate0.Fired; fired > 0 && prof.NumCPU() > 0 {
 		hz := float64(fired) / elapsed.Seconds() / float64(prof.NumCPU())
-		fmt.Printf("      cpusite: sampler delivered %.0fHz per CPU of the %dHz requested\n",
-			hz, prof.RequestedHz())
+		g.note("cpusite", "sampler delivered %.0fHz per CPU of the %dHz requested", hz, prof.RequestedHz())
 	}
 
 	// Idle control: nothing is burning now, so almost nothing should be
@@ -418,18 +429,12 @@ func checkCPUAttribution(pid int) bool {
 	time.Sleep(1500 * time.Millisecond)
 	idle, err := prof.Samples()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "FAIL  cpusite: Samples (idle): %v\n", err)
-		return false
+		g.broken("cpusite", "samples while idle", fmt.Errorf("Samples: %w", err))
+		return
 	}
 	_, idleTotal, _ := foldSamplesByFunc(prof, sym, idle)
-	if limit := total / 10; idleTotal > limit {
-		fmt.Fprintf(os.Stderr,
-			"FAIL  cpusite: %d samples attributed while idle (more than the %d allowed) — the filter is leaking\n",
-			idleTotal, limit)
-		return false
-	}
-	fmt.Printf("PASS  cpusite: %d samples while idle, against %d while burning\n", idleTotal, total)
-	return true
+	g.check("cpusite", "samples in the 1.5s idle after the burn", idleTotal <= total/10,
+		fmt.Sprintf("<= %d (a tenth of the burn's)", total/10), fmt.Sprint(idleTotal))
 }
 
 // foldSamplesByFunc resolves each stack's LEAF frame — the function actually

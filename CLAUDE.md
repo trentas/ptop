@@ -76,7 +76,7 @@ ptop/
 │   ├── event.proto                unified Event + payloads
 │   └── service.proto              EventStream gRPC service
 ├── cmd/ptop/main.go               entrypoint: parse flags, start model
-├── cmd/ebpfselftest/              root-only eBPF self-diagnostic (filters, CPU axis, network)
+├── cmd/ebpfselftest/              root-only planted-behaviour suite: each axis graded against a known workload, in CI (#155)
 ├── internal/
 │   ├── bpf/                       eBPF programs + loader (build tag `ebpf`)
 │   │   ├── objects_amd64.go       per-arch embeds of the compiled objects (#123)
@@ -577,6 +577,32 @@ wire: absent says "not measured", which is the only way a scalar can refuse to
 be read as zero. That is the general fix whenever a field might not be measured.
 It is a sum over threads too, so it can exceed the capture's wall time.
 
+### The selftest grades, and CI runs it (#155)
+
+`go test -tags=ebpf` compiles every probe and loads none: it runs unprivileged.
+Every accuracy bug the axes have had (#108, #109, #121, #135, #139) passed it.
+`cmd/ebpfselftest` is the lane that loads them, as root, against its own
+process, and the `selftest` job in `ci.yml` runs it natively on amd64 and arm64
+GitHub runners (#123 was an arm64-only wrong answer).
+
+A grader is as gameable as what it grades — the best-scoring agent in Gregg's
+"Performance Prompts" grading (SREcon EMEA 2026, slides 40–42) was invalid,
+because it raised the score without being right. So:
+
+- **Plant the answer, grade the value.** Each case plants a behaviour whose
+  answer it knows before it measures (a duty cycle, a function, a byte count)
+  and checks the number against it, with a tolerance taken from that axis's own
+  uncertainty. "Something was emitted" is not a grade.
+- **Every reading prints one line:** axis, claim, `want`, `got`
+  (`grader.check`), so a failure names the axis and the size of the miss.
+- **A case that cannot take its reading fails** (`grader.broken`). SKIP is for
+  a condition of the host (no cgroup subtree to target), never of the code under
+  test. `-run` with a name that matches no case exits 2 instead of running
+  nothing, since an empty suite passes.
+
+A new axis, or a fix to one, adds its planted case in the same PR.
+`sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.
+
 ---
 
 ## TUI conventions
@@ -669,13 +695,11 @@ Two caveats worth knowing before extending this:
   namespaces, so there is no single namespace to project into; `pid_target_ns()`
   fills `out` from `bpf_get_current_pid_tgid()` in that mode.
 
-Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest`: it
-runs one workload and checks the pid filter and the cgroup filter against it
-(and, last, the network axis's socket ownership against a peer process)
-(and then two quieter ones, to check the CPU axis against `/proc` — see the
-section on measuring time above)
-(the cgroup phase reports SKIP where there is no subtree to target — a cgroup
-v1 host, or a cgroup namespace that shows `/` as its own root).
+Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest -run
+filter`: it runs one workload and checks the pid filter and the cgroup filter
+against it. The cgroup half reports SKIP where there is no subtree to target — a
+cgroup v1 host, or a cgroup namespace that shows `/` as its own root. The rest
+of the suite is described under "The selftest grades, CI runs it" below.
 
 ## Build tags
 

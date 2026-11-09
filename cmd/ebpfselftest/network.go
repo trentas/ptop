@@ -121,31 +121,34 @@ func findConn(t *bpf.NetTracer, k bpf.NetConnKey) (bpf.NetSnapshot, bool) {
 	return bpf.NetSnapshot{}, false
 }
 
-type netCheck struct {
-	failed bool
+// bytesMatch grades a row as having moved exactly netPayload each way.
+func bytesMatch(g *grader, claim string, s bpf.NetSnapshot) bool {
+	return g.check("net", claim, s.TxBytes == netPayload && s.RxBytes == netPayload,
+		fmt.Sprintf("tx/rx %d/%d bytes", netPayload, netPayload),
+		fmt.Sprintf("%d/%d", s.TxBytes, s.RxBytes))
 }
 
-func (n *netCheck) pass(format string, a ...any) { fmt.Printf("PASS  net:      "+format+"\n", a...) }
-func (n *netCheck) fail(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "FAIL  net:      "+format+"\n", a...)
-	n.failed = true
-}
-
-// bytesMatch checks a row moved exactly netPayload each way.
-func (n *netCheck) bytesMatch(what string, s bpf.NetSnapshot) bool {
-	if s.TxBytes != netPayload || s.RxBytes != netPayload {
-		n.fail("%s: tx/rx = %d/%d, want %d/%d", what, s.TxBytes, s.RxBytes, netPayload, netPayload)
-		return false
+// row renders whether a lookup found a row.
+func row(found bool) string {
+	if found {
+		return "a row"
 	}
-	return true
+	return "none"
 }
 
-func checkNetwork(pid int) bool {
-	n := &netCheck{}
+// rtt renders a row's handshake time, or says it was not measured.
+func rtt(s bpf.NetSnapshot) string {
+	if !s.RTTMeasured {
+		return "not measured"
+	}
+	return time.Duration(s.RTTNs).String()
+}
+
+func checkNetwork(g *grader, pid int) {
 	port, stopEcho, err := startEchoPeer()
 	if err != nil {
-		n.fail("cannot start the peer process: %v", err)
-		return false
+		g.broken("net", "peer process", err)
+		return
 	}
 	defer stopEcho()
 	echoAddr := fmt.Sprintf("127.0.0.1:%d", port)
@@ -153,95 +156,89 @@ func checkNetwork(pid int) bool {
 	// A connection that exists before the tracer does (#142).
 	pre, err := net.Dial("tcp4", echoAddr)
 	if err != nil {
-		n.fail("dial the peer: %v", err)
-		return false
+		g.broken("net", "dial the peer", err)
+		return
 	}
 	defer pre.Close()
 	if err := roundTrip(pre); err != nil {
-		n.fail("round trip before attach: %v", err)
-		return false
+		g.broken("net", "round trip before attach", err)
+		return
 	}
 
 	t, err := bpf.OpenNetTracer(bpf.TargetPID(pid))
 	if err != nil {
-		n.fail("OpenNetTracer: %v", err)
-		return false
+		g.broken("net", "attach", fmt.Errorf("OpenNetTracer: %w", err))
+		return
 	}
 	defer t.Close()
-	fmt.Printf("      network bytes via %s\n", t.ByteLane)
+	g.note("net", "bytes via %s", t.ByteLane)
 
 	// 1. Pre-existing: seeded the way the collector seeds it, then used.
 	preKey := connKey(pre.LocalAddr(), pre.RemoteAddr())
 	if err := t.SeedConnection(preKey, 1); err != nil {
-		n.fail("seed: %v", err)
+		g.broken("net", "seed the pre-existing connection", err)
 	}
 	if err := roundTrip(pre); err != nil {
-		n.fail("round trip on the seeded connection: %v", err)
+		g.broken("net", "round trip on the seeded connection", err)
 	}
-	if s, ok := findConn(t, preKey); !ok {
-		n.fail("pre-existing connection: no row")
-	} else if n.bytesMatch("pre-existing connection", s) {
-		n.pass("pre-existing connection: %d bytes each way, measured from the attach (#142)", netPayload)
+	if s, ok := findConn(t, preKey); g.check("net", "pre-existing connection has a row (#142)", ok, "a row", row(ok)) {
+		bytesMatch(g, "pre-existing connection, bytes since the attach", s)
 	}
 
 	// 2. Active open: keyed by the real source port, handshake timed.
 	act, err := net.Dial("tcp4", echoAddr)
 	if err != nil {
-		n.fail("dial the peer: %v", err)
-		return false
+		g.broken("net", "dial the peer", err)
+		return
 	}
 	actKey := connKey(act.LocalAddr(), act.RemoteAddr())
 	if err := roundTrip(act); err != nil {
-		n.fail("round trip on a new connection: %v", err)
+		g.broken("net", "round trip on a new connection", err)
 	}
-	s, ok := findConn(t, actKey)
-	switch {
-	case !ok:
-		n.fail("connect(): no row under the real source port")
-	case !s.RTTMeasured:
-		n.fail("connect(): handshake RTT not measured")
-	case n.bytesMatch("connect()", s):
-		n.pass("connect(): handshake %v, %d bytes each way", time.Duration(s.RTTNs), netPayload)
+	if s, ok := findConn(t, actKey); g.check("net", "connect(): row under the real source port", ok, "a row", row(ok)) {
+		g.check("net", "connect(): handshake RTT", s.RTTMeasured, "measured", rtt(s))
+		bytesMatch(g, "connect(), bytes", s)
 	}
 	zero := actKey
 	zero.SPort = 0
-	if _, ok := findConn(t, zero); ok {
-		n.fail("connect(): a row keyed with source port 0 — SYN_SENT was keyed before the port existed")
-	}
+	_, keyedZero := findConn(t, zero)
+	g.check("net", "connect(): no row keyed on source port 0 (SYN_SENT before the port exists)", !keyedZero,
+		"none", row(keyedZero))
 
 	// Once owned, a socket is followed to CLOSE whatever context runs it (#133).
 	_ = act.Close()
-	closed := false
+	const tcpClose = 7 // TCP_CLOSE in the kernel's enum
+	closed, last := false, "no row"
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		if s, ok := findConn(t, actKey); ok && s.State == 7 {
-			closed = true
-			break
+		if s, ok := findConn(t, actKey); ok {
+			last = fmt.Sprintf("state %d", s.State)
+			if s.State == tcpClose {
+				closed = true
+				break
+			}
 		}
 	}
-	if closed {
-		n.pass("connect(): CLOSE observed, so the row can be pruned")
-	} else {
-		n.fail("connect(): never reached CLOSE — the row would never be pruned")
-	}
+	g.check("net", "connect(): CLOSE within 3s, so the row can be pruned", closed,
+		fmt.Sprintf("state %d (CLOSE)", tcpClose), last)
 
 	// 3. Passive open: a server's accepted connection, and the peer's socket
 	// must NOT be credited to us even though our close() runs its FIN handling.
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
-		n.fail("listen: %v", err)
-		return false
+		g.broken("net", "listen", err)
+		return
 	}
 	defer ln.Close()
 	client := peerCmd(fmt.Sprintf("client:%s:%d", ln.Addr(), netPayload))
 	if err := client.Start(); err != nil {
-		n.fail("start the client process: %v", err)
-		return false
+		g.broken("net", "start the client process", err)
+		return
 	}
 	acc, err := ln.Accept()
 	if err != nil {
-		n.fail("accept: %v", err)
+		g.broken("net", "accept", err)
 		_ = client.Process.Kill()
-		return false
+		return
 	}
 	accKey := connKey(acc.LocalAddr(), acc.RemoteAddr())
 	peerKey := connKey(acc.RemoteAddr(), acc.LocalAddr())
@@ -250,21 +247,13 @@ func checkNetwork(pid int) bool {
 	_ = acc.Close()
 	_ = client.Wait()
 	if rerr != nil || werr != nil {
-		n.fail("accepted connection I/O: %v / %v", rerr, werr)
+		g.broken("net", "accepted connection I/O", fmt.Errorf("read: %v, write: %v", rerr, werr))
 	}
-	s, ok = findConn(t, accKey)
-	switch {
-	case !ok:
-		n.fail("accept(): no row — a server's connections are invisible (#135)")
-	case s.RTTMeasured:
-		n.fail("accept(): an RTT was reported for a handshake nobody timed")
-	case n.bytesMatch("accept()", s):
-		n.pass("accept(): %d bytes each way, RTT reported as not measured", netPayload)
+	if s, ok := findConn(t, accKey); g.check("net", "accept(): the server's connection has a row (#135)", ok, "a row", row(ok)) {
+		g.check("net", "accept(): handshake RTT", !s.RTTMeasured, "not measured (nobody timed it)", rtt(s))
+		bytesMatch(g, "accept(), bytes", s)
 	}
-	if _, ok := findConn(t, peerKey); ok {
-		n.fail("the peer process's socket was credited to this process (#135)")
-	} else {
-		n.pass("the peer process's socket was not credited to this process")
-	}
-	return !n.failed
+	_, peerCredited := findConn(t, peerKey)
+	g.check("net", "the peer process's socket is not credited to this one (#135)", !peerCredited,
+		"none", row(peerCredited))
 }

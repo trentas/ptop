@@ -36,8 +36,19 @@ make test-all     # default + -tags=ebpf (requires `make gen` to have run)
 make vet          # go vet ./... in both lanes
 ```
 
-Always run `make` before submitting a PR. CI runs both lanes on
-`ubuntu-latest`; failures block the merge.
+Neither lane loads a probe. The planted-behaviour suite does, so it needs
+root (see "The selftest grades, and CI runs it" in `CLAUDE.md`):
+
+```bash
+make ebpf-selftest && sudo ./bin/ebpf-selftest   # every case
+sudo ./bin/ebpf-selftest -list                   # what the cases are
+sudo ./bin/ebpf-selftest -run cpu                # one of them
+```
+
+Always run `make` before submitting a PR, and the selftest when you touch an
+eBPF program or a collector. CI runs both lanes on `ubuntu-latest` and the
+selftest as root on amd64 and arm64. `main` has no required checks, so a red run
+is stopped by whoever merges, not by GitHub.
 
 ## Commit style
 
