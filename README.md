@@ -658,6 +658,19 @@ measurement), so two captures are only comparable once you know which side of
 such a change each is on. A release carries its tag; a build from a checkout
 carries Go's version for it and its commit, `+dirty` for a modified tree.
 
+In pid mode it also carries **what the target is built from**, `target_build`:
+the Go version, the main package and module, and every dependency module with
+its version, checksum and `replace`. ptop reads it from the target executable's
+own build info, which survives `strip`. A frame's name does not tell
+application code from a dependency's (`github.com/acme/svc/internal/db.Get` and
+`github.com/jackc/pgx/v5/pgconn.(*PgConn).receiveMessage` look alike). The main
+module path does, and two captures' module lists give the dependency diff of a
+deploy. Of the build settings only `vcs.*` is sent. `-ldflags` lands among the
+others, and `-X main.apiKey=...` is a known way to put a secret into a binary.
+The field is absent for a target with no Go build info (C, Rust, JVM), for an
+executable ptop cannot read, and in cgroup mode, where one process's build would
+not be the subtree's. Absent means unknown.
+
 An empty probe set means the server does not report one — never that every probe
 ran.
 

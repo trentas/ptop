@@ -165,6 +165,7 @@ func (r *onDemandRegistry) acquire(pid int) (*Hub, StackResolver, func(), error)
 	}
 	hub := NewHub(TargetPID(pid), buildID, feed.Set)
 	hub.build = r.build.wire()
+	hub.targetBuild = readTargetBuild(hub.target)
 	hub.Start(ctx, feed.Bus)
 
 	t := &liveTarget{hub: hub, resolver: resolver, feed: feed, cancel: cancel, refs: 1}

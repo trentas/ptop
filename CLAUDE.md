@@ -130,6 +130,7 @@ ptop/
 │   │   ├── serve.go               addr parse + privilege boundary + Run
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks; probe set in the handshake (#112)
+│   │   ├── targetbuild.go         the target's Go build in the handshake, vcs.* settings only (#157)
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
 │   │   ├── shed.go                which event a full sink queue gives up (#108)
 │   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
@@ -946,7 +947,13 @@ observe a subtree (syscalls, io, network, futex, cpu, security) — the
 out are listed there with the reason. Every subscriber gets a `TargetInfo`
 handshake as the first `StreamMeta`, before any event: **the first item on a
 stream is now a meta, not an event** — consumers must handle that. It names the
-ptop that produced the stream too (`TargetInfo.ptop`, #145).
+ptop that produced the stream too (`TargetInfo.ptop`, #145), and in pid mode
+what the target is built from (`TargetInfo.target_build`, #157). The target's
+build is read from `/proc/<pid>/exe`, opened as is: resolving the link to a path
+first would name a file in the target's mount namespace, not ptop's. Only the
+`vcs.*` build settings go out, because `-ldflags` (and so `-X
+main.apiKey=...`) lands among the others. It is absent in cgroup mode: a subtree
+has no one binary.
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
 streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of
