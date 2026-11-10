@@ -463,6 +463,20 @@ Four things are load-bearing:
   returns (measured — one C target built both ways differed by one frame and
   reported zero unresolved in both arms).
 
+**Kernel time has a count, not a name (#152).** The stacks are user stacks, so
+a sample inside a syscall is credited to the user frame that entered the
+kernel. A consumer classifying sites by origin otherwise finds "zero kernel" by
+construction, which is Gregg's slide 39. So the profile declares `stack_scope:
+USER` (an unset scope is read as unknown, never as USER). Each count also
+carries the samples whose interrupted IP was kernel text, which is bit 63 on
+x86_64 and arm64, with no kernel unwinding and no kallsyms. They fold per
+function (`CPUSite.KernelSamples`) and per profile. The selftest's `cpukernel`
+case:
+- an arithmetic burn reads 0–0.4% kernel-mode;
+- 1 MiB reads of `/dev/zero` read 99–100%, all of it on
+  `internal/runtime/syscall/linux.Syscall6`;
+- with the bit never counted, the second reads 0% and fails.
+
 It is **pid-mode only** — not because the kernel filter cannot span a subtree,
 but because folding by function resolves against one process's memory map, so
 across a subtree the same address names a different function in every process.

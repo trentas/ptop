@@ -189,3 +189,25 @@ func TestFoldCPUSitesTreatsANamelessAddressAsUnresolved(t *testing.T) {
 		t.Errorf("a module without a symbol is still an answer: sites=%+v unresolved=%d", sites, unresolved)
 	}
 }
+
+// Kernel-mode samples fold with their function, and stay in its total (#152):
+// "this function's 40% is 35 points of syscall" is read off one site.
+func TestFoldCPUSitesCarriesKernelSamples(t *testing.T) {
+	sys := symbol.Frame{Func: "syscall.Syscall6", Module: "app"}
+	raw := []rawCPUSite{
+		{Addr: 0x1000, Frame: sys, StackID: 1, Samples: 30, Kernel: 28},
+		{Addr: 0x1004, Frame: sys, StackID: 2, Samples: 10, Kernel: 7},
+		{Addr: 0x2000, Frame: symbol.Frame{Func: "main.work", Module: "app"}, StackID: 3, Samples: 50},
+	}
+	sites, _ := foldCPUSites(raw)
+	by := map[string]CPUSite{}
+	for _, s := range sites {
+		by[s.Func] = s
+	}
+	if s := by["syscall.Syscall6"]; s.Samples != 40 || s.KernelSamples != 35 {
+		t.Errorf("syscall wrapper = %d samples, %d in the kernel; want 40, 35", s.Samples, s.KernelSamples)
+	}
+	if s := by["main.work"]; s.KernelSamples != 0 {
+		t.Errorf("a user-only function carries %d kernel samples", s.KernelSamples)
+	}
+}

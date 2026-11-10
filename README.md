@@ -176,6 +176,15 @@ sudo ./bin/ptop --pid <PID> --debuginfod                  # servers from $DEBUGI
 > sample's leaf comes from the interrupted registers, not from unwinding, so a
 > target built without them still gets named. What it loses is the depth of the
 > stack `ResolveStack` returns.)
+>
+> Its sites are user frames only, and the profile says so with `stack_scope:
+> USER` (#152). Time the target spends in the kernel, such as a syscall, a page
+> fault or an interrupt taken on its behalf, is credited to the user frame that
+> entered the kernel. `kernel_mode_samples`, on the profile and on each site,
+> counts the samples that caught the CPU in kernel mode. A function at 40%
+> carrying 35 points of syscall then reads as such instead of as 40% of
+> application code. The kernel functions themselves are not named, because
+> that needs kallsyms.
 
 > **TLS payload capture** (`--tls` / `--tls-bytes N`): uprobes the target's
 > libssl (`SSL_write`/`SSL_read`) to record plaintext before encryption / after

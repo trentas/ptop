@@ -88,6 +88,17 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				ps := e.GetCaptureCost().GetProbes()
 				return len(ps) == 2 && ps[0].TargetSharePct != nil && ps[0].GetTargetSharePct() == 42 && ps[1].TargetSharePct == nil
 			}},
+		{"cpu_profile scope and kernel samples", collector.CPUProfile{Timestamp: time.Unix(8, 0), StackScope: collector.StackScopeUser,
+			TotalSamples: 100, KernelSamples: 40, Sites: []collector.CPUSite{{Func: "syscall.Syscall6", Samples: 45, KernelSamples: 40}}},
+			pb.Category_CATEGORY_CPU, func(e *pb.Event) bool {
+				p := e.GetCpuProfile()
+				return p.GetStackScope() == pb.StackScope_STACK_SCOPE_USER && p.GetKernelModeSamples() == 40 &&
+					len(p.GetSites()) == 1 && p.GetSites()[0].GetKernelModeSamples() == 40
+			}},
+		{"cpu_profile with no scope says unknown, not USER", collector.CPUProfile{Timestamp: time.Unix(8, 0)},
+			pb.Category_CATEGORY_CPU, func(e *pb.Event) bool {
+				return e.GetCpuProfile().GetStackScope() == pb.StackScope_STACK_SCOPE_UNSPECIFIED
+			}},
 		{"capture_cost, first sample", collector.CaptureCost{Timestamp: time.Unix(6, 0)},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
 				return e.GetCaptureCost() != nil && e.GetCaptureCost().PtopCpuPct == nil

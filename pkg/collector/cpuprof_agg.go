@@ -20,6 +20,7 @@ type rawCPUSite struct {
 	Frame   symbol.Frame
 	StackID int32
 	Samples uint64
+	Kernel  uint64 // of Samples, the ones that caught the CPU in kernel mode (#152)
 }
 
 // cpuFoldKey is the identity two samples have to share to be the same site.
@@ -110,13 +111,14 @@ func foldCPUSites(raw []rawCPUSite) (sites []CPUSite, unresolved uint64) {
 			continue
 		}
 		a.site.Samples += r.Samples
+		a.site.KernelSamples += r.Kernel
 		if r.Samples > a.dominant {
 			// A new dominant sample re-donates every identity field, so Addr,
 			// Line, Offset and StackID stay one coherent observation rather
 			// than a mix of two.
-			samples := a.site.Samples
+			samples, kernel := a.site.Samples, a.site.KernelSamples
 			a.site = cpuSiteOf(r)
-			a.site.Samples = samples
+			a.site.Samples, a.site.KernelSamples = samples, kernel
 			a.dominant = r.Samples
 		}
 	}
@@ -139,6 +141,8 @@ func cpuSiteOf(r rawCPUSite) CPUSite {
 		Offset:  r.Frame.Offset,
 		StackID: r.StackID,
 		Samples: r.Samples,
+
+		KernelSamples: r.Kernel,
 	}
 }
 

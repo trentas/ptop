@@ -14,10 +14,10 @@ type CPUProfRate struct {
 	Hit   uint64
 }
 
-func OpenCPUProfiler(Target, int) (*CPUProfiler, error)   { return nil, errCPUProfStub }
-func (*CPUProfiler) Samples() (map[int32]uint64, error)   { return nil, errCPUProfStub }
-func (*CPUProfiler) Rate() (CPUProfRate, error)           { return CPUProfRate{}, errCPUProfStub }
-func (*CPUProfiler) ResolveStack(int32) ([]uint64, error) { return nil, errCPUProfStub }
-func (*CPUProfiler) RequestedHz() int                     { return 0 }
-func (*CPUProfiler) NumCPU() int                          { return 0 }
-func (*CPUProfiler) Close() error                         { return nil }
+func OpenCPUProfiler(Target, int) (*CPUProfiler, error)       { return nil, errCPUProfStub }
+func (*CPUProfiler) Samples() (map[int32]CPUProfCount, error) { return nil, errCPUProfStub }
+func (*CPUProfiler) Rate() (CPUProfRate, error)               { return CPUProfRate{}, errCPUProfStub }
+func (*CPUProfiler) ResolveStack(int32) ([]uint64, error)     { return nil, errCPUProfStub }
+func (*CPUProfiler) RequestedHz() int                         { return 0 }
+func (*CPUProfiler) NumCPU() int                              { return 0 }
+func (*CPUProfiler) Close() error                             { return nil }

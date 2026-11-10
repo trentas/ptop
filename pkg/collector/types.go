@@ -46,6 +46,12 @@ type CPUSite struct {
 	// behavioural regression.
 	Samples  uint64  `json:"samples"`
 	SharePct float64 `json:"share_pct"`
+
+	// KernelSamples is how many of Samples caught the CPU in kernel mode: a
+	// syscall, a fault or an interrupt taken on the target's behalf, credited
+	// to this user frame because kernel frames are not named (#152). "This
+	// function's 40% is 35 points of syscall" reads here.
+	KernelSamples uint64 `json:"kernel_samples"`
 }
 
 // CPUProfile is the periodic per-function CPU attribution snapshot (#125) —
@@ -56,6 +62,9 @@ type CPUSite struct {
 // A consumer wanting time-in-function multiplies SharePct by the on-CPU time
 // itself — and inherits this axis's sampling uncertainty by doing so, which is
 // why ptop does not do that multiplication anywhere.
+// StackScopeUser: a profile whose sites are user frames only (#152).
+const StackScopeUser = "user"
+
 type CPUProfile struct {
 	Timestamp time.Time `json:"timestamp"`
 	Sites     []CPUSite `json:"sites"`
@@ -81,6 +90,13 @@ type CPUProfile struct {
 	// Because they are in TotalSamples but not in Sites, the SharePct values
 	// sum to LESS than 100 and the shortfall is exactly the blind fraction.
 	UnresolvedSamples uint64 `json:"unresolved_samples"`
+
+	// StackScope says what a site can be (#152): StackScopeUser, every one
+	// of them a user frame, time in the kernel folded into the frame that
+	// entered it. KernelSamples is how much of TotalSamples that is, with each
+	// site's own share in CPUSite.KernelSamples.
+	StackScope    string `json:"stack_scope"`
+	KernelSamples uint64 `json:"kernel_samples"`
 
 	// WindowMs is the wall time this window covers. Sites are per-window, not
 	// cumulative: a share over the whole capture hides a regression that
