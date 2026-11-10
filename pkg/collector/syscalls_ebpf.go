@@ -3,6 +3,7 @@
 package collector
 
 import (
+	"sort"
 	"fmt"
 	"runtime"
 	"sync"
@@ -92,13 +93,19 @@ func (c *SyscallsEBPFCollector) snapshot() ([]SyscallEvent, error) {
 	if err != nil {
 		return nil, err
 	}
+	classes, _ := c.tracer.FdClassStats() // nil from an object without the map: no split, as before
 	out := make([]SyscallEvent, 0, len(stats))
 	for id, st := range stats {
-		out = append(out, SyscallEvent{
+		ev := SyscallEvent{
 			Name:      syscallName(id, c.names),
 			Count:     st.Count,
 			LatencyNs: st.TotalLatNs,
-		})
+		}
+		for name, cs := range classes[id] {
+			ev.FdClasses = append(ev.FdClasses, FdClassStat{Class: name, Count: cs.Count, LatencyNs: cs.TotalLatNs})
+		}
+		sort.Slice(ev.FdClasses, func(i, j int) bool { return ev.FdClasses[i].Class < ev.FdClasses[j].Class })
+		out = append(out, ev)
 	}
 	sortSyscallRows(out)
 	return out, nil

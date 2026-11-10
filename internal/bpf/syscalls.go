@@ -28,14 +28,16 @@ type SyscallStat struct {
 // counters map.
 //
 // Lifecycle:
-//   t, err := OpenSyscallTracer(bpf.TargetPID(pid))
-//   defer t.Close()                  // detaches programs + frees maps
-//   stats, _ := t.Stats()            // snapshot of the syscall_count map
+//
+//	t, err := OpenSyscallTracer(bpf.TargetPID(pid))
+//	defer t.Close()                  // detaches programs + frees maps
+//	stats, _ := t.Stats()            // snapshot of the syscall_count map
 type SyscallTracer struct {
-	coll        *ebpf.Collection
-	enterLink   link.Link
-	exitLink    link.Link
-	syscallMap  *ebpf.Map
+	coll       *ebpf.Collection
+	enterLink  link.Link
+	exitLink   link.Link
+	syscallMap *ebpf.Map
+	fdclassMap *ebpf.Map // nil from an object older than #176
 }
 
 // OpenSyscallTracer opens the tracer for target — a pid or a cgroup subtree,
@@ -81,6 +83,7 @@ func OpenSyscallTracer(target Target) (*SyscallTracer, error) {
 	}
 
 	t.syscallMap = coll.Maps["syscall_count"]
+	t.fdclassMap = coll.Maps["syscall_fdclass"]
 	if t.syscallMap == nil {
 		t.Close()
 		return nil, errors.New("syscall_count map not found")
@@ -130,6 +133,30 @@ func (t *SyscallTracer) Stats() (map[uint32]SyscallStat, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// FdClassStats snapshots the read/write family by the class of fd each call hit
+// (#176): syscall id → class name → stat. The classes split the totals Stats
+// reports; they never add to them.
+func (t *SyscallTracer) FdClassStats() (map[uint32]map[string]SyscallStat, error) {
+	if t == nil || t.fdclassMap == nil {
+		return nil, nil
+	}
+	out := map[uint32]map[string]SyscallStat{}
+	var key struct {
+		SyscallID uint32
+		FdClass   uint32
+	}
+	var val SyscallStat
+	iter := t.fdclassMap.Iterate()
+	for iter.Next(&key, &val) {
+		name := FdClassName(key.FdClass)
+		if out[key.SyscallID] == nil {
+			out[key.SyscallID] = map[string]SyscallStat{}
+		}
+		out[key.SyscallID][name] = val
+	}
+	return out, iter.Err()
 }
 
 // Close detaches the programs, frees maps and returns kernel resources.

@@ -140,6 +140,18 @@ type SyscallEvent struct {
 	Name      string
 	Count     uint64
 	LatencyNs uint64 // summed over the Count calls, not per call
+	// FdClasses splits a read or write by the class of fd it hit (#176):
+	// "anon" (eventfd, epoll, timerfd, signalfd), "socket", "pipe", "file",
+	// "char", "other". Empty for any other syscall, and from a source that
+	// does not classify. They split Count and LatencyNs, never add to them.
+	FdClasses []FdClassStat
+}
+
+// FdClassStat is a read or write's calls on one class of fd.
+type FdClassStat struct {
+	Class     string
+	Count     uint64
+	LatencyNs uint64
 }
 
 // ─── Network ─────────────────────────────────────────────────────────────────

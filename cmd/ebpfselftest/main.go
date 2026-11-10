@@ -82,6 +82,7 @@ func suite() []selfCase {
 		{"cpuprof", "the published profile splits a planted 60/30/10 burn within its binomial interval (#125)", checkCPUProfile},
 		{"cpukernel", "the profile declares user frames only, and counts the samples that caught the CPU in the kernel (#152)", checkCPUKernel},
 		{"syscalls", "a known count is named and counted exactly, a known sleep is timed (#139)", checkSyscalls},
+		{"fdclass", "read and write split by the class of fd they hit, and the split adds up (#176)", checkFdClasses},
 		{"futex", "waits on a known word: counted, timed, named by the waiter (#89)", checkFutex},
 		{"goalloc", "two call sites at a known rate and ratio, and the census adds up (#108, #109)", checkGoAlloc},
 		{"heap", "a C program's malloc, calloc and realloc sites: named, live bytes to the byte, the census adds up (#53, #109)", checkLibcHeap},

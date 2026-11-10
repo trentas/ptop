@@ -26,6 +26,10 @@ func (t *SyscallTracer) Stats() (map[uint32]SyscallStat, error) {
 	return nil, errSyscallsStub
 }
 
+func (t *SyscallTracer) FdClassStats() (map[uint32]map[string]SyscallStat, error) {
+	return nil, nil
+}
+
 func (t *SyscallTracer) Close() error {
 	return nil
 }
