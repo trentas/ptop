@@ -108,12 +108,42 @@ func TestStealFromProcStat(t *testing.T) {
 func TestCgroupBelowRoot(t *testing.T) {
 	for in, want := range map[string]string{
 		"/sys/fs/cgroup/kubepods.slice/pod.slice": "/kubepods.slice/pod.slice",
-		"/sys/fs/cgroup":                          "/",
-		"/sys/fs/cgroupx/a":                       "",
-		"/elsewhere":                              "",
+		"/sys/fs/cgroup":    "/",
+		"/sys/fs/cgroupx/a": "",
+		"/elsewhere":        "",
 	} {
 		if got := CgroupBelowRoot(in); got != want {
 			t.Errorf("CgroupBelowRoot(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestParseCPUStat(t *testing.T) {
+	withCPU := "usage_usec 519128\nuser_usec 518156\nsystem_usec 972\nnr_periods 25\nnr_throttled 25\nthrottled_usec 1973505\nnr_bursts 0\nburst_usec 0\n"
+	got, ok := parseCPUStat(withCPU)
+	if !ok || got != (CPUThrottling{NrPeriods: 25, NrThrottled: 25, ThrottledUsec: 1973505}) {
+		t.Errorf("with the cpu controller: %+v (%v)", got, ok)
+	}
+	// Without the cpu controller cpu.stat has usage only: unknown, not zero.
+	if _, ok := parseCPUStat("usage_usec 1824120584\nuser_usec 1494883766\nsystem_usec 329236818\n"); ok {
+		t.Error("a cpu.stat without bandwidth counters read as throttling")
+	}
+}
+
+func TestParsePressure(t *testing.T) {
+	p, ok := parsePressure("some avg10=14.12 avg60=2.55 avg300=0.53 total=1819065\nfull avg10=1.00 avg60=0.50 avg300=0.10 total=60475\n")
+	if !ok || p.Some != (PressureStall{Avg10: 14.12, Avg60: 2.55, Avg300: 0.53, TotalUsec: 1819065}) ||
+		p.Full == nil || p.Full.TotalUsec != 60475 {
+		t.Errorf("some+full = %+v, full %+v (%v)", p.Some, p.Full, ok)
+	}
+	// A kernel without a full line for this resource: full absent, not zero.
+	p, ok = parsePressure("some avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+	if !ok || p.Full != nil {
+		t.Errorf("some only: full = %+v (%v)", p.Full, ok)
+	}
+	for _, bad := range []string{"", "full avg10=0 avg60=0 avg300=0 total=0\n", "some avg10=x avg60=0 avg300=0 total=0\n", "some avg10=0\n"} {
+		if _, ok := parsePressure(bad); ok {
+			t.Errorf("%q parsed", bad)
 		}
 	}
 }

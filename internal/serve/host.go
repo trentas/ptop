@@ -65,3 +65,33 @@ func targetLimits(t Target) *pb.CgroupLimits {
 	}
 	return limitsWire(collector.ReadCgroupLimits(cg))
 }
+
+func throttlingWire(t *collector.CPUThrottling) *pb.CpuThrottling {
+	if t == nil {
+		return nil
+	}
+	return &pb.CpuThrottling{NrPeriods: t.NrPeriods, NrThrottled: t.NrThrottled, ThrottledUsec: t.ThrottledUsec}
+}
+
+// pressureWire renders the PSI of the three resources, nil when none was read.
+func pressureWire(p collector.CgroupPressure) *pb.CgroupPressure {
+	if p.CPU == nil && p.Memory == nil && p.IO == nil {
+		return nil
+	}
+	return &pb.CgroupPressure{Cpu: oneWire(p.CPU), Memory: oneWire(p.Memory), Io: oneWire(p.IO)}
+}
+
+func oneWire(p *collector.Pressure) *pb.Pressure {
+	if p == nil {
+		return nil
+	}
+	out := &pb.Pressure{Some: stallWire(p.Some)}
+	if p.Full != nil {
+		out.Full = stallWire(*p.Full)
+	}
+	return out
+}
+
+func stallWire(s collector.PressureStall) *pb.PressureStall {
+	return &pb.PressureStall{Avg10: s.Avg10, Avg60: s.Avg60, Avg300: s.Avg300, TotalUsec: s.TotalUsec}
+}

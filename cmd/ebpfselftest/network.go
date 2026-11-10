@@ -30,7 +30,8 @@ const peerEnv = "PTOP_SELFTEST_PEER"
 const netPayload = 32 << 10
 
 // runPeer is the child side: "echo" serves an echo on a loopback port it
-// prints, "client:<addr>:<n>" sends n bytes to addr and reads until EOF.
+// prints, "client:<addr>:<n>" sends n bytes to addr and reads until EOF, and
+// "burn" spins on a CPU until killed.
 func runPeer(spec string) {
 	switch {
 	case spec == "echo":
@@ -45,6 +46,12 @@ func runPeer(spec string) {
 				os.Exit(0)
 			}
 			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
+		}
+	case spec == "burn":
+		// One thread on a CPU until killed: the saturation case's workload,
+		// in a process of its own so it can be put in a cgroup of its own.
+		for x := uint64(1); ; x = x*1664525 + 1013904223 {
+			_ = x
 		}
 	case strings.HasPrefix(spec, "client:"):
 		rest := strings.TrimPrefix(spec, "client:")

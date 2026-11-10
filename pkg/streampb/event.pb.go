@@ -3023,8 +3023,15 @@ type HostSample struct {
 	// Host-wide steal since the previous sample: the share of all CPU time the
 	// hypervisor gave to someone else. Absent on the first sample, which has no
 	// previous one. On-CPU time can look unchanged while wall time grows under it.
-	StealPct      *float64      `protobuf:"fixed64,1,opt,name=steal_pct,json=stealPct,proto3,oneof" json:"steal_pct,omitempty"`
-	Limits        *CgroupLimits `protobuf:"bytes,2,opt,name=limits,proto3" json:"limits,omitempty"`
+	StealPct *float64      `protobuf:"fixed64,1,opt,name=steal_pct,json=stealPct,proto3,oneof" json:"steal_pct,omitempty"`
+	Limits   *CgroupLimits `protobuf:"bytes,2,opt,name=limits,proto3" json:"limits,omitempty"`
+	// Saturation of the target cgroup (#151): whether the work had to wait for
+	// the CPU its limit allows, and stalled on CPU, memory or I/O. Utilization
+	// says how much was used; these say whether more was wanted. Counters are
+	// cumulative, as the kernel keeps them, so a consumer takes the difference
+	// between two samples, and a sample dropped under backpressure loses no time.
+	Throttling    *CpuThrottling  `protobuf:"bytes,3,opt,name=throttling,proto3" json:"throttling,omitempty"`
+	Pressure      *CgroupPressure `protobuf:"bytes,4,opt,name=pressure,proto3" json:"pressure,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3073,6 +3080,277 @@ func (x *HostSample) GetLimits() *CgroupLimits {
 	return nil
 }
 
+func (x *HostSample) GetThrottling() *CpuThrottling {
+	if x != nil {
+		return x.Throttling
+	}
+	return nil
+}
+
+func (x *HostSample) GetPressure() *CgroupPressure {
+	if x != nil {
+		return x.Pressure
+	}
+	return nil
+}
+
+// CpuThrottling is the target cgroup's CPU bandwidth accounting from cpu.stat,
+// cumulative since the cgroup was created. Absent when the cpu controller is
+// not enabled for the cgroup (the counters exist only with it) or the file
+// cannot be read: unknown, never zero. With the controller and no cpu.max,
+// nr_periods stays 0. These are the cgroup's own quota; an ancestor's throttling
+// stalls its tasks too and shows in pressure, not here.
+type CpuThrottling struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	NrPeriods     uint64                 `protobuf:"varint,1,opt,name=nr_periods,json=nrPeriods,proto3" json:"nr_periods,omitempty"`             // enforcement periods elapsed with runnable tasks
+	NrThrottled   uint64                 `protobuf:"varint,2,opt,name=nr_throttled,json=nrThrottled,proto3" json:"nr_throttled,omitempty"`       // periods in which the quota ran out
+	ThrottledUsec uint64                 `protobuf:"varint,3,opt,name=throttled_usec,json=throttledUsec,proto3" json:"throttled_usec,omitempty"` // time the cgroup spent throttled
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CpuThrottling) Reset() {
+	*x = CpuThrottling{}
+	mi := &file_event_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CpuThrottling) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CpuThrottling) ProtoMessage() {}
+
+func (x *CpuThrottling) ProtoReflect() protoreflect.Message {
+	mi := &file_event_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CpuThrottling.ProtoReflect.Descriptor instead.
+func (*CpuThrottling) Descriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *CpuThrottling) GetNrPeriods() uint64 {
+	if x != nil {
+		return x.NrPeriods
+	}
+	return 0
+}
+
+func (x *CpuThrottling) GetNrThrottled() uint64 {
+	if x != nil {
+		return x.NrThrottled
+	}
+	return 0
+}
+
+func (x *CpuThrottling) GetThrottledUsec() uint64 {
+	if x != nil {
+		return x.ThrottledUsec
+	}
+	return 0
+}
+
+// CgroupPressure is the target cgroup's pressure stall information (PSI). A
+// resource is absent when its file cannot be read: PSI disabled at boot
+// (psi=0), a kernel without it, or cgroup v1. Absent is unknown; a measured
+// zero is a present Pressure with zeros.
+type CgroupPressure struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Cpu           *Pressure              `protobuf:"bytes,1,opt,name=cpu,proto3" json:"cpu,omitempty"`       // cpu.pressure
+	Memory        *Pressure              `protobuf:"bytes,2,opt,name=memory,proto3" json:"memory,omitempty"` // memory.pressure
+	Io            *Pressure              `protobuf:"bytes,3,opt,name=io,proto3" json:"io,omitempty"`         // io.pressure
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CgroupPressure) Reset() {
+	*x = CgroupPressure{}
+	mi := &file_event_proto_msgTypes[29]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CgroupPressure) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CgroupPressure) ProtoMessage() {}
+
+func (x *CgroupPressure) ProtoReflect() protoreflect.Message {
+	mi := &file_event_proto_msgTypes[29]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CgroupPressure.ProtoReflect.Descriptor instead.
+func (*CgroupPressure) Descriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{29}
+}
+
+func (x *CgroupPressure) GetCpu() *Pressure {
+	if x != nil {
+		return x.Cpu
+	}
+	return nil
+}
+
+func (x *CgroupPressure) GetMemory() *Pressure {
+	if x != nil {
+		return x.Memory
+	}
+	return nil
+}
+
+func (x *CgroupPressure) GetIo() *Pressure {
+	if x != nil {
+		return x.Io
+	}
+	return nil
+}
+
+// Pressure is one resource's two PSI lines.
+type Pressure struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Some task in the cgroup stalled on the resource.
+	Some *PressureStall `protobuf:"bytes,1,opt,name=some,proto3" json:"some,omitempty"`
+	// Every non-idle task stalled at once: no progress at all. Absent where the
+	// kernel has no such line.
+	Full          *PressureStall `protobuf:"bytes,2,opt,name=full,proto3" json:"full,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Pressure) Reset() {
+	*x = Pressure{}
+	mi := &file_event_proto_msgTypes[30]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Pressure) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Pressure) ProtoMessage() {}
+
+func (x *Pressure) ProtoReflect() protoreflect.Message {
+	mi := &file_event_proto_msgTypes[30]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Pressure.ProtoReflect.Descriptor instead.
+func (*Pressure) Descriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{30}
+}
+
+func (x *Pressure) GetSome() *PressureStall {
+	if x != nil {
+		return x.Some
+	}
+	return nil
+}
+
+func (x *Pressure) GetFull() *PressureStall {
+	if x != nil {
+		return x.Full
+	}
+	return nil
+}
+
+// PressureStall is one PSI line: the share of time stalled over the last 10,
+// 60 and 300 seconds, as the kernel averages it, and the stalled time since
+// the cgroup was created, cumulative.
+type PressureStall struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Avg10         float64                `protobuf:"fixed64,1,opt,name=avg10,proto3" json:"avg10,omitempty"`   // percent
+	Avg60         float64                `protobuf:"fixed64,2,opt,name=avg60,proto3" json:"avg60,omitempty"`   // percent
+	Avg300        float64                `protobuf:"fixed64,3,opt,name=avg300,proto3" json:"avg300,omitempty"` // percent
+	TotalUsec     uint64                 `protobuf:"varint,4,opt,name=total_usec,json=totalUsec,proto3" json:"total_usec,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PressureStall) Reset() {
+	*x = PressureStall{}
+	mi := &file_event_proto_msgTypes[31]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PressureStall) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PressureStall) ProtoMessage() {}
+
+func (x *PressureStall) ProtoReflect() protoreflect.Message {
+	mi := &file_event_proto_msgTypes[31]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PressureStall.ProtoReflect.Descriptor instead.
+func (*PressureStall) Descriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{31}
+}
+
+func (x *PressureStall) GetAvg10() float64 {
+	if x != nil {
+		return x.Avg10
+	}
+	return 0
+}
+
+func (x *PressureStall) GetAvg60() float64 {
+	if x != nil {
+		return x.Avg60
+	}
+	return 0
+}
+
+func (x *PressureStall) GetAvg300() float64 {
+	if x != nil {
+		return x.Avg300
+	}
+	return 0
+}
+
+func (x *PressureStall) GetTotalUsec() uint64 {
+	if x != nil {
+		return x.TotalUsec
+	}
+	return 0
+}
+
 // CgroupLimits are the cgroup v2 limits of the target's cgroup, each file's
 // content verbatim: "max" means unlimited, and an empty string means the file
 // could not be read (cgroup v1, the root cgroup, a controller not enabled).
@@ -3092,7 +3370,7 @@ type CgroupLimits struct {
 
 func (x *CgroupLimits) Reset() {
 	*x = CgroupLimits{}
-	mi := &file_event_proto_msgTypes[28]
+	mi := &file_event_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3104,7 +3382,7 @@ func (x *CgroupLimits) String() string {
 func (*CgroupLimits) ProtoMessage() {}
 
 func (x *CgroupLimits) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[28]
+	mi := &file_event_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3117,7 +3395,7 @@ func (x *CgroupLimits) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CgroupLimits.ProtoReflect.Descriptor instead.
 func (*CgroupLimits) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{28}
+	return file_event_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *CgroupLimits) GetCgroup() string {
@@ -3177,7 +3455,7 @@ type ProcLifecycleEvent struct {
 
 func (x *ProcLifecycleEvent) Reset() {
 	*x = ProcLifecycleEvent{}
-	mi := &file_event_proto_msgTypes[29]
+	mi := &file_event_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3189,7 +3467,7 @@ func (x *ProcLifecycleEvent) String() string {
 func (*ProcLifecycleEvent) ProtoMessage() {}
 
 func (x *ProcLifecycleEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[29]
+	mi := &file_event_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3202,7 +3480,7 @@ func (x *ProcLifecycleEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcLifecycleEvent.ProtoReflect.Descriptor instead.
 func (*ProcLifecycleEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{29}
+	return file_event_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ProcLifecycleEvent) GetKind() string {
@@ -3272,7 +3550,7 @@ type SecurityEvent struct {
 
 func (x *SecurityEvent) Reset() {
 	*x = SecurityEvent{}
-	mi := &file_event_proto_msgTypes[30]
+	mi := &file_event_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3284,7 +3562,7 @@ func (x *SecurityEvent) String() string {
 func (*SecurityEvent) ProtoMessage() {}
 
 func (x *SecurityEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[30]
+	mi := &file_event_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3297,7 +3575,7 @@ func (x *SecurityEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SecurityEvent.ProtoReflect.Descriptor instead.
 func (*SecurityEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{30}
+	return file_event_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *SecurityEvent) GetKind() string {
@@ -3379,7 +3657,7 @@ type FdEntry struct {
 
 func (x *FdEntry) Reset() {
 	*x = FdEntry{}
-	mi := &file_event_proto_msgTypes[31]
+	mi := &file_event_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3391,7 +3669,7 @@ func (x *FdEntry) String() string {
 func (*FdEntry) ProtoMessage() {}
 
 func (x *FdEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[31]
+	mi := &file_event_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3404,7 +3682,7 @@ func (x *FdEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdEntry.ProtoReflect.Descriptor instead.
 func (*FdEntry) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{31}
+	return file_event_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *FdEntry) GetFd() int32 {
@@ -3465,7 +3743,7 @@ type FdSnapshot struct {
 
 func (x *FdSnapshot) Reset() {
 	*x = FdSnapshot{}
-	mi := &file_event_proto_msgTypes[32]
+	mi := &file_event_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3477,7 +3755,7 @@ func (x *FdSnapshot) String() string {
 func (*FdSnapshot) ProtoMessage() {}
 
 func (x *FdSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[32]
+	mi := &file_event_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3490,7 +3768,7 @@ func (x *FdSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdSnapshot.ProtoReflect.Descriptor instead.
 func (*FdSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{32}
+	return file_event_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *FdSnapshot) GetFds() []*FdEntry {
@@ -3511,7 +3789,7 @@ type FdEvent struct {
 
 func (x *FdEvent) Reset() {
 	*x = FdEvent{}
-	mi := &file_event_proto_msgTypes[33]
+	mi := &file_event_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3523,7 +3801,7 @@ func (x *FdEvent) String() string {
 func (*FdEvent) ProtoMessage() {}
 
 func (x *FdEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[33]
+	mi := &file_event_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3536,7 +3814,7 @@ func (x *FdEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FdEvent.ProtoReflect.Descriptor instead.
 func (*FdEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{33}
+	return file_event_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *FdEvent) GetMessage() string {
@@ -3586,7 +3864,7 @@ type LockEntry struct {
 
 func (x *LockEntry) Reset() {
 	*x = LockEntry{}
-	mi := &file_event_proto_msgTypes[34]
+	mi := &file_event_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3598,7 +3876,7 @@ func (x *LockEntry) String() string {
 func (*LockEntry) ProtoMessage() {}
 
 func (x *LockEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[34]
+	mi := &file_event_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3611,7 +3889,7 @@ func (x *LockEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockEntry.ProtoReflect.Descriptor instead.
 func (*LockEntry) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{34}
+	return file_event_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *LockEntry) GetUaddr() uint64 {
@@ -3686,7 +3964,7 @@ type LockSnapshot struct {
 
 func (x *LockSnapshot) Reset() {
 	*x = LockSnapshot{}
-	mi := &file_event_proto_msgTypes[35]
+	mi := &file_event_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3698,7 +3976,7 @@ func (x *LockSnapshot) String() string {
 func (*LockSnapshot) ProtoMessage() {}
 
 func (x *LockSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[35]
+	mi := &file_event_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3711,7 +3989,7 @@ func (x *LockSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LockSnapshot.ProtoReflect.Descriptor instead.
 func (*LockSnapshot) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{35}
+	return file_event_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *LockSnapshot) GetLocks() []*LockEntry {
@@ -3732,7 +4010,7 @@ type TimelineEvent struct {
 
 func (x *TimelineEvent) Reset() {
 	*x = TimelineEvent{}
-	mi := &file_event_proto_msgTypes[36]
+	mi := &file_event_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3744,7 +4022,7 @@ func (x *TimelineEvent) String() string {
 func (*TimelineEvent) ProtoMessage() {}
 
 func (x *TimelineEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_event_proto_msgTypes[36]
+	mi := &file_event_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3757,7 +4035,7 @@ func (x *TimelineEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TimelineEvent.ProtoReflect.Descriptor instead.
 func (*TimelineEvent) Descriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{36}
+	return file_event_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *TimelineEvent) GetMessage() string {
@@ -4008,13 +4286,35 @@ const file_event_proto_rawDesc = "" +
 	"\tcgroup_id\x18\n" +
 	" \x01(\x04R\bcgroupId\x12\x16\n" +
 	"\x06cgroup\x18\v \x01(\tR\x06cgroup\x12\x1c\n" +
-	"\tcontainer\x18\f \x01(\tR\tcontainer\"k\n" +
+	"\tcontainer\x18\f \x01(\tR\tcontainer\"\xd8\x01\n" +
 	"\n" +
 	"HostSample\x12 \n" +
 	"\tsteal_pct\x18\x01 \x01(\x01H\x00R\bstealPct\x88\x01\x01\x12-\n" +
-	"\x06limits\x18\x02 \x01(\v2\x15.ptop.v1.CgroupLimitsR\x06limitsB\f\n" +
+	"\x06limits\x18\x02 \x01(\v2\x15.ptop.v1.CgroupLimitsR\x06limits\x126\n" +
 	"\n" +
-	"_steal_pct\"\xb1\x01\n" +
+	"throttling\x18\x03 \x01(\v2\x16.ptop.v1.CpuThrottlingR\n" +
+	"throttling\x123\n" +
+	"\bpressure\x18\x04 \x01(\v2\x17.ptop.v1.CgroupPressureR\bpressureB\f\n" +
+	"\n" +
+	"_steal_pct\"x\n" +
+	"\rCpuThrottling\x12\x1d\n" +
+	"\n" +
+	"nr_periods\x18\x01 \x01(\x04R\tnrPeriods\x12!\n" +
+	"\fnr_throttled\x18\x02 \x01(\x04R\vnrThrottled\x12%\n" +
+	"\x0ethrottled_usec\x18\x03 \x01(\x04R\rthrottledUsec\"\x83\x01\n" +
+	"\x0eCgroupPressure\x12#\n" +
+	"\x03cpu\x18\x01 \x01(\v2\x11.ptop.v1.PressureR\x03cpu\x12)\n" +
+	"\x06memory\x18\x02 \x01(\v2\x11.ptop.v1.PressureR\x06memory\x12!\n" +
+	"\x02io\x18\x03 \x01(\v2\x11.ptop.v1.PressureR\x02io\"b\n" +
+	"\bPressure\x12*\n" +
+	"\x04some\x18\x01 \x01(\v2\x16.ptop.v1.PressureStallR\x04some\x12*\n" +
+	"\x04full\x18\x02 \x01(\v2\x16.ptop.v1.PressureStallR\x04full\"r\n" +
+	"\rPressureStall\x12\x14\n" +
+	"\x05avg10\x18\x01 \x01(\x01R\x05avg10\x12\x14\n" +
+	"\x05avg60\x18\x02 \x01(\x01R\x05avg60\x12\x16\n" +
+	"\x06avg300\x18\x03 \x01(\x01R\x06avg300\x12\x1d\n" +
+	"\n" +
+	"total_usec\x18\x04 \x01(\x04R\ttotalUsec\"\xb1\x01\n" +
 	"\fCgroupLimits\x12\x16\n" +
 	"\x06cgroup\x18\x01 \x01(\tR\x06cgroup\x12\x17\n" +
 	"\acpu_max\x18\x02 \x01(\tR\x06cpuMax\x12\x1d\n" +
@@ -4100,7 +4400,7 @@ func file_event_proto_rawDescGZIP() []byte {
 }
 
 var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 37)
+var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 41)
 var file_event_proto_goTypes = []any{
 	(Category)(0),               // 0: ptop.v1.Category
 	(*StackRef)(nil),            // 1: ptop.v1.StackRef
@@ -4131,15 +4431,19 @@ var file_event_proto_goTypes = []any{
 	(*SignalEvent)(nil),         // 26: ptop.v1.SignalEvent
 	(*ProcContext)(nil),         // 27: ptop.v1.ProcContext
 	(*HostSample)(nil),          // 28: ptop.v1.HostSample
-	(*CgroupLimits)(nil),        // 29: ptop.v1.CgroupLimits
-	(*ProcLifecycleEvent)(nil),  // 30: ptop.v1.ProcLifecycleEvent
-	(*SecurityEvent)(nil),       // 31: ptop.v1.SecurityEvent
-	(*FdEntry)(nil),             // 32: ptop.v1.FdEntry
-	(*FdSnapshot)(nil),          // 33: ptop.v1.FdSnapshot
-	(*FdEvent)(nil),             // 34: ptop.v1.FdEvent
-	(*LockEntry)(nil),           // 35: ptop.v1.LockEntry
-	(*LockSnapshot)(nil),        // 36: ptop.v1.LockSnapshot
-	(*TimelineEvent)(nil),       // 37: ptop.v1.TimelineEvent
+	(*CpuThrottling)(nil),       // 29: ptop.v1.CpuThrottling
+	(*CgroupPressure)(nil),      // 30: ptop.v1.CgroupPressure
+	(*Pressure)(nil),            // 31: ptop.v1.Pressure
+	(*PressureStall)(nil),       // 32: ptop.v1.PressureStall
+	(*CgroupLimits)(nil),        // 33: ptop.v1.CgroupLimits
+	(*ProcLifecycleEvent)(nil),  // 34: ptop.v1.ProcLifecycleEvent
+	(*SecurityEvent)(nil),       // 35: ptop.v1.SecurityEvent
+	(*FdEntry)(nil),             // 36: ptop.v1.FdEntry
+	(*FdSnapshot)(nil),          // 37: ptop.v1.FdSnapshot
+	(*FdEvent)(nil),             // 38: ptop.v1.FdEvent
+	(*LockEntry)(nil),           // 39: ptop.v1.LockEntry
+	(*LockSnapshot)(nil),        // 40: ptop.v1.LockSnapshot
+	(*TimelineEvent)(nil),       // 41: ptop.v1.TimelineEvent
 }
 var file_event_proto_depIdxs = []int32{
 	0,  // 0: ptop.v1.Event.category:type_name -> ptop.v1.Category
@@ -4152,10 +4456,10 @@ var file_event_proto_depIdxs = []int32{
 	20, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
 	21, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
 	24, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
-	33, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
-	34, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
-	36, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
-	37, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
+	37, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
+	38, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
+	40, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
+	41, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
 	17, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
 	15, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
 	12, // 16: ptop.v1.Event.net_error:type_name -> ptop.v1.NetErrorEvent
@@ -4163,8 +4467,8 @@ var file_event_proto_depIdxs = []int32{
 	26, // 18: ptop.v1.Event.signal:type_name -> ptop.v1.SignalEvent
 	13, // 19: ptop.v1.Event.tls:type_name -> ptop.v1.TLSPayloadEvent
 	27, // 20: ptop.v1.Event.proc_context:type_name -> ptop.v1.ProcContext
-	30, // 21: ptop.v1.Event.proc_lifecycle:type_name -> ptop.v1.ProcLifecycleEvent
-	31, // 22: ptop.v1.Event.security:type_name -> ptop.v1.SecurityEvent
+	34, // 21: ptop.v1.Event.proc_lifecycle:type_name -> ptop.v1.ProcLifecycleEvent
+	35, // 22: ptop.v1.Event.security:type_name -> ptop.v1.SecurityEvent
 	6,  // 23: ptop.v1.Event.cpu_profile:type_name -> ptop.v1.CpuProfile
 	11, // 24: ptop.v1.Event.net_throughput:type_name -> ptop.v1.NetThroughputSample
 	28, // 25: ptop.v1.Event.host:type_name -> ptop.v1.HostSample
@@ -4175,16 +4479,23 @@ var file_event_proto_depIdxs = []int32{
 	18, // 30: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
 	22, // 31: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
 	23, // 32: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
-	29, // 33: ptop.v1.HostSample.limits:type_name -> ptop.v1.CgroupLimits
-	2,  // 34: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
-	32, // 35: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
-	2,  // 36: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
-	35, // 37: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
-	38, // [38:38] is the sub-list for method output_type
-	38, // [38:38] is the sub-list for method input_type
-	38, // [38:38] is the sub-list for extension type_name
-	38, // [38:38] is the sub-list for extension extendee
-	0,  // [0:38] is the sub-list for field type_name
+	33, // 33: ptop.v1.HostSample.limits:type_name -> ptop.v1.CgroupLimits
+	29, // 34: ptop.v1.HostSample.throttling:type_name -> ptop.v1.CpuThrottling
+	30, // 35: ptop.v1.HostSample.pressure:type_name -> ptop.v1.CgroupPressure
+	31, // 36: ptop.v1.CgroupPressure.cpu:type_name -> ptop.v1.Pressure
+	31, // 37: ptop.v1.CgroupPressure.memory:type_name -> ptop.v1.Pressure
+	31, // 38: ptop.v1.CgroupPressure.io:type_name -> ptop.v1.Pressure
+	32, // 39: ptop.v1.Pressure.some:type_name -> ptop.v1.PressureStall
+	32, // 40: ptop.v1.Pressure.full:type_name -> ptop.v1.PressureStall
+	2,  // 41: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
+	36, // 42: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
+	2,  // 43: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
+	39, // 44: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
+	45, // [45:45] is the sub-list for method output_type
+	45, // [45:45] is the sub-list for method input_type
+	45, // [45:45] is the sub-list for extension type_name
+	45, // [45:45] is the sub-list for extension extendee
+	0,  // [0:45] is the sub-list for field type_name
 }
 
 func init() { file_event_proto_init() }
@@ -4227,7 +4538,7 @@ func file_event_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_proto_rawDesc), len(file_event_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   37,
+			NumMessages:   41,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

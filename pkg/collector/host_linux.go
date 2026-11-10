@@ -165,6 +165,31 @@ func (c *HostCollector) sample() HostSample {
 	}
 	if cg != "" {
 		s.Limits = ReadCgroupLimits(cg)
+		s.Throttling, s.Pressure = readCgroupSaturationAt(cgroupRoot, cg)
 	}
 	return s
+}
+
+// readCgroupSaturationAt reads a cgroup's throttling and PSI (#151). Each is
+// nil when its file is unreadable or carries no such counters.
+func readCgroupSaturationAt(root, cgroup string) (*CPUThrottling, CgroupPressure) {
+	dir := filepath.Join(root, cgroup)
+	var thr *CPUThrottling
+	if b, err := os.ReadFile(filepath.Join(dir, "cpu.stat")); err == nil {
+		if t, ok := parseCPUStat(string(b)); ok {
+			thr = &t
+		}
+	}
+	read := func(name string) *Pressure {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil
+		}
+		p, ok := parsePressure(string(b))
+		if !ok {
+			return nil
+		}
+		return &p
+	}
+	return thr, CgroupPressure{CPU: read("cpu.pressure"), Memory: read("memory.pressure"), IO: read("io.pressure")}
 }

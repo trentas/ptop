@@ -75,11 +75,23 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 					h.GetLimits().GetCgroup() == "/a.slice" && h.GetLimits().GetCpuMax() == "50000 100000" &&
 					h.GetLimits().GetMemoryMax() == "max" && h.GetLimits().GetCpuWeight() == ""
 			}},
+		{"host, saturation", collector.HostSample{Timestamp: time.Unix(4, 0),
+			Throttling: &collector.CPUThrottling{NrPeriods: 25, NrThrottled: 20, ThrottledUsec: 1600000},
+			Pressure: collector.CgroupPressure{CPU: &collector.Pressure{
+				Some: collector.PressureStall{Avg10: 14.12, TotalUsec: 1819065}}}},
+			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
+				h := e.GetHost()
+				thr, cpu := h.GetThrottling(), h.GetPressure().GetCpu()
+				return thr.GetNrPeriods() == 25 && thr.GetNrThrottled() == 20 && thr.GetThrottledUsec() == 1600000 &&
+					cpu.GetSome().GetAvg10() == 14.12 && cpu.GetSome().GetTotalUsec() == 1819065 && cpu.GetFull() == nil &&
+					h.GetPressure().GetMemory() == nil && h.GetPressure().GetIo() == nil
+			}},
 		{"host, first sample", collector.HostSample{Timestamp: time.Unix(4, 0)},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
 				// No previous sample: steal is absent, not 0; no cgroup read: no limits.
 				h := e.GetHost()
-				return h != nil && h.StealPct == nil && h.GetLimits() == nil
+				return h != nil && h.StealPct == nil && h.GetLimits() == nil &&
+					h.GetThrottling() == nil && h.GetPressure() == nil
 			}},
 		{"io_wait", collector.IOWaitSample{Pct: 12.5, Timestamp: time.Unix(2, 0)},
 			pb.Category_CATEGORY_IO, func(e *pb.Event) bool { return e.GetIoWait().GetPct() == 12.5 }},
