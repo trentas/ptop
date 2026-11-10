@@ -86,6 +86,7 @@ func suite() []selfCase {
 		{"threads", "a sleep still going on counts in its window; a preempted thread waits in the run queue, not off-CPU (#150)", checkThreads},
 		{"io", "blocking reads land in their latency bucket; writes and unlinks are seen on every CPU (#159)", checkIO},
 		{"restart", "a read or futex wait the kernel re-runs after a signal counts once; one that returned EINTR counts apart (#160, #164)", checkRestart},
+		{"saturation", "a burner capped at 20% CPU is throttled and stalls; lifting the cap shows mid-capture (#151, #153)", checkSaturation},
 		{"net", "socket ownership and bytes, against a peer in another process (#135, #142)", checkNetwork},
 		{"blind", "a probe switched off says disabled, one that cannot attach says failed (#112)", checkBlind},
 	}

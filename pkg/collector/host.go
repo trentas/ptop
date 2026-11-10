@@ -87,6 +87,119 @@ type HostSample struct {
 	StealPct   float64
 	StealKnown bool
 	Limits     CgroupLimits
+	// Saturation of the target cgroup (#151), cumulative as the kernel keeps
+	// it. nil is unreadable: no cpu controller for the cgroup, PSI off.
+	Throttling *CPUThrottling
+	Pressure   CgroupPressure
+}
+
+// CPUThrottling is cpu.stat's bandwidth accounting, cumulative.
+type CPUThrottling struct {
+	NrPeriods     uint64
+	NrThrottled   uint64
+	ThrottledUsec uint64
+}
+
+// CgroupPressure is the cgroup's PSI per resource; nil is unreadable.
+type CgroupPressure struct {
+	CPU, Memory, IO *Pressure
+}
+
+// Pressure is one PSI file. Full is nil where the kernel has no such line.
+type Pressure struct {
+	Some PressureStall
+	Full *PressureStall
+}
+
+// PressureStall is one PSI line: percent stalled over 10s, 60s and 300s, and
+// the stalled time since the cgroup was created.
+type PressureStall struct {
+	Avg10, Avg60, Avg300 float64
+	TotalUsec            uint64
+}
+
+// parseCPUStat reads the bandwidth counters of a cgroup's cpu.stat. They are
+// there only when the cpu controller is enabled for the cgroup, so their
+// absence is reported as such (ok false), not as zeros.
+func parseCPUStat(text string) (CPUThrottling, bool) {
+	var t CPUThrottling
+	seen := 0
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.Fields(line)
+		if len(f) != 2 {
+			continue
+		}
+		v, err := strconv.ParseUint(f[1], 10, 64)
+		if err != nil {
+			continue
+		}
+		switch f[0] {
+		case "nr_periods":
+			t.NrPeriods = v
+		case "nr_throttled":
+			t.NrThrottled = v
+		case "throttled_usec":
+			t.ThrottledUsec = v
+		default:
+			continue
+		}
+		seen++
+	}
+	return t, seen == 3
+}
+
+// parsePressure reads a PSI file: a "some" line, and a "full" line where the
+// kernel has one.
+func parsePressure(text string) (Pressure, bool) {
+	var p Pressure
+	haveSome := false
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 0 {
+			continue
+		}
+		st, ok := parsePressureStall(f[1:])
+		if !ok {
+			return Pressure{}, false
+		}
+		switch f[0] {
+		case "some":
+			p.Some, haveSome = st, true
+		case "full":
+			full := st
+			p.Full = &full
+		}
+	}
+	return p, haveSome
+}
+
+func parsePressureStall(kvs []string) (PressureStall, bool) {
+	var st PressureStall
+	seen := 0
+	for _, kv := range kvs {
+		k, v, ok := strings.Cut(kv, "=")
+		if !ok {
+			return st, false
+		}
+		var err error
+		switch k {
+		case "avg10":
+			st.Avg10, err = strconv.ParseFloat(v, 64)
+		case "avg60":
+			st.Avg60, err = strconv.ParseFloat(v, 64)
+		case "avg300":
+			st.Avg300, err = strconv.ParseFloat(v, 64)
+		case "total":
+			st.TotalUsec, err = strconv.ParseUint(v, 10, 64)
+		default:
+			continue
+		}
+		if err != nil {
+			return st, false
+		}
+		seen++
+	}
+	return st, seen == 4
 }
 
 // cgroupRoot is the cgroup-v2 unified mount point: the cgroup path the kernel

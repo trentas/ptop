@@ -68,3 +68,26 @@ func TestHostCollectorSamples(t *testing.T) {
 		t.Errorf("second sample steal = %v (%v)", second.StealPct, second.StealKnown)
 	}
 }
+
+func TestReadCgroupSaturationAbsentIsUnknown(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "a.slice")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("cpu.stat", "usage_usec 10\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\n")
+	write("cpu.pressure", "some avg10=0.00 avg60=0.00 avg300=0.00 total=0\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n")
+	// memory.pressure and io.pressure missing: PSI unreadable for them.
+	thr, p := readCgroupSaturationAt(root, "/a.slice")
+	if thr == nil || *thr != (CPUThrottling{}) {
+		t.Errorf("a quota-less cgroup with the cpu controller: throttling %+v, want present and zero", thr)
+	}
+	if p.CPU == nil || p.CPU.Full == nil || p.Memory != nil || p.IO != nil {
+		t.Errorf("pressure = cpu %+v, memory %+v, io %+v; want cpu only", p.CPU, p.Memory, p.IO)
+	}
+}

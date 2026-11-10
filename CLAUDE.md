@@ -196,7 +196,7 @@ ptop/
 │       ├── proccontext_linux.go   /proc ns + cgroup + uid/gid context (#60)
 │       ├── proccontext.go         container-id / cgroup / ns-inode parsers (build-tag-free)
 │       ├── host.go                host context types + cpuinfo/steal parsers (#153, build-tag-free)
-│       ├── host_linux.go          ReadHostInfo, cgroup limits, HostCollector (steal + limits each second)
+│       ├── host_linux.go          ReadHostInfo, cgroup limits, HostCollector (steal, limits, throttling, PSI each second)
 │       ├── proclifecycle_ebpf.go  sched fork/exec/exit → exec lineage subtree (#60)
 │       ├── proclifecycle_decode.go  kind/comm/filename decode (build-tag-free)
 │       ├── security_ebpf.go       PROT_EXEC mmap/mprotect + LSM denials (#59)
@@ -959,8 +959,12 @@ main.apiKey=...`) lands among the others. It is absent in cgroup mode: a subtree
 has no one binary. Both modes carry the machine (`host`, read once) and the
 target cgroup's limits (`limits`, read per subscriber), #153. The limits and
 host steal change at runtime, so `HostCollector` publishes them every second as
-a `HostSample`. That collector, like `ProcContext`, is context and has no
-`--disable` name. The selftest's `blind` case lets both through.
+a `HostSample`. The sample also carries the cgroup's saturation (#151):
+`cpu.stat` throttling and PSI. These are cumulative counters, so a dropped
+sample loses no time, and each part is absent when unreadable. That collector,
+like `ProcContext`, is context and has no `--disable` name. The selftest's
+`blind` case lets both through. Its `saturation` case caps a burner process at
+20% in a cgroup of its own, then lifts the cap mid-capture.
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
 streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of

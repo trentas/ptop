@@ -241,7 +241,8 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		// measured under (#153).
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = pb.Category_CATEGORY_PROCESS
-		hs := &pb.HostSample{Limits: limitsWire(x.Limits)}
+		hs := &pb.HostSample{Limits: limitsWire(x.Limits), Throttling: throttlingWire(x.Throttling),
+			Pressure: pressureWire(x.Pressure)}
 		if x.StealKnown {
 			hs.StealPct = &x.StealPct
 		}

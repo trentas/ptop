@@ -685,6 +685,16 @@ lowered `cpu.max`, moves every CPU number and most latencies without a line of
 code changing. Two things change while a capture runs: steal on a VM, and limits
 under an in-place pod resize. So a `HostSample` event carries them every second.
 
+The same sample carries the target cgroup's **saturation** (#151):
+- `throttling`: the CPU bandwidth counters from `cpu.stat` (`nr_periods`, `nr_throttled`, `throttled_usec`);
+- `pressure`: PSI for cpu, memory and io (`some` and `full`, avg10/60/300 and the stalled total).
+
+Utilization says how much CPU was used; saturation says whether more was wanted. A good average with a bad p99 inside a container is usually throttling under `cpu.max`.
+
+The counters are cumulative, as the kernel keeps them. Take the difference between two samples, and a sample dropped under backpressure loses no time.
+
+A file that cannot be read leaves its part absent: no cpu controller for the cgroup, or PSI off (`psi=0`, cgroup v1). A measured zero is present with zeros, so the two never look alike.
+
 arm64 has no CPU flag for virtualization, so its verdict there is unknown unless
 `/sys/hypervisor` says otherwise. The hostname, instance id, and DMI serial and
 UUID are never read: a comparison needs the hardware class, not which machine it
@@ -720,7 +730,7 @@ envelope):
 | `IO` | `FSEvent` | filesystem semantics: permission denials, deletes, renames (real paths) |
 | `SIGNAL` | `SignalEvent` | signals delivered to the target, with the sending process |
 | `PROCESS` | `ProcContext` | namespace + cgroup + uid/gid (container/execution context) |
-| `PROCESS` | `HostSample` | host steal per second, and the target cgroup's limits re-read (#153) |
+| `PROCESS` | `HostSample` | host steal per second; the target cgroup's limits re-read (#153), its CPU throttling and its PSI for cpu, memory and io (#151) |
 | `PROCESS` | `ProcLifecycleEvent` | exec lineage: fork/exec/exit across the descendant subtree |
 | `SECURITY` | `SecurityEvent` | runtime PROT_EXEC mappings (JIT/RWX), SELinux LSM denials |
 

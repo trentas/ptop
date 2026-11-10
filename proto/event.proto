@@ -586,6 +586,54 @@ message HostSample {
   // previous one. On-CPU time can look unchanged while wall time grows under it.
   optional double steal_pct = 1;
   CgroupLimits limits = 2;
+  // Saturation of the target cgroup (#151): whether the work had to wait for
+  // the CPU its limit allows, and stalled on CPU, memory or I/O. Utilization
+  // says how much was used; these say whether more was wanted. Counters are
+  // cumulative, as the kernel keeps them, so a consumer takes the difference
+  // between two samples, and a sample dropped under backpressure loses no time.
+  CpuThrottling throttling = 3;
+  CgroupPressure pressure = 4;
+}
+
+// CpuThrottling is the target cgroup's CPU bandwidth accounting from cpu.stat,
+// cumulative since the cgroup was created. Absent when the cpu controller is
+// not enabled for the cgroup (the counters exist only with it) or the file
+// cannot be read: unknown, never zero. With the controller and no cpu.max,
+// nr_periods stays 0. These are the cgroup's own quota; an ancestor's throttling
+// stalls its tasks too and shows in pressure, not here.
+message CpuThrottling {
+  uint64 nr_periods = 1; // enforcement periods elapsed with runnable tasks
+  uint64 nr_throttled = 2; // periods in which the quota ran out
+  uint64 throttled_usec = 3; // time the cgroup spent throttled
+}
+
+// CgroupPressure is the target cgroup's pressure stall information (PSI). A
+// resource is absent when its file cannot be read: PSI disabled at boot
+// (psi=0), a kernel without it, or cgroup v1. Absent is unknown; a measured
+// zero is a present Pressure with zeros.
+message CgroupPressure {
+  Pressure cpu = 1; // cpu.pressure
+  Pressure memory = 2; // memory.pressure
+  Pressure io = 3; // io.pressure
+}
+
+// Pressure is one resource's two PSI lines.
+message Pressure {
+  // Some task in the cgroup stalled on the resource.
+  PressureStall some = 1;
+  // Every non-idle task stalled at once: no progress at all. Absent where the
+  // kernel has no such line.
+  PressureStall full = 2;
+}
+
+// PressureStall is one PSI line: the share of time stalled over the last 10,
+// 60 and 300 seconds, as the kernel averages it, and the stalled time since
+// the cgroup was created, cumulative.
+message PressureStall {
+  double avg10 = 1; // percent
+  double avg60 = 2; // percent
+  double avg300 = 3; // percent
+  uint64 total_usec = 4;
 }
 
 // CgroupLimits are the cgroup v2 limits of the target's cgroup, each file's
