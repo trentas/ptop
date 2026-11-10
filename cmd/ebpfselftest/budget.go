@@ -62,8 +62,8 @@ func checkBudget(g *grader, pid int) {
 			lastHeap = time.Now()
 		case collector.CaptureCost:
 			for _, p := range x.Probes {
-				if p.Probe == collector.SubsystemHeap && p.OverheadKnown {
-					overheads = append(overheads, p.OverheadPct)
+				if p.Probe == collector.SubsystemHeap && p.TargetShareKnown {
+					overheads = append(overheads, p.TargetSharePct)
 				}
 			}
 			if !stopped.IsZero() && x.Timestamp.After(stopped.Add(1500*time.Millisecond)) && x.PtopKnown {

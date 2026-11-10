@@ -3690,8 +3690,11 @@ func (x *CaptureCost) GetProbes() []*ProbeCost {
 //	(entries + returns) × program_ns + entries × trap_entry_ns
 //	  + returns × trap_return_ns
 //
-// program_ns is measured in the kernel, on one hit in 64. The trap costs are
-// calibrated on this host when the capture starts, and calibration says how;
+// program_ns is measured in the kernel, on one hit in 64. The entry trap is
+// calibrated on this host when the capture starts, and calibration says how.
+// The return trap is not: timing a uretprobe means one on Go code, which breaks
+// the Go runtime's stack walks, so trap_return_ns is 0 and the libc lane's
+// estimate is a floor by it (the Go lane has no uretprobe);
 // when it failed, they are 0, calibration says why, and the estimate is the
 // program time alone: a floor.
 type ProbeCost struct {
@@ -3702,16 +3705,18 @@ type ProbeCost struct {
 	Returns      uint64                 `protobuf:"varint,4,opt,name=returns,proto3" json:"returns,omitempty"`                                  // uretprobe hits in the window
 	ProgramNs    float64                `protobuf:"fixed64,5,opt,name=program_ns,json=programNs,proto3" json:"program_ns,omitempty"`            // mean program time per hit
 	TrapEntryNs  float64                `protobuf:"fixed64,6,opt,name=trap_entry_ns,json=trapEntryNs,proto3" json:"trap_entry_ns,omitempty"`    // a uprobe's trap, calibrated
-	TrapReturnNs float64                `protobuf:"fixed64,7,opt,name=trap_return_ns,json=trapReturnNs,proto3" json:"trap_return_ns,omitempty"` // a uretprobe's extra trap, calibrated
+	TrapReturnNs float64                `protobuf:"fixed64,7,opt,name=trap_return_ns,json=trapReturnNs,proto3" json:"trap_return_ns,omitempty"` // a uretprobe's extra trap: not calibrated, 0 (see above)
 	Calibration  string                 `protobuf:"bytes,8,opt,name=calibration,proto3" json:"calibration,omitempty"`
-	// The estimate as a share of the target's own CPU in the window (its CPU
-	// minus the estimate): how much more CPU the target used because of the
-	// probe. The unit of the README's cost table and of --overhead-budget.
-	// Absent when the target's CPU in the window was not more than the estimate,
-	// since /proc counts it in 10ms ticks.
-	OverheadPct   *float64 `protobuf:"fixed64,9,opt,name=overhead_pct,json=overheadPct,proto3,oneof" json:"overhead_pct,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The estimate as a share of the target's CPU in the window, its probe time
+	// included: 0-100, capped at 100 where the estimate and /proc's 10ms ticks
+	// disagree near the top. What --overhead-budget compares against. Absent
+	// when the target used under 50ms of CPU in the window: too few ticks to
+	// weigh. Not the README table's overhead (extra CPU over the target's own
+	// work): a share s is an overhead of s/(1-s), and only the share stays
+	// defined as the probe takes the target over.
+	TargetSharePct *float64 `protobuf:"fixed64,9,opt,name=target_share_pct,json=targetSharePct,proto3,oneof" json:"target_share_pct,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *ProbeCost) Reset() {
@@ -3800,9 +3805,9 @@ func (x *ProbeCost) GetCalibration() string {
 	return ""
 }
 
-func (x *ProbeCost) GetOverheadPct() float64 {
-	if x != nil && x.OverheadPct != nil {
-		return *x.OverheadPct
+func (x *ProbeCost) GetTargetSharePct() float64 {
+	if x != nil && x.TargetSharePct != nil {
+		return *x.TargetSharePct
 	}
 	return 0
 }
@@ -4787,7 +4792,7 @@ const file_event_proto_rawDesc = "" +
 	"\fptop_cpu_pct\x18\x01 \x01(\x01H\x00R\n" +
 	"ptopCpuPct\x88\x01\x01\x12*\n" +
 	"\x06probes\x18\x02 \x03(\v2\x12.ptop.v1.ProbeCostR\x06probesB\x0f\n" +
-	"\r_ptop_cpu_pct\"\xbc\x02\n" +
+	"\r_ptop_cpu_pct\"\xc7\x02\n" +
 	"\tProbeCost\x12\x14\n" +
 	"\x05probe\x18\x01 \x01(\tR\x05probe\x12!\n" +
 	"\festimate_pct\x18\x02 \x01(\x01R\vestimatePct\x12\x18\n" +
@@ -4797,9 +4802,9 @@ const file_event_proto_rawDesc = "" +
 	"program_ns\x18\x05 \x01(\x01R\tprogramNs\x12\"\n" +
 	"\rtrap_entry_ns\x18\x06 \x01(\x01R\vtrapEntryNs\x12$\n" +
 	"\x0etrap_return_ns\x18\a \x01(\x01R\ftrapReturnNs\x12 \n" +
-	"\vcalibration\x18\b \x01(\tR\vcalibration\x12&\n" +
-	"\foverhead_pct\x18\t \x01(\x01H\x00R\voverheadPct\x88\x01\x01B\x0f\n" +
-	"\r_overhead_pct\"\xb1\x01\n" +
+	"\vcalibration\x18\b \x01(\tR\vcalibration\x12-\n" +
+	"\x10target_share_pct\x18\t \x01(\x01H\x00R\x0etargetSharePct\x88\x01\x01B\x13\n" +
+	"\x11_target_share_pct\"\xb1\x01\n" +
 	"\fCgroupLimits\x12\x16\n" +
 	"\x06cgroup\x18\x01 \x01(\tR\x06cgroup\x12\x17\n" +
 	"\acpu_max\x18\x02 \x01(\tR\x06cpuMax\x12\x1d\n" +

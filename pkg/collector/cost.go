@@ -36,9 +36,10 @@ type CaptureCost struct {
 //
 //	(Entries + Returns) × ProgramNs + Entries × TrapEntryNs + Returns × TrapReturnNs
 //
-// ProgramNs is measured in the kernel on one hit in 64; the trap costs are
-// calibrated on this host at startup (Calibration says how). An estimate,
-// published with its basis, not a measured overhead.
+// ProgramNs is measured in the kernel on one hit in 64; the entry trap is
+// calibrated on this host at startup (Calibration says how). TrapReturnNs is 0:
+// timing a uretprobe would mean one on Go code (see bpf.UprobeTrapCost). An
+// estimate, published with its basis, not a measured overhead.
 type ProbeCost struct {
 	Probe                     string
 	EstimatePct               float64
@@ -46,13 +47,18 @@ type ProbeCost struct {
 	ProgramNs                 float64
 	TrapEntryNs, TrapReturnNs float64
 	Calibration               string
-	// OverheadPct is the estimate as a share of the target's own CPU in the
-	// window (its CPU minus the estimate): how much more CPU the target used
-	// because of the probe, the unit of the README's cost table and of
-	// --overhead-budget. OverheadKnown is false when the target's CPU in the
-	// window is not more than the estimate (/proc counts in 10ms ticks).
-	OverheadPct   float64
-	OverheadKnown bool
+	// TargetSharePct is the estimate as a share of the target's CPU in the
+	// window, its probe time included: 0-100, capped at 100 where the estimate
+	// and /proc's 10ms ticks disagree near the top. It is what
+	// --overhead-budget compares against. TargetShareKnown is false when the
+	// target used under minTargetCPU in the window: too few ticks to weigh.
+	//
+	// It is not the README table's overhead (the extra CPU over the target's
+	// own work): a share s is an overhead of s/(1-s), so 5% is ~5.3% and 50%
+	// is 100%. The overhead runs to infinity as the probe takes over; a
+	// share stays defined right up to the case a budget exists for.
+	TargetSharePct   float64
+	TargetShareKnown bool
 }
 
 // ProbeChange is a probe whose state changed in the middle of a capture
@@ -68,6 +74,10 @@ type ProbeChange struct {
 // --overhead-budget before the probe is detached: one window over is a
 // burst, three is the workload.
 const budgetWindows = 3
+
+// minTargetCPU is the least target CPU in a window worth weighing the probe
+// against: five of /proc's 10ms ticks.
+const minTargetCPU = 50 * time.Millisecond
 
 // CostSource is a probe whose hits CostCollector can read. The heap collector
 // is the only one: every other probe fires on kernel events and costs nothing
@@ -117,8 +127,8 @@ func NewCostCollector(sources map[string]CostSource) *CostCollector {
 	}
 }
 
-// WithBudget makes the collector detach a probe whose estimated overhead stays
-// above pct of the target's own CPU for budgetWindows windows in a row (#154).
+// WithBudget makes the collector detach a probe whose estimated cost stays
+// above pct of the target's CPU for budgetWindows windows in a row (#154).
 // detach stops it and records why; on success the collector stops estimating
 // it and publishes a ProbeChange.
 func (c *CostCollector) WithBudget(pct float64, detach func(name, reason string) error) *CostCollector {
@@ -170,7 +180,9 @@ func (c *CostCollector) calibrate() {
 		return
 	}
 	c.trap = trap
-	c.calibration = fmt.Sprintf("empty uprobe and uretprobe on a ptop function, %d calls, fastest of 5 rounds", trap.Calls)
+	c.calibration = fmt.Sprintf("entry trap: an empty uprobe on a ptop function, %d calls, fastest of 5 rounds. "+
+		"The return trap of a uretprobe is not calibrated (a uretprobe on Go code breaks its stack walks), "+
+		"so on the libc lane the estimate leaves it out: a floor", trap.Calls)
 }
 
 func (c *CostCollector) sample(now time.Time) (CaptureCost, []ProbeChange) {
@@ -210,8 +222,8 @@ func (c *CostCollector) sample(now time.Time) (CaptureCost, []ProbeChange) {
 			continue
 		}
 		p := c.estimate(name, prev, cur, window)
-		if est := p.EstimatePct / 100 * float64(window); targetKnown && targetNs > est {
-			p.OverheadPct, p.OverheadKnown = est/(targetNs-est)*100, true
+		if est := p.EstimatePct / 100 * float64(window); targetKnown && targetNs >= float64(minTargetCPU) {
+			p.TargetSharePct, p.TargetShareKnown = min(est/targetNs*100, 100), true
 		}
 		out.Probes = append(out.Probes, p)
 		if ch, ok := c.budget(p, now); ok {
@@ -223,12 +235,12 @@ func (c *CostCollector) sample(now time.Time) (CaptureCost, []ProbeChange) {
 }
 
 // budget counts a probe's windows over --overhead-budget and detaches it after
-// budgetWindows in a row. A window whose overhead is unknown breaks the run.
+// budgetWindows in a row. A window whose share is unknown breaks the run.
 func (c *CostCollector) budget(p ProbeCost, now time.Time) (ProbeChange, bool) {
 	if c.budgetPct <= 0 || c.detach == nil {
 		return ProbeChange{}, false
 	}
-	if !p.OverheadKnown || p.OverheadPct <= c.budgetPct {
+	if !p.TargetShareKnown || p.TargetSharePct <= c.budgetPct {
 		c.over[p.Probe] = 0
 		return ProbeChange{}, false
 	}
@@ -237,7 +249,7 @@ func (c *CostCollector) budget(p ProbeCost, now time.Time) (ProbeChange, bool) {
 		return ProbeChange{}, false
 	}
 	reason := fmt.Sprintf("detached by --overhead-budget %.4g%%: estimated at %.1f%% of the target's CPU for %d windows in a row",
-		c.budgetPct, p.OverheadPct, budgetWindows)
+		c.budgetPct, p.TargetSharePct, budgetWindows)
 	if err := c.detach(p.Probe, reason); err != nil {
 		return ProbeChange{}, false
 	}

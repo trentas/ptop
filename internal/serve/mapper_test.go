@@ -82,11 +82,11 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				p := e.GetProbeChange()
 				return p.GetName() == "heap" && p.GetState() == pb.ProbeState_PROBE_STATE_DISABLED && p.GetDetail() == "budget"
 			}},
-		{"capture_cost with overhead", collector.CaptureCost{Timestamp: time.Unix(6, 0),
-			Probes: []collector.ProbeCost{{Probe: "heap", OverheadPct: 42, OverheadKnown: true}, {Probe: "x"}}},
+		{"capture_cost with the target share", collector.CaptureCost{Timestamp: time.Unix(6, 0),
+			Probes: []collector.ProbeCost{{Probe: "heap", TargetSharePct: 42, TargetShareKnown: true}, {Probe: "x"}}},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
 				ps := e.GetCaptureCost().GetProbes()
-				return len(ps) == 2 && ps[0].OverheadPct != nil && ps[0].GetOverheadPct() == 42 && ps[1].OverheadPct == nil
+				return len(ps) == 2 && ps[0].TargetSharePct != nil && ps[0].GetTargetSharePct() == 42 && ps[1].TargetSharePct == nil
 			}},
 		{"capture_cost, first sample", collector.CaptureCost{Timestamp: time.Unix(6, 0)},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {

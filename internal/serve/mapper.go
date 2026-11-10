@@ -258,8 +258,8 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 				ProgramNs: p.ProgramNs, TrapEntryNs: p.TrapEntryNs, TrapReturnNs: p.TrapReturnNs,
 				Calibration: p.Calibration,
 			}
-			if p.OverheadKnown {
-				pc.OverheadPct = &p.OverheadPct
+			if p.TargetShareKnown {
+				pc.TargetSharePct = &p.TargetSharePct
 			}
 			cc.Probes = append(cc.Probes, pc)
 		}

@@ -329,7 +329,7 @@ eBPF programs in `internal/bpf/programs/`:
 - `futex.bpf.c` — wait/wake → lock graph; `signal:signal_deliver` settles a wait a signal stopped (#164)
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
-- `calib.bpf.c` — two empty programs: a uprobe's trap cost, calibrated on the host at startup (#154)
+- `calib.bpf.c` — an empty uprobe: the trap cost, calibrated on the host at startup (#154)
 - `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume),
   stack sampled by bytes allocated
 
@@ -402,12 +402,15 @@ ptop --pid <PID> --disable heap
 - **Where the terms come from:**
   - **hits:** counted in the kernel;
   - **program time:** timed there on one hit in 64;
-  - **trap costs:** calibrated on the host when the capture starts. An empty
-    uprobe and uretprobe go on a function of ptop's own, and calls are timed
-    against calls with nothing attached.
+  - **trap cost:** the entry trap is calibrated on the host when the capture
+    starts. An empty uprobe goes on a function of ptop's own, and calls are
+    timed against calls with nothing attached. A uretprobe's return trap is not
+    calibrated, because a uretprobe on Go code breaks the Go runtime's stack
+    walks. The libc lane's estimate leaves it out, so it is a floor there; the
+    Go lane has no uretprobe.
 - **Why calibrate:** the trap is most of a hit: on the reference arm64 VM,
   ~485ns of a ~530ns hit. It differs by CPU and kernel by more than a constant
-  could cover.
+  could cover: ~2µs on a CI amd64 runner with the same kernel.
 - **How close it gets:** the selftest's `cost` case compares the estimate with
   what an allocation costs a thread with the probe attached, by that thread's own
   CPU clock. The estimate lands at 0.87–0.89× of the measured cost.
@@ -416,8 +419,11 @@ The table above is the expectation before the capture. The estimate is what
 the capture itself is costing.
 
 **`--overhead-budget <pct>` acts on it**, and is off unless you ask for it.
-- **The unit** is the table's: the estimate as a share of the target's own CPU
-  in the window (`overhead_pct` on the estimate).
+- **The unit** is the estimate as a share of the target's CPU in the window,
+  probe time included (`target_share_pct` on the estimate, 0–100). It is not
+  quite the table's overhead: a share `s` is an overhead of `s/(1−s)`, so 5% is
+  ~5.3% and 50% is +100%. The overhead has no value once the probe is most of
+  what the target does, and that is the case a budget is for.
 - **When it acts:** once the estimate stays above the budget for three windows
   in a row, ptop detaches the heap probe. Sampling does not remove the uprobe
   trap, so detaching is the only remedy.

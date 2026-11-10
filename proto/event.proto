@@ -721,8 +721,11 @@ message CaptureCost {
 //   (entries + returns) × program_ns + entries × trap_entry_ns
 //     + returns × trap_return_ns
 //
-// program_ns is measured in the kernel, on one hit in 64. The trap costs are
-// calibrated on this host when the capture starts, and calibration says how;
+// program_ns is measured in the kernel, on one hit in 64. The entry trap is
+// calibrated on this host when the capture starts, and calibration says how.
+// The return trap is not: timing a uretprobe means one on Go code, which breaks
+// the Go runtime's stack walks, so trap_return_ns is 0 and the libc lane's
+// estimate is a floor by it (the Go lane has no uretprobe);
 // when it failed, they are 0, calibration says why, and the estimate is the
 // program time alone: a floor.
 message ProbeCost {
@@ -732,14 +735,16 @@ message ProbeCost {
   uint64 returns = 4; // uretprobe hits in the window
   double program_ns = 5; // mean program time per hit
   double trap_entry_ns = 6; // a uprobe's trap, calibrated
-  double trap_return_ns = 7; // a uretprobe's extra trap, calibrated
+  double trap_return_ns = 7; // a uretprobe's extra trap: not calibrated, 0 (see above)
   string calibration = 8;
-  // The estimate as a share of the target's own CPU in the window (its CPU
-  // minus the estimate): how much more CPU the target used because of the
-  // probe. The unit of the README's cost table and of --overhead-budget.
-  // Absent when the target's CPU in the window was not more than the estimate,
-  // since /proc counts it in 10ms ticks.
-  optional double overhead_pct = 9;
+  // The estimate as a share of the target's CPU in the window, its probe time
+  // included: 0-100, capped at 100 where the estimate and /proc's 10ms ticks
+  // disagree near the top. What --overhead-budget compares against. Absent
+  // when the target used under 50ms of CPU in the window: too few ticks to
+  // weigh. Not the README table's overhead (extra CPU over the target's own
+  // work): a share s is an overhead of s/(1-s), and only the share stays
+  // defined as the probe takes the target over.
+  optional double target_share_pct = 9;
 }
 
 // CgroupLimits are the cgroup v2 limits of the target's cgroup, each file's

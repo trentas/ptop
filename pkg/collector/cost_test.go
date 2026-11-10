@@ -81,10 +81,10 @@ func TestOverheadBudgetDetachesAfterThreeWindows(t *testing.T) {
 		target += time.Duration(targetMs) * time.Millisecond
 		return c.sample(t0.Add(time.Duration(i) * time.Second))
 	}
-	// 200k hits × 500ns = 100ms of a 300ms target: 50% overhead, over 10%.
+	// 200k hits × 500ns = 100ms of a 300ms target: a third of it, over 10%.
 	cc, ch := step(1, 200_000, 300)
-	if p := cc.Probes[0]; !p.OverheadKnown || p.OverheadPct < 49.9 || p.OverheadPct > 50.1 || len(ch) != 0 {
-		t.Fatalf("window 1: overhead %v (%v), changes %v", p.OverheadPct, p.OverheadKnown, ch)
+	if p := cc.Probes[0]; !p.TargetShareKnown || p.TargetSharePct < 33.3 || p.TargetSharePct > 33.4 || len(ch) != 0 {
+		t.Fatalf("window 1: share %v (%v), changes %v", p.TargetSharePct, p.TargetShareKnown, ch)
 	}
 	step(2, 200_000, 300)
 	// Back under the budget: 2k hits = 1ms of a 300ms target.
@@ -103,22 +103,52 @@ func TestOverheadBudgetDetachesAfterThreeWindows(t *testing.T) {
 	}
 }
 
-// A target whose CPU in the window is no more than the estimate (ticks of 10ms)
-// gives no overhead, and an unknown overhead never counts toward the budget.
-func TestOverheadUnknownDoesNotCount(t *testing.T) {
+// A target that used under minTargetCPU in the window has too few ticks to
+// weigh the probe against: the share is unknown, and an unknown share never
+// counts toward the budget.
+func TestTargetShareUnknownDoesNotCount(t *testing.T) {
 	src := &fakeCostSource{}
 	c := NewCostCollector(map[string]CostSource{"heap": src}).WithBudget(1, func(string, string) error {
 		t.Fatal("detached on an unknown overhead")
 		return nil
 	})
 	c.trap = bpf.UprobeTrapCost{EntryNs: 500}
-	c.targetCPU = func() (time.Duration, bool) { return 0, true }
+	var target time.Duration
+	c.targetCPU = func() (time.Duration, bool) { return target, true }
 	c.sample(time.Unix(100, 0))
 	for i := 1; i <= 5; i++ {
 		src.c.Entries += 200_000
+		target += 40 * time.Millisecond // four ticks: under minTargetCPU
 		cc, _ := c.sample(time.Unix(100+int64(i), 0))
-		if cc.Probes[0].OverheadKnown {
-			t.Fatalf("window %d: overhead known with no target CPU", i)
+		if cc.Probes[0].TargetShareKnown {
+			t.Fatalf("window %d: share known on 40ms of target CPU", i)
 		}
+	}
+}
+
+// The case the budget exists for: the probe is nearly all the target does, and
+// the estimate, a little high, exceeds what /proc counted. The share is capped
+// at 100 and counts, where an overhead s/(1-s) would have had no value at all.
+func TestTargetShareCapsAtTheTop(t *testing.T) {
+	src := &fakeCostSource{}
+	detached := 0
+	c := NewCostCollector(map[string]CostSource{"heap": src}).WithBudget(5, func(string, string) error {
+		detached++
+		return nil
+	})
+	c.trap = bpf.UprobeTrapCost{EntryNs: 700}
+	var target time.Duration
+	c.targetCPU = func() (time.Duration, bool) { return target, true }
+	c.sample(time.Unix(100, 0))
+	for i := 1; i <= 3; i++ {
+		src.c.Entries += 1_500_000 // 1.05s estimated
+		target += time.Second      // 1s counted
+		cc, _ := c.sample(time.Unix(100+int64(i), 0))
+		if p := cc.Probes[0]; !p.TargetShareKnown || p.TargetSharePct != 100 {
+			t.Fatalf("window %d: share %v (%v), want 100", i, p.TargetSharePct, p.TargetShareKnown)
+		}
+	}
+	if detached != 1 {
+		t.Errorf("detached %d times, want once", detached)
 	}
 }
