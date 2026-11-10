@@ -55,6 +55,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include "target.bpf.h"
+#include "probecost.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -290,14 +291,18 @@ static __always_inline void exit_alloc(__u64 ret)
 SEC("uprobe/malloc")
 int BPF_KPROBE(uprobe_malloc, __u64 size)
 {
+    __u64 t0 = cost_begin(COST_ENTRY);
     enter_alloc(ctx, size, 0, OP_MALLOC);
+    cost_end(t0);
     return 0;
 }
 
 SEC("uretprobe/malloc")
 int BPF_KRETPROBE(uretprobe_malloc, void *ret)
 {
+    __u64 t0 = cost_begin(COST_RETURN);
     exit_alloc((__u64)ret);
+    cost_end(t0);
     return 0;
 }
 
@@ -308,36 +313,45 @@ int BPF_KPROBE(uprobe_calloc, __u64 nmemb, __u64 size)
     // NULL, so the uretprobe sees ret==0 and records nothing — the bogus total
     // is never used. (A manual overflow check via the division idiom makes
     // clang emit a 128-bit __multi3, which the BPF target rejects.)
+    __u64 t0 = cost_begin(COST_ENTRY);
     enter_alloc(ctx, nmemb * size, 0, OP_CALLOC);
+    cost_end(t0);
     return 0;
 }
 
 SEC("uretprobe/calloc")
 int BPF_KRETPROBE(uretprobe_calloc, void *ret)
 {
+    __u64 t0 = cost_begin(COST_RETURN);
     exit_alloc((__u64)ret);
+    cost_end(t0);
     return 0;
 }
 
 SEC("uprobe/realloc")
 int BPF_KPROBE(uprobe_realloc, void *ptr, __u64 size)
 {
+    __u64 t0 = cost_begin(COST_ENTRY);
     enter_alloc(ctx, size, (__u64)ptr, OP_REALLOC);
+    cost_end(t0);
     return 0;
 }
 
 SEC("uretprobe/realloc")
 int BPF_KRETPROBE(uretprobe_realloc, void *ret)
 {
+    __u64 t0 = cost_begin(COST_RETURN);
     exit_alloc((__u64)ret);
+    cost_end(t0);
     return 0;
 }
 
 SEC("uprobe/free")
 int BPF_KPROBE(uprobe_free, void *ptr)
 {
-    if (!is_heap_target())
-        return 0;
-    do_free((__u64)ptr, (__u32)(bpf_get_current_pid_tgid() >> 32));
+    __u64 t0 = cost_begin(COST_ENTRY);
+    if (is_heap_target())
+        do_free((__u64)ptr, (__u32)(bpf_get_current_pid_tgid() >> 32));
+    cost_end(t0);
     return 0;
 }

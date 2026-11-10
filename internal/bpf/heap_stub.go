@@ -58,3 +58,6 @@ func (*HeapTracer) LeakScan(uint64) ([]HeapLeak, error)  { return nil, errHeapSt
 func (*HeapTracer) ResolveStack(int32) ([]uint64, error) { return nil, errHeapStub }
 func (*HeapTracer) LibcRange() (uint64, uint64)          { return 0, 0 }
 func (*HeapTracer) Close() error                         { return nil }
+func (*HeapTracer) Cost() (ProbeCostCounters, error) {
+	return ProbeCostCounters{}, errHeapStub
+}

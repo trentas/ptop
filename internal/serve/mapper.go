@@ -243,6 +243,24 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Buckets: x.Buckets, Count: x.Count, SumNs: x.SumNs,
 		}}
 
+	case collector.CaptureCost:
+		// CATEGORY_PROCESS, like HostSample: what the numbers were measured
+		// under, the observer's own cost included (#154).
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_PROCESS
+		cc := &pb.CaptureCost{}
+		if x.PtopKnown {
+			cc.PtopCpuPct = &x.PtopCPUPct
+		}
+		for _, p := range x.Probes {
+			cc.Probes = append(cc.Probes, &pb.ProbeCost{
+				Probe: p.Probe, EstimatePct: p.EstimatePct, Entries: p.Entries, Returns: p.Returns,
+				ProgramNs: p.ProgramNs, TrapEntryNs: p.TrapEntryNs, TrapReturnNs: p.TrapReturnNs,
+				Calibration: p.Calibration,
+			})
+		}
+		ev.Payload = &pb.Event_CaptureCost{CaptureCost: cc}
+
 	case collector.HostSample:
 		// CATEGORY_PROCESS, like ProcContext: the conditions the numbers were
 		// measured under (#153).

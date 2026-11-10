@@ -330,6 +330,8 @@ var programToCollector = map[string]string{
 	"futex.bpf.c": "futex", "security.bpf.c": "security", "proc.bpf.c": "lifecycle",
 	"signal.bpf.c": "signals", "heap.bpf.c": "heap", "goalloc.bpf.c": "heap",
 	"tls.bpf.c": "tls",
+	// The heap probe's trap cost, calibrated on a ptop function (#154).
+	"calib.bpf.c": "heap",
 }
 
 // The gate table is only as good as its claim about how each collector

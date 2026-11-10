@@ -537,3 +537,12 @@ func (c *HeapEBPFCollector) ratesGo(now time.Time) (allocRate, byteRate float64)
 	c.lastAt = now
 	return allocRate, byteRate
 }
+
+// ProbeCost is the heap probe's hits and timed program time since it attached,
+// whichever lane is running (#154). CostCollector turns it into an estimate.
+func (c *HeapEBPFCollector) ProbeCost() (bpf.ProbeCostCounters, error) {
+	if c.goTracer != nil {
+		return c.goTracer.Cost()
+	}
+	return c.tracer.Cost()
+}

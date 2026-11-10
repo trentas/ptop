@@ -67,6 +67,18 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				return len(th) == 1 && th[0].GetTid() == 11 && th[0].GetCtxSwitches() == 4 &&
 					th[0].GetOffCpuPct() == 62.5 && th[0].GetRunqWaitPct() == 12.5
 			}},
+		{"capture_cost", collector.CaptureCost{Timestamp: time.Unix(6, 0), PtopCPUPct: 1.5, PtopKnown: true,
+			Probes: []collector.ProbeCost{{Probe: "heap", EstimatePct: 12.5, Entries: 10, ProgramNs: 90, TrapEntryNs: 480, Calibration: "x"}}},
+			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
+				c := e.GetCaptureCost()
+				return c.PtopCpuPct != nil && c.GetPtopCpuPct() == 1.5 && len(c.GetProbes()) == 1 &&
+					c.GetProbes()[0].GetEstimatePct() == 12.5 && c.GetProbes()[0].GetTrapEntryNs() == 480 &&
+					c.GetProbes()[0].GetCalibration() == "x"
+			}},
+		{"capture_cost, first sample", collector.CaptureCost{Timestamp: time.Unix(6, 0)},
+			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
+				return e.GetCaptureCost() != nil && e.GetCaptureCost().PtopCpuPct == nil
+			}},
 		{"runq_latency", collector.RunqLatency{Timestamp: time.Unix(5, 0), Buckets: []uint64{0, 3, 1}, Count: 4, SumNs: 9000},
 			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
 				r := e.GetRunqLatency()

@@ -17,6 +17,9 @@ package bpf
 
 import _ "embed"
 
+//go:embed programs/obj/amd64/calib.bpf.o
+var calibBPFObj []byte
+
 //go:embed programs/obj/amd64/cpu.bpf.o
 var cpuBPFObj []byte
 

@@ -9,6 +9,7 @@ package bpf
 // is worse than a missing one: it loads and then lies. Every loader turns a nil
 // object into a Start error, which is what the caller already handles.
 
+var calibBPFObj []byte
 var cpuBPFObj []byte
 var cpuprofBPFObj []byte
 var futexBPFObj []byte

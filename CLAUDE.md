@@ -86,6 +86,8 @@ ptop/
 │   │   ├── programs/              .bpf.c sources, compiled by `make gen`
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── restart.bpf.h      a call the kernel re-runs after a signal is one call (#160)
+│   │   │   ├── probecost.bpf.h    heap probes count their hits and time their own body (#154)
+│   │   │   ├── calib.bpf.c        empty uprobe/uretprobe: the trap cost, calibrated at startup (#154)
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
@@ -197,6 +199,7 @@ ptop/
 │       ├── proccontext.go         container-id / cgroup / ns-inode parsers (build-tag-free)
 │       ├── host.go                host context types + cpuinfo/steal parsers (#153, build-tag-free)
 │       ├── host_linux.go          ReadHostInfo, cgroup limits, HostCollector (steal, limits, throttling, PSI each second)
+│       ├── cost.go                CostCollector: the heap probe's estimated cost + ptop's CPU, every second (#154)
 │       ├── proclifecycle_ebpf.go  sched fork/exec/exit → exec lineage subtree (#60)
 │       ├── proclifecycle_decode.go  kind/comm/filename decode (build-tag-free)
 │       ├── security_ebpf.go       PROT_EXEC mmap/mprotect + LSM denials (#59)
@@ -719,6 +722,33 @@ and the reading would be Go's scheduling, not the kernel's.
 
 When a counter is charged at the end of an interval, ask what a window that sees
 no end reads.
+
+### The capture says what it costs (#154)
+
+A uprobe runs on the thread that trips it, so the heap probe's cost lands on
+the target. That cost is a per-hit cost times the allocation rate, so no number
+read before the capture holds during it. `CaptureCost` estimates it every
+second:
+
+```
+(entries + returns) × program_ns + entries × trap_entry_ns + returns × trap_return_ns
+```
+
+- **Hits** are counted in the kernel (`probecost.bpf.h`).
+- **Program time** is timed there on one hit in 64. Timing every hit would be a
+  cost of its own.
+- **Trap costs** are calibrated at startup. `calib.bpf.c`'s empty programs go on
+  a ptop function (found through `.gopclntab`, so a stripped release works),
+  and calls are timed against bare calls, fastest of five rounds. The trap is
+  most of a hit: ~485ns of ~530ns on the reference arm64 VM. Leaving it out
+  reads 0.07× of the real cost.
+- **The selftest grades the estimate against the thing itself.** A thread's CPU
+  time per allocation is measured with the probe detached and attached, and the
+  estimate lands at 0.87–0.89× of the difference.
+
+`CostCollector` is context: it has no `--disable` name, and `blind` lets it
+through. The budget that detaches the heap probe, and the mid-stream probe-state
+event it needs, are the rest of #154.
 
 ### A call the kernel re-runs after a signal is one call (#160)
 
