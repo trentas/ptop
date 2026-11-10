@@ -411,6 +411,18 @@ type RunqLatency struct {
 	SumNs     uint64
 }
 
+// GoPauses is every stop-the-world a Go target finished since the tracer
+// attached (#175), from the start of stopTheWorldWithSema to the start of
+// startTheWorldWithSema, cumulative: Buckets[i] counts the pauses of
+// [2^i, 2^(i+1)) µs, Buckets[0] also those under 1 µs, the last everything
+// longer. Go targets only; eBPF-only.
+type GoPauses struct {
+	Timestamp time.Time
+	Count     uint64
+	SumNs     uint64
+	Buckets   []uint64
+}
+
 // ─── Locks (futex) ───────────────────────────────────────────────────────────
 
 // LockEntry describes a contended futex: cumulative WAITs and WAKEs observed

@@ -341,6 +341,8 @@ eBPF programs in `internal/bpf/programs/`:
 - `calib.bpf.c` — an empty uprobe: the trap cost, calibrated on the host at startup (#154)
 - `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume),
   stack sampled by bytes allocated
+- `gopause.bpf.c` — entry uprobes on the Go runtime's stop and restart of the world →
+  every stop-the-world pause, exact, as a histogram (Go targets only)
 
 Any subsystem can be switched off with `--disable <name,...>` — see
 [what it costs](#what-it-costs-the-process-it-watches) for why you might. Naming

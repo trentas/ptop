@@ -71,6 +71,7 @@ BPF_OBJ_DIR := internal/bpf/programs/obj/$(GOARCH)
 # List of eBPF programs to compile. Add new .bpf.c files here.
 BPF_SRCS := \
 	internal/bpf/programs/syscalls.bpf.c \
+	internal/bpf/programs/gopause.bpf.c \
 	internal/bpf/programs/cpu.bpf.c \
 	internal/bpf/programs/cpuprof.bpf.c \
 	internal/bpf/programs/io.bpf.c \

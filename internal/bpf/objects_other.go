@@ -14,6 +14,7 @@ var cpuBPFObj []byte
 var cpuprofBPFObj []byte
 var futexBPFObj []byte
 var goallocBPFObj []byte
+var gopauseBPFObj []byte
 var heapBPFObj []byte
 var ioBPFObj []byte
 var memoryBPFObj []byte

@@ -61,7 +61,7 @@ func TestOutlookFullSetRunsEverything(t *testing.T) {
 func TestOutlookReadmeSetcapDropsTheVersionStampedCollectors(t *testing.T) {
 	got := blockedCollectors(readmeSetcap(), true)
 	sort.Strings(got)
-	want := []string{"heap", "memory", "network", "tls"}
+	want := []string{"gopause", "heap", "memory", "network", "tls"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("blocked = %v, want %v", got, want)
 	}
@@ -93,7 +93,7 @@ func TestOutlookSysAdminAloneRecoversNothing(t *testing.T) {
 	s.HasSysAdmin = true
 	got := blockedCollectors(s, true)
 	sort.Strings(got)
-	if want := "heap,memory,network,tls"; strings.Join(got, ",") != want {
+	if want := "gopause,heap,memory,network,tls"; strings.Join(got, ",") != want {
 		t.Fatalf("blocked = %v, want %v", got, want)
 	}
 }
@@ -105,7 +105,7 @@ func TestOutlookDACAloneLeavesJustTheUprobePMU(t *testing.T) {
 	s.HasDACReadSearch, s.ProcSelfMemReadable = true, true
 	got := blockedCollectors(s, true)
 	sort.Strings(got)
-	if want := "heap,tls"; strings.Join(got, ",") != want {
+	if want := "gopause,heap,tls"; strings.Join(got, ",") != want {
 		t.Fatalf("blocked = %v, want %v", got, want)
 	}
 	m := outlookFor(t, s)
@@ -227,7 +227,7 @@ func TestStartupAdvisorySkipsWhatWasNotAskedFor(t *testing.T) {
 
 	// With every uprobe lane switched off, CAP_SYS_ADMIN gates nothing anyone
 	// wanted and drops out of the message entirely.
-	adv = startupAdvisory(readmeSetcap(), true, map[string]bool{"tls": true, "heap": true})
+	adv = startupAdvisory(readmeSetcap(), true, map[string]bool{"tls": true, "heap": true, "gopause": true})
 	if strings.Contains(adv, "CAP_SYS_ADMIN") {
 		t.Errorf("CAP_SYS_ADMIN no longer gates anything requested:\n%s", adv)
 	}
@@ -236,7 +236,7 @@ func TestStartupAdvisorySkipsWhatWasNotAskedFor(t *testing.T) {
 	}
 
 	adv = startupAdvisory(readmeSetcap(), true,
-		map[string]bool{"tls": true, "heap": true, "memory": true, "network": true})
+		map[string]bool{"tls": true, "heap": true, "gopause": true, "memory": true, "network": true})
 	if adv != "" {
 		t.Errorf("nothing requested is blocked; advisory should be empty:\n%s", adv)
 	}
@@ -329,7 +329,7 @@ var programToCollector = map[string]string{
 	"io.bpf.c": "io", "network.bpf.c": "network", "syscalls.bpf.c": "syscalls",
 	"futex.bpf.c": "futex", "security.bpf.c": "security", "proc.bpf.c": "lifecycle",
 	"signal.bpf.c": "signals", "heap.bpf.c": "heap", "goalloc.bpf.c": "heap",
-	"tls.bpf.c": "tls",
+	"tls.bpf.c": "tls", "gopause.bpf.c": "gopause",
 	// The heap probe's trap cost, calibrated on a ptop function (#154).
 	"calib.bpf.c": "heap",
 }

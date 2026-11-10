@@ -85,6 +85,7 @@ func suite() []selfCase {
 		{"futex", "waits on a known word: counted, timed, named by the waiter (#89)", checkFutex},
 		{"goalloc", "two call sites at a known rate and ratio, and the census adds up (#108, #109)", checkGoAlloc},
 		{"heap", "a C program's malloc, calloc and realloc sites: named, live bytes to the byte, the census adds up (#53, #109)", checkLibcHeap},
+		{"gopause", "forced GC cycles stop the world twice each, timed; a non-Go target is unsupported (#175)", checkGoPauses},
 		{"threads", "a sleep still going on counts in its window; a preempted thread waits in the run queue, not off-CPU (#150)", checkThreads},
 		{"cost", "the heap probe's estimated cost per hit is within 2× of what an allocation costs with it attached (#154)", checkCost},
 		{"budget", "--overhead-budget detaches the heap probe after three windows over it, says so, and leaves nothing spinning (#154)", checkBudget},
