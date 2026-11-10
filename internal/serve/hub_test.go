@@ -165,3 +165,25 @@ func TestHubSharesTheBusWithAnotherConsumer(t *testing.T) {
 		t.Errorf("viewer dropped %d values", d)
 	}
 }
+
+// A probe that changes state mid-capture (#154): a subscriber arriving after it
+// is told the state it is in now, not the one it started in.
+func TestProbeChangeUpdatesTheHandshake(t *testing.T) {
+	h := NewHub(TargetPID(4242), "", nil)
+	h.probes = []*pb.ProbeInfo{
+		{Name: "cpu", State: pb.ProbeState_PROBE_STATE_ACTIVE, Source: "eBPF"},
+		{Name: "heap", State: pb.ProbeState_PROBE_STATE_ACTIVE, Source: "eBPF"},
+	}
+	h.handle(collector.ProbeChange{Timestamp: time.Unix(7, 0), Status: collector.ProbeStatus{
+		Name: "heap", State: collector.ProbeDisabled, Detail: "detached by --overhead-budget 5%"}})
+	got := map[string]*pb.ProbeInfo{}
+	for _, p := range h.targetInfo().GetProbes() {
+		got[p.GetName()] = p
+	}
+	if p := got["heap"]; p.GetState() != pb.ProbeState_PROBE_STATE_DISABLED || p.GetDetail() != "detached by --overhead-budget 5%" {
+		t.Errorf("heap after the change = %v", p)
+	}
+	if p := got["cpu"]; p.GetState() != pb.ProbeState_PROBE_STATE_ACTIVE || len(got) != 2 {
+		t.Errorf("the other probes moved: %v", got)
+	}
+}

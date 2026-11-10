@@ -146,6 +146,7 @@ sudo ./bin/ptop --pid <PID> --tls-bytes 256 --serve unix:///run/ptop.sock --expo
 # Heap probe: drop it entirely, or make it exact instead of sampled (see below)
 sudo ./bin/ptop --pid <PID> --disable heap
 sudo ./bin/ptop --pid <PID> --heap-sample-bytes 0
+sudo ./bin/ptop --pid <PID> --overhead-budget 5   # detach it if it costs the target > 5% for 3 windows
 
 # Name the functions the CPU is going into — sampled, beside the exact ns
 sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock   # on by default
@@ -413,6 +414,24 @@ ptop --pid <PID> --disable heap
 
 The table above is the expectation before the capture. The estimate is what
 the capture itself is costing.
+
+**`--overhead-budget <pct>` acts on it**, and is off unless you ask for it.
+- **The unit** is the table's: the estimate as a share of the target's own CPU
+  in the window (`overhead_pct` on the estimate).
+- **When it acts:** once the estimate stays above the budget for three windows
+  in a row, ptop detaches the heap probe. Sampling does not remove the uprobe
+  trap, so detaching is the only remedy.
+- **How it says so:**
+  - **Mid-stream:** a `probe_change` event, in the heap's category, carries
+    `heap: disabled` and the reason. Without it, a consumer diffing the capture
+    would see the heap sites vanish and read a −100% regression.
+  - **Later handshakes:** a subscriber that arrives afterwards gets the
+    current probe set.
+  - **Operators:** a line on stderr, and one on the TUI's timeline.
+
+```
+ptop --pid <PID> --serve unix:///run/ptop.sock --overhead-budget 5
+```
 
 ### Heap: two lanes, picked from the target
 

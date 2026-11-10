@@ -46,7 +46,28 @@ type ProbeCost struct {
 	ProgramNs                 float64
 	TrapEntryNs, TrapReturnNs float64
 	Calibration               string
+	// OverheadPct is the estimate as a share of the target's own CPU in the
+	// window (its CPU minus the estimate): how much more CPU the target used
+	// because of the probe, the unit of the README's cost table and of
+	// --overhead-budget. OverheadKnown is false when the target's CPU in the
+	// window is not more than the estimate (/proc counts in 10ms ticks).
+	OverheadPct   float64
+	OverheadKnown bool
 }
+
+// ProbeChange is a probe whose state changed in the middle of a capture
+// (#154). The probe set otherwise travels only in the handshake, and a probe
+// that stops without saying so reads, in the events alone, as a target that
+// stopped doing the thing: a −100% regression inside one capture (#112).
+type ProbeChange struct {
+	Timestamp time.Time
+	Status    ProbeStatus
+}
+
+// budgetWindows is how many windows in a row the estimate must stay above
+// --overhead-budget before the probe is detached: one window over is a
+// burst, three is the workload.
+const budgetWindows = 3
 
 // CostSource is a probe whose hits CostCollector can read. The heap collector
 // is the only one: every other probe fires on kernel events and costs nothing
@@ -74,6 +95,15 @@ type CostCollector struct {
 	programNs map[string]float64 // last known, for windows that timed no hit
 	prevCPU   time.Duration
 	prevAt    time.Time
+
+	// --overhead-budget (#154): 0 is off. detach stops a probe and records
+	// why; over counts each probe's windows above budget in a row.
+	budgetPct  float64
+	detach     func(name, reason string) error
+	over       map[string]int
+	targetCPU  func() (time.Duration, bool) // the target's CPU so far; nil in cgroup mode
+	prevTarget time.Duration
+	haveTarget bool
 }
 
 func NewCostCollector(sources map[string]CostSource) *CostCollector {
@@ -83,12 +113,25 @@ func NewCostCollector(sources map[string]CostSource) *CostCollector {
 		stop:      make(chan struct{}),
 		prev:      make(map[string]bpf.ProbeCostCounters),
 		programNs: make(map[string]float64),
+		over:      make(map[string]int),
 	}
 }
 
-// Start begins publishing. The pid is not used: what is measured is ptop and
-// the probes it holds.
-func (c *CostCollector) Start(int) error {
+// WithBudget makes the collector detach a probe whose estimated overhead stays
+// above pct of the target's own CPU for budgetWindows windows in a row (#154).
+// detach stops it and records why; on success the collector stops estimating
+// it and publishes a ProbeChange.
+func (c *CostCollector) WithBudget(pct float64, detach func(name, reason string) error) *CostCollector {
+	c.budgetPct, c.detach = pct, detach
+	return c
+}
+
+// Start begins publishing. pid is the target, whose CPU the overhead is a share
+// of; 0 in cgroup mode, where there is no heap probe to weigh.
+func (c *CostCollector) Start(pid int) error {
+	if pid > 0 {
+		c.targetCPU = func() (time.Duration, bool) { return processCPU(pid) }
+	}
 	go c.loop()
 	return nil
 }
@@ -100,7 +143,7 @@ func (c *CostCollector) loop() {
 	if len(c.sources) > 0 {
 		c.calibrate()
 	}
-	publish(c.ch, c.sample(time.Now()))
+	c.emit(c.sample(time.Now()))
 	t := time.NewTicker(costInterval)
 	defer t.Stop()
 	for {
@@ -108,8 +151,15 @@ func (c *CostCollector) loop() {
 		case <-c.stop:
 			return
 		case now := <-t.C:
-			publish(c.ch, c.sample(now))
+			c.emit(c.sample(now))
 		}
+	}
+}
+
+func (c *CostCollector) emit(cc CaptureCost, changes []ProbeChange) {
+	publish(c.ch, cc)
+	for _, ch := range changes {
+		publish(c.ch, ch)
 	}
 }
 
@@ -123,8 +173,9 @@ func (c *CostCollector) calibrate() {
 	c.calibration = fmt.Sprintf("empty uprobe and uretprobe on a ptop function, %d calls, fastest of 5 rounds", trap.Calls)
 }
 
-func (c *CostCollector) sample(now time.Time) CaptureCost {
+func (c *CostCollector) sample(now time.Time) (CaptureCost, []ProbeChange) {
 	out := CaptureCost{Timestamp: now}
+	var changes []ProbeChange
 	window := now.Sub(c.prevAt)
 	first := c.prevAt.IsZero()
 	if cpu, ok := selfCPU(); ok {
@@ -132,6 +183,16 @@ func (c *CostCollector) sample(now time.Time) CaptureCost {
 			out.PtopCPUPct, out.PtopKnown = float64(cpu-c.prevCPU)/float64(window)*100, true
 		}
 		c.prevCPU = cpu
+	}
+	var targetNs float64
+	targetKnown := false
+	if c.targetCPU != nil {
+		if cpu, ok := c.targetCPU(); ok {
+			if c.haveTarget && !first {
+				targetNs, targetKnown = float64(cpu-c.prevTarget), true
+			}
+			c.prevTarget, c.haveTarget = cpu, true
+		}
 	}
 	names := make([]string, 0, len(c.sources))
 	for name := range c.sources {
@@ -148,10 +209,41 @@ func (c *CostCollector) sample(now time.Time) CaptureCost {
 		if !seen || first || window <= 0 {
 			continue
 		}
-		out.Probes = append(out.Probes, c.estimate(name, prev, cur, window))
+		p := c.estimate(name, prev, cur, window)
+		if est := p.EstimatePct / 100 * float64(window); targetKnown && targetNs > est {
+			p.OverheadPct, p.OverheadKnown = est/(targetNs-est)*100, true
+		}
+		out.Probes = append(out.Probes, p)
+		if ch, ok := c.budget(p, now); ok {
+			changes = append(changes, ch)
+		}
 	}
 	c.prevAt = now
-	return out
+	return out, changes
+}
+
+// budget counts a probe's windows over --overhead-budget and detaches it after
+// budgetWindows in a row. A window whose overhead is unknown breaks the run.
+func (c *CostCollector) budget(p ProbeCost, now time.Time) (ProbeChange, bool) {
+	if c.budgetPct <= 0 || c.detach == nil {
+		return ProbeChange{}, false
+	}
+	if !p.OverheadKnown || p.OverheadPct <= c.budgetPct {
+		c.over[p.Probe] = 0
+		return ProbeChange{}, false
+	}
+	c.over[p.Probe]++
+	if c.over[p.Probe] < budgetWindows {
+		return ProbeChange{}, false
+	}
+	reason := fmt.Sprintf("detached by --overhead-budget %.4g%%: estimated at %.1f%% of the target's CPU for %d windows in a row",
+		c.budgetPct, p.OverheadPct, budgetWindows)
+	if err := c.detach(p.Probe, reason); err != nil {
+		return ProbeChange{}, false
+	}
+	delete(c.sources, p.Probe)
+	delete(c.prev, p.Probe)
+	return ProbeChange{Timestamp: now, Status: ProbeStatus{Name: p.Probe, State: ProbeDisabled, Detail: reason}}, true
 }
 
 func (c *CostCollector) estimate(name string, prev, cur bpf.ProbeCostCounters, window time.Duration) ProbeCost {

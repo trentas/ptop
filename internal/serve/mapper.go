@@ -253,13 +253,24 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			cc.PtopCpuPct = &x.PtopCPUPct
 		}
 		for _, p := range x.Probes {
-			cc.Probes = append(cc.Probes, &pb.ProbeCost{
+			pc := &pb.ProbeCost{
 				Probe: p.Probe, EstimatePct: p.EstimatePct, Entries: p.Entries, Returns: p.Returns,
 				ProgramNs: p.ProgramNs, TrapEntryNs: p.TrapEntryNs, TrapReturnNs: p.TrapReturnNs,
 				Calibration: p.Calibration,
-			})
+			}
+			if p.OverheadKnown {
+				pc.OverheadPct = &p.OverheadPct
+			}
+			cc.Probes = append(cc.Probes, pc)
 		}
 		ev.Payload = &pb.Event_CaptureCost{CaptureCost: cc}
+
+	case collector.ProbeChange:
+		// The probe's own category, so it reaches whoever reads that axis, in
+		// order with its events (#154).
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = probeCategory(x.Status.Name)
+		ev.Payload = &pb.Event_ProbeChange{ProbeChange: probeInfo(x.Status)}
 
 	case collector.HostSample:
 		// CATEGORY_PROCESS, like ProcContext: the conditions the numbers were

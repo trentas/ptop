@@ -375,3 +375,12 @@ func (t *GoAllocTracer) Cost() (ProbeCostCounters, error) {
 	}
 	return sumProbeCost(perCPU), nil
 }
+
+// InterruptNext ends a blocked Next with io.EOF and every later one too, and
+// leaves the rest of the tracer to Close. Safe while Next runs on another
+// goroutine: the ring buffer reader's Close is what interrupts its Read.
+func (t *GoAllocTracer) InterruptNext() {
+	if t != nil && t.rb != nil {
+		_ = t.rb.Close()
+	}
+}

@@ -210,3 +210,18 @@ func TestCaveatDoesNotOverwriteAFailure(t *testing.T) {
 		t.Errorf("detail %q, want the attach error to survive", got)
 	}
 }
+
+// set keeps the first active status; transition is the one way out of it, for
+// a probe that stops mid-capture (#154).
+func TestProbeTransitionOverridesActive(t *testing.T) {
+	var l probeLog
+	l.active("heap", "eBPF")
+	l.disabled("heap", "ignored: active wins at startup")
+	if st := l.statuses()[0]; st.State != ProbeActive {
+		t.Fatalf("set overrode an active probe: %+v", st)
+	}
+	l.transition(ProbeStatus{Name: "heap", State: ProbeDisabled, Detail: "budget"})
+	if st := l.statuses()[0]; st.State != ProbeDisabled || st.Detail != "budget" {
+		t.Errorf("after transition: %+v", st)
+	}
+}

@@ -78,6 +78,9 @@ type Config struct {
 	// collector.SetConfig.
 	HeapSampleBytes uint64
 
+	// OverheadBudgetPct: see collector.SetConfig.OverheadBudgetPct (#154).
+	OverheadBudgetPct float64
+
 	// CPUProfHz is the CPU attribution axis's per-CPU sampling rate; see
 	// collector.SetConfig.CPUProfHz. 0 takes the default.
 	CPUProfHz int
@@ -322,7 +325,7 @@ func NewModel(cfg Config) Model {
 		m.ownsFeed = true
 		m.feed = collector.StartFeed(ctx, collector.SetConfig{
 			PID: cfg.PID, NoEBPF: cfg.NoEBPF, TLS: cfg.TLS, TLSMaxBytes: cfg.TLSMaxBytes,
-			Disable: cfg.Disable, HeapSampleBytes: cfg.HeapSampleBytes,
+			Disable: cfg.Disable, HeapSampleBytes: cfg.HeapSampleBytes, OverheadBudgetPct: cfg.OverheadBudgetPct,
 			CPUProfHz: cfg.CPUProfHz,
 			Symbols:   cfg.Symbols,
 		})
@@ -1387,6 +1390,11 @@ func busMsg(v interface{}) tea.Msg {
 		return FDEventMsg(t)
 	case collector.TimelineEvent:
 		return TimelineMsg(t)
+	case collector.ProbeChange:
+		// A probe that stops mid-capture goes on the timeline, so the operator
+		// sees why the heap panel froze (#154).
+		return TimelineMsg(collector.TimelineEvent{Timestamp: t.Timestamp, Category: "mem",
+			Message: fmt.Sprintf("%s probe %s: %s", t.Status.Name, t.Status.State, t.Status.Detail)})
 	case collector.CpuSample:
 		return CpuMsg(t)
 	case []collector.ThreadInfo:
