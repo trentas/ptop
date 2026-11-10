@@ -261,6 +261,19 @@ message SyscallStat {
   // the 0 every earlier capture carried was this absence; a source that cannot
   // time syscalls leaves it unset too.
   optional uint64 latency_ns = 3;
+  // A read or write split by the class of fd it hit (#176): "anon" (an
+  // anonymous inode: eventfd, epoll, timerfd, signalfd), "socket", "pipe",
+  // "file", "char", "other", "unknown". The name mixes the application's I/O
+  // with the Go runtime's netpoller waking itself through an eventfd, and the
+  // class tells them apart. The classes split count and latency_ns, never add
+  // to them. Empty for every other syscall, and from a source that does not
+  // classify.
+  repeated FdClassStat fd_classes = 4;
+}
+message FdClassStat {
+  string fd_class = 1;
+  uint64 count = 2;
+  uint64 latency_ns = 3;
 }
 message SyscallSnapshot {
   repeated SyscallStat stats = 1;

@@ -56,6 +56,9 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			// and an unset latency_ns is how the wire says "not measured" (#139).
 			lat := s.LatencyNs
 			stats[i] = &pb.SyscallStat{Name: s.Name, Count: s.Count, LatencyNs: &lat}
+			for _, fc := range s.FdClasses {
+				stats[i].FdClasses = append(stats[i].FdClasses, &pb.FdClassStat{FdClass: fc.Class, Count: fc.Count, LatencyNs: fc.LatencyNs})
+			}
 		}
 		ev.Payload = &pb.Event_Syscalls{Syscalls: &pb.SyscallSnapshot{Stats: stats}}
 

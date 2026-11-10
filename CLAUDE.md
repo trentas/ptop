@@ -662,6 +662,23 @@ allocating one (fixed: see below).
 A new axis, or a fix to one, adds its planted case in the same PR.
 `sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.
 
+### read and write are split by the class of fd they hit (#176)
+
+`read` and `write` by name mixed two things a consumer must tell apart: the
+application's I/O, and the Go runtime's netpoller waking itself through an
+eventfd (`netpollBreak` writes it, the poller reads it). On an I/O-free Go
+program every read and write was on one `anon_inode:[eventfd]`, and between two
+runs of the same binary the pair went from 79 to 682 calls (witness#144).
+
+`syscalls.bpf.c` classifies the fd at `sys_enter` for the read/write family
+(read, write, readv, writev, pread64, pwrite64): the file's inode type, read by
+CO-RE through minimal `___ptop` structs (`task → files → fdt → fd[n] →
+f_inode → i_mode`), no vmlinux.h. An anonymous inode has no type bits:
+`anon` (eventfd, epoll, timerfd, signalfd), then `socket`, `pipe`, `file`,
+`char`, `other`, `unknown`. The split rides `SyscallStat.fd_classes` and adds
+up to the totals exactly; the restart path (#160) carries the class with it.
+The selftest `fdclass` plants each class, and its `anon` reads one or two over
+the planted count: the selftest's own runtime waking its netpoller.
 ### A Go pause is timed at the runtime's own entry points (#175)
 
 `gopause` times every stop-the-world of a Go target: two ENTRY uprobes, on
