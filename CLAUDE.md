@@ -640,6 +640,16 @@ because it raised the score without being right. So:
   Unprotected, an exact count holds only when no signal happened to arrive. The
   `restart` case plants its signals on purpose (#160).
 
+- **A planted C allocation must be one the compiler cannot drop.** The libc
+  lane's target is a C program (`testdata/libcheap.c`, compiled at run time:
+  this binary is static Go and has no libc to probe). Its first run planted
+  nothing: GCC removed every `malloc` whose block went into a `static` array
+  that was never read, and the heap read 1 MiB for 10 planted. The blocks now
+  go into globals, the build passes `-fno-builtin`, and the quantities reach
+  the C program as `-D` defines, so the grader and the workload share them. No
+  C compiler is a failure of the case, not a skip: it is the libc lane's only
+  grade.
+
 What it found on its way in: a raw futex wait from Go named
 `syscall.Syscall6` as its lock (`isLockInfraFunc` now steps over the syscall
 wrappers); #159, where the io probe loses writes and fs events made on any
