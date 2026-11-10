@@ -97,6 +97,7 @@ message Event {
     SecurityEvent security = 30; // #59 — LSM decision / runtime executable mapping
     CpuProfile cpu_profile = 31; // #125 — periodic per-function CPU attribution
     NetThroughputSample net_throughput = 32; // #128 — monotonic network volume + rate
+    HostSample host = 33; // #153 — host steal and the target cgroup's limits, periodic
   }
 }
 
@@ -572,6 +573,33 @@ message ProcContext {
   uint64 cgroup_id = 10;
   string cgroup = 11; // cgroup path (v2 "0::/p" → "/p")
   string container = 12; // derived container id; "" if none
+}
+
+// HostSample is what changes about the target's host while it runs (#153):
+// steal on a VM, and the target cgroup's limits, which an in-place pod resize
+// can change in the middle of a capture. Category PROCESS: like ProcContext, it
+// is the context the numbers were measured in. /proc and /sys only, so it is
+// there in --no-ebpf mode too.
+message HostSample {
+  // Host-wide steal since the previous sample: the share of all CPU time the
+  // hypervisor gave to someone else. Absent on the first sample, which has no
+  // previous one. On-CPU time can look unchanged while wall time grows under it.
+  optional double steal_pct = 1;
+  CgroupLimits limits = 2;
+}
+
+// CgroupLimits are the cgroup v2 limits of the target's cgroup, each file's
+// content verbatim: "max" means unlimited, and an empty string means the file
+// could not be read (cgroup v1, the root cgroup, a controller not enabled).
+// They are the target cgroup's own; a tighter limit on an ancestor also
+// applies and is not read.
+message CgroupLimits {
+  // The cgroup they were read from, as /proc/<pid>/cgroup names it ("/kubepods.slice/…").
+  string cgroup = 1;
+  string cpu_max = 2; // "<quota> <period>" in µs, or "max <period>"
+  string cpu_weight = 3; // 1..10000, 100 by default
+  string memory_max = 4; // bytes, or "max"
+  string cpuset_cpus_effective = 5; // a CPU list ("0-3,8")
 }
 
 // ProcLifecycleEvent is an exec-lineage event (#60) reconstructing the process

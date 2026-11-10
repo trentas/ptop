@@ -236,6 +236,17 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			CgroupId: x.CgroupID, Cgroup: x.Cgroup, Container: x.Container,
 		}}
 
+	case collector.HostSample:
+		// CATEGORY_PROCESS, like ProcContext: the conditions the numbers were
+		// measured under (#153).
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_PROCESS
+		hs := &pb.HostSample{Limits: limitsWire(x.Limits)}
+		if x.StealKnown {
+			hs.StealPct = &x.StealPct
+		}
+		ev.Payload = &pb.Event_Host{Host: hs}
+
 	case collector.ProcLifecycleEvent:
 		ev.TsUnixNano = tsNano(x.Timestamp)
 		ev.Category = pb.Category_CATEGORY_PROCESS

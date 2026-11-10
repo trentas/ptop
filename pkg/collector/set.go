@@ -125,6 +125,7 @@ type Set struct {
 	SignalEBPF        *SignalEBPFCollector
 	TLSEBPF           *TLSEBPFCollector
 	ProcContext       *ProcContextCollector
+	Host              *HostCollector // host steal + the target cgroup's limits (#153)
 	ProcLifecycleEBPF *ProcLifecycleEBPFCollector
 	SecurityEBPF      *SecurityEBPFCollector
 
@@ -280,6 +281,11 @@ func NewSet(cfg SetConfig) *Set {
 	if c := NewProcContextCollector(); c.Start(cfg.PID) == nil {
 		s.ProcContext = c
 		s.Sources.Context = SourceProc
+	}
+	// Host context (#153): steal and the target cgroup's limits, from /proc and
+	// /sys. Context, like the above, not a probe: nothing to --disable.
+	if c := NewHostCollector(); c.Start(cfg.PID) == nil {
+		s.Host = c
 	}
 
 	// eBPF-only subsystems: only with -tags=ebpf, kernel >= 5.8 and
@@ -468,6 +474,11 @@ func (s *Set) startCgroup(cfg SetConfig) {
 	for name, why := range cgroupUnsupported {
 		s.probes.unsupported(name, why)
 	}
+	// The target cgroup's limits and host steal need no eBPF, only the path the
+	// spec resolves to (#153).
+	if c := NewHostCollector(); c.StartCgroup(cfg.Cgroup) == nil {
+		s.Host = c
+	}
 
 	if cfg.NoEBPF {
 		fmt.Fprintln(os.Stderr, "warning: --cgroup targeting needs eBPF; nothing started in --no-ebpf mode")
@@ -584,6 +595,9 @@ func (s *Set) Stop() {
 	if s.ProcContext != nil {
 		s.ProcContext.Stop()
 	}
+	if s.Host != nil {
+		s.Host.Stop()
+	}
 	if s.ProcLifecycleEBPF != nil {
 		s.ProcLifecycleEBPF.Stop()
 	}
@@ -624,6 +638,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.SignalEBPF, s.SignalEBPF != nil)
 	add(s.TLSEBPF, s.TLSEBPF != nil)
 	add(s.ProcContext, s.ProcContext != nil)
+	add(s.Host, s.Host != nil)
 	add(s.ProcLifecycleEBPF, s.ProcLifecycleEBPF != nil)
 	add(s.SecurityEBPF, s.SecurityEBPF != nil)
 	return cs

@@ -671,6 +671,25 @@ The field is absent for a target with no Go build info (C, Rust, JVM), for an
 executable ptop cannot read, and in cgroup mode, where one process's build would
 not be the subtree's. Absent means unknown.
 
+It also carries **the machine and the limits** the target runs under (#153).
+- `host` is read once from `/proc` and `/sys`:
+  - the kernel release and `uname -m`;
+  - the CPU as `/proc/cpuinfo` names it, the online CPU count and SMT;
+  - the core types of a hybrid CPU;
+  - whether the host is virtualized, and the DMI vendor and product.
+- `limits` is the target cgroup's `cpu.max`, `cpu.weight`, `memory.max` and
+  `cpuset.cpus.effective`, verbatim, at subscribe time.
+
+Version N on arm64 against N−1 on x86, on another CPU generation, or under a
+lowered `cpu.max`, moves every CPU number and most latencies without a line of
+code changing. Two things change while a capture runs: steal on a VM, and limits
+under an in-place pod resize. So a `HostSample` event carries them every second.
+
+arm64 has no CPU flag for virtualization, so its verdict there is unknown unless
+`/sys/hypervisor` says otherwise. The hostname, instance id, and DMI serial and
+UUID are never read: a comparison needs the hardware class, not which machine it
+was.
+
 An empty probe set means the server does not report one — never that every probe
 ran.
 
@@ -701,6 +720,7 @@ envelope):
 | `IO` | `FSEvent` | filesystem semantics: permission denials, deletes, renames (real paths) |
 | `SIGNAL` | `SignalEvent` | signals delivered to the target, with the sending process |
 | `PROCESS` | `ProcContext` | namespace + cgroup + uid/gid (container/execution context) |
+| `PROCESS` | `HostSample` | host steal per second, and the target cgroup's limits re-read (#153) |
 | `PROCESS` | `ProcLifecycleEvent` | exec lineage: fork/exec/exit across the descendant subtree |
 | `SECURITY` | `SecurityEvent` | runtime PROT_EXEC mappings (JIT/RWX), SELinux LSM denials |
 

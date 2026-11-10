@@ -131,6 +131,7 @@ ptop/
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks; probe set in the handshake (#112)
 │   │   ├── targetbuild.go         the target's Go build in the handshake, vcs.* settings only (#157)
+│   │   ├── host.go                the machine and the target cgroup's limits in the handshake (#153)
 │   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
 │   │   ├── shed.go                which event a full sink queue gives up (#108)
 │   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
@@ -194,6 +195,8 @@ ptop/
 │       ├── futex_ebpf.go          lock graph from futex tracking (#89 call site)
 │       ├── proccontext_linux.go   /proc ns + cgroup + uid/gid context (#60)
 │       ├── proccontext.go         container-id / cgroup / ns-inode parsers (build-tag-free)
+│       ├── host.go                host context types + cpuinfo/steal parsers (#153, build-tag-free)
+│       ├── host_linux.go          ReadHostInfo, cgroup limits, HostCollector (steal + limits each second)
 │       ├── proclifecycle_ebpf.go  sched fork/exec/exit → exec lineage subtree (#60)
 │       ├── proclifecycle_decode.go  kind/comm/filename decode (build-tag-free)
 │       ├── security_ebpf.go       PROT_EXEC mmap/mprotect + LSM denials (#59)
@@ -953,7 +956,11 @@ build is read from `/proc/<pid>/exe`, opened as is: resolving the link to a path
 first would name a file in the target's mount namespace, not ptop's. Only the
 `vcs.*` build settings go out, because `-ldflags` (and so `-X
 main.apiKey=...`) lands among the others. It is absent in cgroup mode: a subtree
-has no one binary.
+has no one binary. Both modes carry the machine (`host`, read once) and the
+target cgroup's limits (`limits`, read per subscriber), #153. The limits and
+host steal change at runtime, so `HostCollector` publishes them every second as
+a `HostSample`. That collector, like `ProcContext`, is context and has no
+`--disable` name. The selftest's `blind` case lets both through.
 
 `--serve <addr>` runs headless (no TUI): it builds the same collector `Set` and
 streams `streampb.Event`s over the `EventStreamService` gRPC service to any number of
