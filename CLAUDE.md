@@ -97,6 +97,7 @@ ptop/
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
 │   │   │   ├── goalloc.bpf.c      runtime.mallocgc uprobe → Go alloc sites, byte-sampled (#108)
+│   │   │   ├── gopause.bpf.c      entry uprobes on the Go runtime's stop/restart the world → exact STW pauses (#175)
 │   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site; signal_deliver settles a re-run (#164)
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
 │   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
@@ -678,6 +679,26 @@ f_inode → i_mode`), no vmlinux.h. An anonymous inode has no type bits:
 up to the totals exactly; the restart path (#160) carries the class with it.
 The selftest `fdclass` plants each class, and its `anon` reads one or two over
 the planted count: the selftest's own runtime waking its netpoller.
+### A Go pause is timed at the runtime's own entry points (#175)
+
+`gopause` times every stop-the-world of a Go target: two ENTRY uprobes, on
+`runtime.stopTheWorldWithSema` and `runtime.startTheWorldWithSema`, the start
+keyed by tgid (one stop at a time per process; the restart can run on another
+thread). It is exact. The runtime-agnostic idea — every thread descheduling at
+once — would be a heuristic with no ground truth, would read an idle process the
+same way, and in Go misses the thread that stopped the world and keeps running.
+JVM and .NET can get that detector later, measured against this one.
+
+- **Entry uprobes only**, like the Go heap lane: a uretprobe on Go code breaks
+  the GC's stack walk (#154).
+- **A target that is not a Go program is `unsupported`** in the probe set, never
+  an attached probe reporting no pause. `bpf.ErrNotGo` is declared in both
+  builds so `Set` can tell the two apart.
+- **The event is cumulative** (`GoPauses`: count, sum, log2(µs) histogram), the
+  `RunqLatency` contract: a consumer differences two snapshots.
+- **The selftest plants the answer:** with the automatic GC off, `runtime.GC()`
+  stops the world exactly twice a cycle (sweep termination, mark termination),
+  and 20 cycles read 40 pauses. A target that is not Go (pid 1) must refuse.
 
 ### A stack taken at a function's first instruction is one frame short (#155)
 

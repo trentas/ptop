@@ -106,6 +106,7 @@ message Event {
     // is the probe's own (heap → MEMORY), so it reaches whoever reads that
     // axis, in order with its events.
     ProbeInfo probe_change = 36;
+    GoPauses go_pauses = 37; // #175 — a Go target's stop-the-world pauses, by length
   }
 }
 
@@ -525,6 +526,23 @@ message ThreadInfo {
 }
 message ThreadSnapshot {
   repeated ThreadInfo threads = 1;
+}
+
+// GoPauses is every stop-the-world a Go target finished since the tracer
+// attached (#175), timed from the start of runtime.stopTheWorldWithSema to the
+// start of runtime.startTheWorldWithSema by two entry uprobes: exact, where a
+// detector correlating every thread's deschedule would be a heuristic. Covers
+// the GC's sweep and mark termination and every other stop (ReadMemStats,
+// GOMAXPROCS, a goroutine profile). Category THREAD. Cumulative, so a consumer
+// takes the difference between two snapshots for a window, and a dropped
+// snapshot loses nothing. Go targets only: on any other the probe is
+// unsupported in the handshake, never an empty axis. eBPF-only.
+message GoPauses {
+  // 32 buckets: bucket i counts the pauses of [2^i, 2^(i+1)) µs, bucket 0 also
+  // those under 1 µs, and the last everything longer.
+  repeated uint64 buckets = 1;
+  uint64 count = 2;
+  uint64 sum_ns = 3;
 }
 
 // RunqLatency is every wait for a CPU the target's threads finished since the

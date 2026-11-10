@@ -248,6 +248,13 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Buckets: x.Buckets, Count: x.Count, SumNs: x.SumNs,
 		}}
 
+	case collector.GoPauses:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_THREAD
+		ev.Payload = &pb.Event_GoPauses{GoPauses: &pb.GoPauses{
+			Buckets: x.Buckets, Count: x.Count, SumNs: x.SumNs,
+		}}
+
 	case collector.CaptureCost:
 		// CATEGORY_PROCESS, like HostSample: what the numbers were measured
 		// under, the observer's own cost included (#154).

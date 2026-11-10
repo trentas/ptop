@@ -32,6 +32,9 @@ var futexBPFObj []byte
 //go:embed programs/obj/arm64/goalloc.bpf.o
 var goallocBPFObj []byte
 
+//go:embed programs/obj/arm64/gopause.bpf.o
+var gopauseBPFObj []byte
+
 //go:embed programs/obj/arm64/heap.bpf.o
 var heapBPFObj []byte
 
