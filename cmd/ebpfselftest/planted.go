@@ -914,8 +914,9 @@ func checkBlind(g *grader, pid int) {
 	// Nothing is attached, so nothing may publish a measurement: a value here
 	// would read as a target nobody was watching. The exceptions are context,
 	// not any probe's reading of the target, and have no --disable name:
-	// ProcContext, the target's identity (namespaces, cgroup, ids), and
-	// HostSample, the host's steal and the target cgroup's limits (#153).
+	// ProcContext, the target's identity (namespaces, cgroup, ids),
+	// HostSample, the host's steal and the target cgroup's limits (#153), and
+	// CaptureCost, what ptop itself costs (#154).
 	//
 	// The handler goes on before the bus starts draining, so a value published
 	// in the first instant is not missed.
@@ -925,7 +926,7 @@ func checkBlind(g *grader, pid int) {
 	var seen []string
 	h := bus.AddHandler(func(v any) {
 		switch v.(type) {
-		case collector.ProcContext, collector.HostSample:
+		case collector.ProcContext, collector.HostSample, collector.CaptureCost:
 			return
 		}
 		mu.Lock()

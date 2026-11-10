@@ -126,6 +126,7 @@ type Set struct {
 	TLSEBPF           *TLSEBPFCollector
 	ProcContext       *ProcContextCollector
 	Host              *HostCollector // host steal + the target cgroup's limits (#153)
+	Cost              *CostCollector // what the capture costs, every second (#154)
 	ProcLifecycleEBPF *ProcLifecycleEBPFCollector
 	SecurityEBPF      *SecurityEBPFCollector
 
@@ -403,7 +404,21 @@ func NewSet(cfg SetConfig) *Set {
 		s.probes.active(SubsystemIO, SourceProc)
 	}
 
+	s.startCost(cfg.PID)
 	return s
+}
+
+// startCost starts the capture's own cost reading (#154): the heap probe's
+// estimate when it runs, and ptop's CPU always. Context, not a probe: nothing
+// to --disable.
+func (s *Set) startCost(pid int) {
+	sources := map[string]CostSource{}
+	if s.HeapEBPF != nil {
+		sources[SubsystemHeap] = s.HeapEBPF
+	}
+	if c := NewCostCollector(sources); c.Start(pid) == nil {
+		s.Cost = c
+	}
 }
 
 // enabled reports whether a subsystem should be started, recording it as
@@ -515,6 +530,8 @@ func (s *Set) startCgroup(cfg SetConfig) {
 		s.SecurityEBPF = c
 		s.Sources.Security = "eBPF"
 	}
+	// No heap probe over a subtree, but ptop's own CPU is still worth saying.
+	s.startCost(0)
 }
 
 // startCgroupCollector starts c against a cgroup subtree, honouring --disable and
@@ -598,6 +615,9 @@ func (s *Set) Stop() {
 	if s.Host != nil {
 		s.Host.Stop()
 	}
+	if s.Cost != nil {
+		s.Cost.Stop()
+	}
 	if s.ProcLifecycleEBPF != nil {
 		s.ProcLifecycleEBPF.Stop()
 	}
@@ -639,6 +659,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.TLSEBPF, s.TLSEBPF != nil)
 	add(s.ProcContext, s.ProcContext != nil)
 	add(s.Host, s.Host != nil)
+	add(s.Cost, s.Cost != nil)
 	add(s.ProcLifecycleEBPF, s.ProcLifecycleEBPF != nil)
 	add(s.SecurityEBPF, s.SecurityEBPF != nil)
 	return cs

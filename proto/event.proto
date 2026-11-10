@@ -99,6 +99,7 @@ message Event {
     NetThroughputSample net_throughput = 32; // #128 — monotonic network volume + rate
     HostSample host = 33; // #153 — host steal and the target cgroup's limits, periodic
     RunqLatency runq_latency = 34; // #151 — the target's waits for a CPU, by length
+    CaptureCost capture_cost = 35; // #154 — what this capture costs, estimated every second
   }
 }
 
@@ -649,6 +650,42 @@ message PressureStall {
   double avg60 = 2; // percent
   double avg300 = 3; // percent
   uint64 total_usec = 4;
+}
+
+// CaptureCost is what this capture costs over one window (#154), every second.
+// Category PROCESS: the conditions the numbers were measured under, the
+// observer included. A heap probe's cost is not a constant but a per-hit cost
+// times the target's allocation rate; this says what it is right now.
+message CaptureCost {
+  // ptop's own CPU over the window, % of one core: the observer's cost to the
+  // host, not to the target. Absent on the first sample.
+  optional double ptop_cpu_pct = 1;
+  // The probes whose cost lands on the target's own threads: uprobes, which run
+  // on the thread that trips them. Only the heap probe, when it runs. Every
+  // other probe fires on kernel events and is within the noise floor (README,
+  // "What it costs the process it watches").
+  repeated ProbeCost probes = 2;
+}
+
+// ProbeCost is one uprobe's ESTIMATED cost to the target's threads over the
+// window, with the basis it was computed from:
+//
+//   (entries + returns) × program_ns + entries × trap_entry_ns
+//     + returns × trap_return_ns
+//
+// program_ns is measured in the kernel, on one hit in 64. The trap costs are
+// calibrated on this host when the capture starts, and calibration says how;
+// when it failed, they are 0, calibration says why, and the estimate is the
+// program time alone: a floor.
+message ProbeCost {
+  string probe = 1; // "heap"
+  double estimate_pct = 2; // % of one core, charged to the target's threads
+  uint64 entries = 3; // uprobe hits in the window
+  uint64 returns = 4; // uretprobe hits in the window
+  double program_ns = 5; // mean program time per hit
+  double trap_entry_ns = 6; // a uprobe's trap, calibrated
+  double trap_return_ns = 7; // a uretprobe's extra trap, calibrated
+  string calibration = 8;
 }
 
 // CgroupLimits are the cgroup v2 limits of the target's cgroup, each file's

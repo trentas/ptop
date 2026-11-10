@@ -89,6 +89,7 @@ type GoAllocTracer struct {
 	callsiteMap *ebpf.Map
 	stacksMap   *ebpf.Map
 	accumMap    *ebpf.Map
+	costMap     *ebpf.Map // probe_cost (#154)
 	sampleBytes uint64
 
 	// exe is the target executable as parsed to find mallocgc. Held, not
@@ -187,6 +188,7 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 	t.callsiteMap = coll.Maps["goalloc_callsite"]
 	t.stacksMap = coll.Maps["goalloc_stacks"]
 	t.accumMap = coll.Maps["goalloc_accum"]
+	t.costMap = coll.Maps["probe_cost"]
 	if t.callsiteMap == nil || t.stacksMap == nil || t.accumMap == nil {
 		t.Close()
 		return nil, errors.New("goalloc maps missing")
@@ -358,4 +360,18 @@ func (t *GoAllocTracer) Close() error {
 	}
 	t.exe = nil
 	return nil
+}
+
+// Cost is the probe's hits since it attached and the program time of the ones
+// it timed (#154): the measured half of the cost estimate.
+func (t *GoAllocTracer) Cost() (ProbeCostCounters, error) {
+	if t == nil || t.costMap == nil {
+		return ProbeCostCounters{}, errors.New("tracer not initialized")
+	}
+	var key uint32
+	perCPU := make([]ProbeCostCounters, ebpf.MustPossibleCPU())
+	if err := t.costMap.Lookup(&key, &perCPU); err != nil {
+		return ProbeCostCounters{}, err
+	}
+	return sumProbeCost(perCPU), nil
 }

@@ -5,6 +5,7 @@ package collector
 import (
 	"errors"
 
+	"github.com/trentas/ptop/internal/bpf"
 	"github.com/trentas/ptop/pkg/symbol"
 )
 
@@ -16,7 +17,10 @@ func NewHeapEBPFCollector(uint64, *symbol.Debuginfod) *HeapEBPFCollector {
 func (*HeapEBPFCollector) Start(int) error {
 	return errors.New("eBPF heap collector not available in this build")
 }
-func (*HeapEBPFCollector) Stop()                         {}
+func (*HeapEBPFCollector) Stop() {}
+func (*HeapEBPFCollector) ProbeCost() (bpf.ProbeCostCounters, error) {
+	return bpf.ProbeCostCounters{}, errors.New("eBPF heap collector not available in this build")
+}
 func (*HeapEBPFCollector) Subscribe() <-chan interface{} { return nil }
 
 // ResolveStack / ProcessBuildID satisfy the serve.StackResolver shape so the

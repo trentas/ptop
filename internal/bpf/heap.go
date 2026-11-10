@@ -91,6 +91,7 @@ type HeapTracer struct {
 	allocsMap   *ebpf.Map
 	callsiteMap *ebpf.Map
 	stacksMap   *ebpf.Map
+	costMap     *ebpf.Map // probe_cost (#154)
 
 	libcLo, libcHi uint64 // target VA range of the mapped libc
 }
@@ -136,6 +137,7 @@ func OpenHeapTracer(pid int) (*HeapTracer, error) {
 	t.allocsMap = coll.Maps["heap_allocs"]
 	t.callsiteMap = coll.Maps["heap_callsite_live"]
 	t.stacksMap = coll.Maps["heap_stacks"]
+	t.costMap = coll.Maps["probe_cost"]
 	if t.allocsMap == nil || t.callsiteMap == nil || t.stacksMap == nil {
 		t.Close()
 		return nil, errors.New("heap maps missing")
@@ -411,4 +413,18 @@ func isLibc(base string) bool {
 	return strings.HasPrefix(base, "libc.so") ||
 		strings.HasPrefix(base, "libc-") ||
 		strings.Contains(base, "musl")
+}
+
+// Cost is the probe's hits since it attached and the program time of the ones
+// it timed (#154): the measured half of the cost estimate.
+func (t *HeapTracer) Cost() (ProbeCostCounters, error) {
+	if t == nil || t.costMap == nil {
+		return ProbeCostCounters{}, errors.New("tracer not initialized")
+	}
+	var key uint32
+	perCPU := make([]ProbeCostCounters, ebpf.MustPossibleCPU())
+	if err := t.costMap.Lookup(&key, &perCPU); err != nil {
+		return ProbeCostCounters{}, err
+	}
+	return sumProbeCost(perCPU), nil
 }

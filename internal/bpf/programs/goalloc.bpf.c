@@ -110,6 +110,7 @@
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include "target.bpf.h"
+#include "probecost.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -268,8 +269,7 @@ static __always_inline struct go_callsite_stat *get_or_init_site(__s32 sid)
 // A size of 0 is a real call (Go short-circuits it to &zerobase) but allocates
 // nothing, so it is dropped rather than inflating the site's alloc_count with
 // allocations that never happened.
-SEC("uprobe/runtime.mallocgc")
-int uprobe_go_mallocgc(struct pt_regs *ctx)
+static __always_inline int go_mallocgc(struct pt_regs *ctx)
 {
     if (!is_goalloc_target())
         return 0;
@@ -334,5 +334,14 @@ int uprobe_go_mallocgc(struct pt_regs *ctx)
     e->tgid         = (__u32)(bpf_get_current_pid_tgid() >> 32);
     e->_pad         = 0;
     bpf_ringbuf_submit(e, 0);
+    return 0;
+}
+
+SEC("uprobe/runtime.mallocgc")
+int uprobe_go_mallocgc(struct pt_regs *ctx)
+{
+    __u64 t0 = cost_begin(COST_ENTRY);
+    go_mallocgc(ctx);
+    cost_end(t0);
     return 0;
 }

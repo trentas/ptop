@@ -328,6 +328,7 @@ eBPF programs in `internal/bpf/programs/`:
 - `futex.bpf.c` — wait/wake → lock graph; `signal:signal_deliver` settles a wait a signal stopped (#164)
 - `memory.bpf.c` — mmap/brk/page-fault counters
 - `heap.bpf.c` — libc malloc/free uprobes → live-heap + lifetime + leak suspects
+- `calib.bpf.c` — two empty programs: a uprobe's trap cost, calibrated on the host at startup (#154)
 - `goalloc.bpf.c` — `runtime.mallocgc` uprobe → Go allocation sites (rate + volume),
   stack sampled by bytes allocated
 
@@ -390,6 +391,28 @@ everything else:
 ```
 ptop --pid <PID> --disable heap
 ```
+
+**The capture says what it is costing, every second** (#154).
+- **What is sent:** a `CaptureCost` event carries the heap probe's estimated
+  CPU charge to the target's threads, as % of one core, and ptop's own CPU beside
+  it.
+- **How it is computed:** `(entries + returns) × program_ns + entries ×
+  trap_entry_ns + returns × trap_return_ns`, published with every term.
+- **Where the terms come from:**
+  - **hits:** counted in the kernel;
+  - **program time:** timed there on one hit in 64;
+  - **trap costs:** calibrated on the host when the capture starts. An empty
+    uprobe and uretprobe go on a function of ptop's own, and calls are timed
+    against calls with nothing attached.
+- **Why calibrate:** the trap is most of a hit: on the reference arm64 VM,
+  ~485ns of a ~530ns hit. It differs by CPU and kernel by more than a constant
+  could cover.
+- **How close it gets:** the selftest's `cost` case compares the estimate with
+  what an allocation costs a thread with the probe attached, by that thread's own
+  CPU clock. The estimate lands at 0.87–0.89× of the measured cost.
+
+The table above is the expectation before the capture. The estimate is what
+the capture itself is costing.
 
 ### Heap: two lanes, picked from the target
 
@@ -731,6 +754,7 @@ envelope):
 | `SIGNAL` | `SignalEvent` | signals delivered to the target, with the sending process |
 | `PROCESS` | `ProcContext` | namespace + cgroup + uid/gid (container/execution context) |
 | `THREAD` | `RunqLatency` | every wait for a CPU the target's threads finished, by length (log2 µs histogram, cumulative) (#151) |
+| `PROCESS` | `CaptureCost` | the heap probe's estimated cost to the target and ptop's own CPU, every second, with the estimate's basis (#154) |
 | `PROCESS` | `HostSample` | host steal per second; the target cgroup's limits re-read (#153), its CPU throttling and its PSI for cpu, memory and io (#151) |
 | `PROCESS` | `ProcLifecycleEvent` | exec lineage: fork/exec/exit across the descendant subtree |
 | `SECURITY` | `SecurityEvent` | runtime PROT_EXEC mappings (JIT/RWX), SELinux LSM denials |

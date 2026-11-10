@@ -83,7 +83,8 @@ BPF_SRCS := \
 	internal/bpf/programs/signal.bpf.c \
 	internal/bpf/programs/tls.bpf.c \
 	internal/bpf/programs/proc.bpf.c \
-	internal/bpf/programs/security.bpf.c
+	internal/bpf/programs/security.bpf.c \
+	internal/bpf/programs/calib.bpf.c
 
 BPF_OBJS := $(patsubst internal/bpf/programs/%.bpf.c,$(BPF_OBJ_DIR)/%.bpf.o,$(BPF_SRCS))
 
