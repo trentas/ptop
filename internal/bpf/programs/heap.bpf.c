@@ -36,8 +36,9 @@
 //                                    updated in the kernel so userspace iterates
 //                                    only this small map (one entry per distinct
 //                                    call site) rather than the per-pointer map.
-//   heap_stacks         STACK_TRACE  user stacks captured at alloc time; the Go
-//                                    side resolves a stack_id to its application
+//   heap_stacks         STACK_TRACE  user stacks captured on the allocator's
+//                                    return (see exit_alloc); the Go side
+//                                    resolves a stack_id to its application
 //                                    call-site address (shown in hex until #54
 //                                    symbolizes it).
 //   heap_events         RINGBUF      per-event stream to userspace (struct
@@ -72,16 +73,18 @@ char LICENSE[] SEC("license") = "GPL";
 #define HEAP_LARGE_THRESHOLD (128 * 1024)
 #define HEAP_FLAG_LARGE 1
 
-// User-stack depth captured per call site. 32 frames is plenty to step over the
-// libc allocator internals and reach the application caller.
+// User-stack depth captured per call site. The walk starts in the caller of the
+// allocator (see exit_alloc), so every frame is the application's.
 #define HEAP_STACK_DEPTH 32
 
 // In-flight allocation request, keyed by pid_tgid between entry and exit.
+//
+// No stack here: it is captured at the exit, not the entry (see exit_alloc).
 struct inflight {
-    __u64 size;     // requested bytes (calloc: nmemb*size)
-    __u64 old_ptr;  // realloc's first arg; 0 otherwise
-    __s32 stack_id; // bpf_get_stackid result (<0 → unknown)
+    __u64 size;    // requested bytes (calloc: nmemb*size)
+    __u64 old_ptr; // realloc's first arg; 0 otherwise
     __u32 op;
+    __u32 _pad;
 };
 
 // Per-pointer live allocation record. 24 bytes — mirrored by allocInfo in
@@ -251,15 +254,23 @@ static __always_inline void enter_alloc(void *ctx, __u64 size, __u64 old_ptr,
         return;
     __u64 pt = bpf_get_current_pid_tgid();
     struct inflight inf = {
-        .size     = size,
-        .old_ptr  = old_ptr,
-        .stack_id = (__s32)bpf_get_stackid(ctx, &heap_stacks, BPF_F_USER_STACK),
-        .op       = op,
+        .size    = size,
+        .old_ptr = old_ptr,
+        .op      = op,
     };
     bpf_map_update_elem(&heap_inflight, &pt, &inf, BPF_ANY);
 }
 
-static __always_inline void exit_alloc(__u64 ret)
+// exit_alloc runs on the allocator's return, and that is where the call
+// site's stack is captured. At the entry it would be one frame short: the
+// allocator has not pushed a frame yet, so a frame-pointer walk from there
+// goes from the allocator's first instruction straight to the frame of the
+// function that called the allocating one. The heap axis named that caller
+// for every site, on amd64 and arm64 alike (kernel 7.0, #155).
+// At the return the kernel has already put the original return address back
+// in the instruction pointer, so the walk starts inside the function that
+// called the allocator.
+static __always_inline void exit_alloc(void *ctx, __u64 ret)
 {
     __u64 pt = bpf_get_current_pid_tgid();
     struct inflight *inf = bpf_map_lookup_elem(&heap_inflight, &pt);
@@ -268,9 +279,10 @@ static __always_inline void exit_alloc(__u64 ret)
     __u32 op      = inf->op;
     __u64 size    = inf->size;
     __u64 old_ptr = inf->old_ptr;
-    __s32 sid     = inf->stack_id;
     __u32 tgid    = (__u32)(pt >> 32);
     bpf_map_delete_elem(&heap_inflight, &pt);
+    // Only a block that exists needs a site: an OOM records nothing.
+    __s32 sid = ret != 0 ? (__s32)bpf_get_stackid(ctx, &heap_stacks, BPF_F_USER_STACK) : -1;
 
     if (op == OP_REALLOC) {
         // realloc(p, n): the old block is released iff realloc returned a
@@ -301,7 +313,7 @@ SEC("uretprobe/malloc")
 int BPF_KRETPROBE(uretprobe_malloc, void *ret)
 {
     __u64 t0 = cost_begin(COST_RETURN);
-    exit_alloc((__u64)ret);
+    exit_alloc(ctx, (__u64)ret);
     cost_end(t0);
     return 0;
 }
@@ -323,7 +335,7 @@ SEC("uretprobe/calloc")
 int BPF_KRETPROBE(uretprobe_calloc, void *ret)
 {
     __u64 t0 = cost_begin(COST_RETURN);
-    exit_alloc((__u64)ret);
+    exit_alloc(ctx, (__u64)ret);
     cost_end(t0);
     return 0;
 }
@@ -341,7 +353,7 @@ SEC("uretprobe/realloc")
 int BPF_KRETPROBE(uretprobe_realloc, void *ret)
 {
     __u64 t0 = cost_begin(COST_RETURN);
-    exit_alloc((__u64)ret);
+    exit_alloc(ctx, (__u64)ret);
     cost_end(t0);
     return 0;
 }

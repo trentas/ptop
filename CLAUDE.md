@@ -653,11 +653,37 @@ because it raised the score without being right. So:
 What it found on its way in: a raw futex wait from Go named
 `syscall.Syscall6` as its lock (`isLockInfraFunc` now steps over the syscall
 wrappers); #159, where the io probe loses writes and fs events made on any
-CPU but the first on kernel 7.0 (fixed: see below); and #160, a read the
-kernel re-runs after a signal counted twice (fixed: see below).
+CPU but the first on kernel 7.0 (fixed: see below); #160, a read the
+kernel re-runs after a signal counted twice (fixed: see below); and the libc
+heap lane naming, for every call site, the function that called the
+allocating one (fixed: see below).
 
 A new axis, or a fix to one, adds its planted case in the same PR.
 `sudo ./bin/ebpf-selftest -list` names the cases; `-run cpu,net` runs a subset.
+
+### A stack taken at a function's first instruction is one frame short (#155)
+
+The libc heap lane captured the call site's stack in the uprobe on `malloc`,
+at its first instruction. The allocator has not pushed a frame there, so a
+frame-pointer walk goes from `malloc` straight to the frame of the function
+that called the allocating one. Every site was named one function up: `retain`
+for `retain_malloc`, `retain_calloc` and `grow_realloc` alike, with the three
+folded into one name. Measured on both CI runners (amd64 and arm64, kernel 7.0)
+and on the aarch64 dev host.
+
+The stack is now captured on the allocator's return (`exit_alloc`). By the
+time a uretprobe's handler runs, the kernel has put the original return address
+back in the instruction pointer, so the walk starts inside the caller. It costs
+the same one `bpf_get_stackid` per allocation, now skipped on an OOM, and the
+cost estimate stays unbiased because its timing samples are drawn from entries
+and returns alike.
+
+The Go lane keeps its stack at the entry of `runtime.mallocgc`, and must:
+there is no uretprobe on Go code. The frame it loses is the runtime's own
+(`newobject`, `makeslice`), which the lane skips by name anyway.
+
+The selftest's `heap` case plants each site as its own function, called from a
+loop in another, so a walk one frame short names the loop and fails.
 
 ### A probe that only runs on some CPUs drops what the target did on the others (#159)
 
