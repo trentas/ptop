@@ -20,8 +20,11 @@ type Hub struct {
 	buildID string          // target exec build-id, stamped onto every StackRef (#54)
 	probes  []*pb.ProbeInfo // what became of each collector, for the handshake (#112)
 	build   *pb.PtopBuild   // which ptop this is, for the handshake (#145); nil = unknown
-	mu      sync.Mutex
-	sinks   map[Sink]struct{}
+	// what the target binary is built from, for the handshake (#157); nil in
+	// cgroup mode and whenever it is unknown
+	targetBuild *pb.TargetBuild
+	mu          sync.Mutex
+	sinks       map[Sink]struct{}
 
 	// Execution-context identity (#60) stamped onto every outgoing envelope.
 	// Updated whenever a ProcContext snapshot flows through; zero until the
@@ -45,7 +48,8 @@ func NewHub(target Target, buildID string, set *collector.Set) *Hub {
 
 // targetInfo renders the handshake every subscriber receives before its first
 // event, so a consumer knows the scope of what follows (#94), which probes
-// produced it (#112) and which ptop did (#145).
+// produced it (#112), which ptop did (#145) and what the target is built from
+// (#157).
 func (h *Hub) targetInfo() *pb.TargetInfo {
 	if h.target.IsCgroup() {
 		return &pb.TargetInfo{
@@ -57,10 +61,11 @@ func (h *Hub) targetInfo() *pb.TargetInfo {
 		}
 	}
 	return &pb.TargetInfo{
-		Mode:   pb.TargetMode_TARGET_MODE_PID,
-		Pid:    int32(h.target.PID),
-		Probes: h.probes,
-		Ptop:   h.build,
+		Mode:        pb.TargetMode_TARGET_MODE_PID,
+		Pid:         int32(h.target.PID),
+		Probes:      h.probes,
+		Ptop:        h.build,
+		TargetBuild: h.targetBuild,
 	}
 }
 

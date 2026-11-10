@@ -243,7 +243,18 @@ type TargetInfo struct {
 	// know which side of such a change each one is on — the same reason it
 	// compares their probe sets — or it reads a change of instrumentation as a
 	// change of behaviour.
-	Ptop          *PtopBuild `protobuf:"bytes,6,opt,name=ptop,proto3" json:"ptop,omitempty"`
+	Ptop *PtopBuild `protobuf:"bytes,6,opt,name=ptop,proto3" json:"ptop,omitempty"`
+	// What the target binary is built from (#157): its Go toolchain, main module
+	// and every dependency module, read from the executable's own build info.
+	// Pid mode only. Absent when the executable records no Go build info (a C,
+	// Rust or JVM target), when it could not be read, and in cgroup mode, where
+	// one process's build is not the subtree's. A consumer reads absent as
+	// unknown.
+	//
+	// It is what tells a dependency's frame from the application's: Go frame
+	// names do not, and the main module path does. Two captures' module lists
+	// are also the dependency diff of a deploy, without the code diff.
+	TargetBuild   *TargetBuild `protobuf:"bytes,7,opt,name=target_build,json=targetBuild,proto3" json:"target_build,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -320,6 +331,224 @@ func (x *TargetInfo) GetPtop() *PtopBuild {
 	return nil
 }
 
+func (x *TargetInfo) GetTargetBuild() *TargetBuild {
+	if x != nil {
+		return x.TargetBuild
+	}
+	return nil
+}
+
+// TargetBuild is what a Go binary records about its own build, in the
+// .go.buildinfo section that `-s -w` does not strip.
+type TargetBuild struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The toolchain that built it ("go1.26.10").
+	GoVersion string `protobuf:"bytes,1,opt,name=go_version,json=goVersion,proto3" json:"go_version,omitempty"`
+	// The main package's import path ("github.com/acme/svc/cmd/api").
+	Path string `protobuf:"bytes,2,opt,name=path,proto3" json:"path,omitempty"`
+	// The module the main package belongs to. Its version is "(devel)" for a
+	// binary built from a checkout rather than from a module version.
+	Main *GoModule `protobuf:"bytes,3,opt,name=main,proto3" json:"main,omitempty"`
+	// Every other module linked into the binary, sorted by path.
+	Deps []*GoModule `protobuf:"bytes,4,rep,name=deps,proto3" json:"deps,omitempty"`
+	// The vcs.* build settings only: vcs, vcs.revision, vcs.time, vcs.modified.
+	// The other settings are withheld: -ldflags lands among them, and
+	// `-X main.apiKey=...` is a known way to put a secret into a binary.
+	Vcs           []*BuildSetting `protobuf:"bytes,5,rep,name=vcs,proto3" json:"vcs,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TargetBuild) Reset() {
+	*x = TargetBuild{}
+	mi := &file_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TargetBuild) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TargetBuild) ProtoMessage() {}
+
+func (x *TargetBuild) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TargetBuild.ProtoReflect.Descriptor instead.
+func (*TargetBuild) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *TargetBuild) GetGoVersion() string {
+	if x != nil {
+		return x.GoVersion
+	}
+	return ""
+}
+
+func (x *TargetBuild) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *TargetBuild) GetMain() *GoModule {
+	if x != nil {
+		return x.Main
+	}
+	return nil
+}
+
+func (x *TargetBuild) GetDeps() []*GoModule {
+	if x != nil {
+		return x.Deps
+	}
+	return nil
+}
+
+func (x *TargetBuild) GetVcs() []*BuildSetting {
+	if x != nil {
+		return x.Vcs
+	}
+	return nil
+}
+
+// GoModule is one module as the binary records it.
+type GoModule struct {
+	state   protoimpl.MessageState `protogen:"open.v1"`
+	Path    string                 `protobuf:"bytes,1,opt,name=path,proto3" json:"path,omitempty"`
+	Version string                 `protobuf:"bytes,2,opt,name=version,proto3" json:"version,omitempty"`
+	// The go.sum checksum. Empty for a replaced module and for the main module.
+	Sum string `protobuf:"bytes,3,opt,name=sum,proto3" json:"sum,omitempty"`
+	// The module a `replace` directive substituted for this one: a local path
+	// has no version. Absent when nothing replaced it.
+	Replace       *GoModule `protobuf:"bytes,4,opt,name=replace,proto3" json:"replace,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GoModule) Reset() {
+	*x = GoModule{}
+	mi := &file_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GoModule) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GoModule) ProtoMessage() {}
+
+func (x *GoModule) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GoModule.ProtoReflect.Descriptor instead.
+func (*GoModule) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *GoModule) GetPath() string {
+	if x != nil {
+		return x.Path
+	}
+	return ""
+}
+
+func (x *GoModule) GetVersion() string {
+	if x != nil {
+		return x.Version
+	}
+	return ""
+}
+
+func (x *GoModule) GetSum() string {
+	if x != nil {
+		return x.Sum
+	}
+	return ""
+}
+
+func (x *GoModule) GetReplace() *GoModule {
+	if x != nil {
+		return x.Replace
+	}
+	return nil
+}
+
+// BuildSetting is one key=value build setting.
+type BuildSetting struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BuildSetting) Reset() {
+	*x = BuildSetting{}
+	mi := &file_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BuildSetting) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BuildSetting) ProtoMessage() {}
+
+func (x *BuildSetting) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BuildSetting.ProtoReflect.Descriptor instead.
+func (*BuildSetting) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BuildSetting) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *BuildSetting) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
 // PtopBuild identifies a ptop binary. Every field is empty when unknown.
 type PtopBuild struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -341,7 +570,7 @@ type PtopBuild struct {
 
 func (x *PtopBuild) Reset() {
 	*x = PtopBuild{}
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -353,7 +582,7 @@ func (x *PtopBuild) String() string {
 func (*PtopBuild) ProtoMessage() {}
 
 func (x *PtopBuild) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -366,7 +595,7 @@ func (x *PtopBuild) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PtopBuild.ProtoReflect.Descriptor instead.
 func (*PtopBuild) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{2}
+	return file_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *PtopBuild) GetVersion() string {
@@ -413,7 +642,7 @@ type ProbeInfo struct {
 
 func (x *ProbeInfo) Reset() {
 	*x = ProbeInfo{}
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -425,7 +654,7 @@ func (x *ProbeInfo) String() string {
 func (*ProbeInfo) ProtoMessage() {}
 
 func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -438,7 +667,7 @@ func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeInfo.ProtoReflect.Descriptor instead.
 func (*ProbeInfo) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{3}
+	return file_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ProbeInfo) GetName() string {
@@ -485,7 +714,7 @@ type StreamMeta struct {
 
 func (x *StreamMeta) Reset() {
 	*x = StreamMeta{}
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -497,7 +726,7 @@ func (x *StreamMeta) String() string {
 func (*StreamMeta) ProtoMessage() {}
 
 func (x *StreamMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -510,7 +739,7 @@ func (x *StreamMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamMeta.ProtoReflect.Descriptor instead.
 func (*StreamMeta) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{4}
+	return file_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *StreamMeta) GetDropped() uint64 {
@@ -542,7 +771,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -554,7 +783,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -567,7 +796,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{5}
+	return file_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *SubscribeResponse) GetKind() isSubscribeResponse_Kind {
@@ -630,7 +859,7 @@ type ResolveStackRequest struct {
 
 func (x *ResolveStackRequest) Reset() {
 	*x = ResolveStackRequest{}
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -642,7 +871,7 @@ func (x *ResolveStackRequest) String() string {
 func (*ResolveStackRequest) ProtoMessage() {}
 
 func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -655,7 +884,7 @@ func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackRequest.ProtoReflect.Descriptor instead.
 func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{6}
+	return file_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ResolveStackRequest) GetStackId() uint64 {
@@ -685,7 +914,7 @@ type ResolveStackResponse struct {
 
 func (x *ResolveStackResponse) Reset() {
 	*x = ResolveStackResponse{}
-	mi := &file_service_proto_msgTypes[7]
+	mi := &file_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -697,7 +926,7 @@ func (x *ResolveStackResponse) String() string {
 func (*ResolveStackResponse) ProtoMessage() {}
 
 func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[7]
+	mi := &file_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -710,7 +939,7 @@ func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackResponse.ProtoReflect.Descriptor instead.
 func (*ResolveStackResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{7}
+	return file_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ResolveStackResponse) GetFrames() []*StackFrame {
@@ -736,7 +965,7 @@ const file_service_proto_rawDesc = "" +
 	"\n" +
 	"categories\x18\x01 \x03(\x0e2\x11.ptop.v1.CategoryR\n" +
 	"categories\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\xd9\x01\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\x92\x02\n" +
 	"\n" +
 	"TargetInfo\x12'\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x13.ptop.v1.TargetModeR\x04mode\x12\x10\n" +
@@ -745,7 +974,23 @@ const file_service_proto_rawDesc = "" +
 	"cgroupPath\x12\x1b\n" +
 	"\tcgroup_id\x18\x04 \x01(\x04R\bcgroupId\x12*\n" +
 	"\x06probes\x18\x05 \x03(\v2\x12.ptop.v1.ProbeInfoR\x06probes\x12&\n" +
-	"\x04ptop\x18\x06 \x01(\v2\x12.ptop.v1.PtopBuildR\x04ptop\"\\\n" +
+	"\x04ptop\x18\x06 \x01(\v2\x12.ptop.v1.PtopBuildR\x04ptop\x127\n" +
+	"\ftarget_build\x18\a \x01(\v2\x14.ptop.v1.TargetBuildR\vtargetBuild\"\xb7\x01\n" +
+	"\vTargetBuild\x12\x1d\n" +
+	"\n" +
+	"go_version\x18\x01 \x01(\tR\tgoVersion\x12\x12\n" +
+	"\x04path\x18\x02 \x01(\tR\x04path\x12%\n" +
+	"\x04main\x18\x03 \x01(\v2\x11.ptop.v1.GoModuleR\x04main\x12%\n" +
+	"\x04deps\x18\x04 \x03(\v2\x11.ptop.v1.GoModuleR\x04deps\x12'\n" +
+	"\x03vcs\x18\x05 \x03(\v2\x15.ptop.v1.BuildSettingR\x03vcs\"w\n" +
+	"\bGoModule\x12\x12\n" +
+	"\x04path\x18\x01 \x01(\tR\x04path\x12\x18\n" +
+	"\aversion\x18\x02 \x01(\tR\aversion\x12\x10\n" +
+	"\x03sum\x18\x03 \x01(\tR\x03sum\x12+\n" +
+	"\areplace\x18\x04 \x01(\v2\x11.ptop.v1.GoModuleR\areplace\"6\n" +
+	"\fBuildSetting\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"\\\n" +
 	"\tPtopBuild\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12\x16\n" +
 	"\x06commit\x18\x02 \x01(\tR\x06commit\x12\x1d\n" +
@@ -800,41 +1045,49 @@ func file_service_proto_rawDescGZIP() []byte {
 }
 
 var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_service_proto_goTypes = []any{
 	(TargetMode)(0),              // 0: ptop.v1.TargetMode
 	(ProbeState)(0),              // 1: ptop.v1.ProbeState
 	(*SubscribeRequest)(nil),     // 2: ptop.v1.SubscribeRequest
 	(*TargetInfo)(nil),           // 3: ptop.v1.TargetInfo
-	(*PtopBuild)(nil),            // 4: ptop.v1.PtopBuild
-	(*ProbeInfo)(nil),            // 5: ptop.v1.ProbeInfo
-	(*StreamMeta)(nil),           // 6: ptop.v1.StreamMeta
-	(*SubscribeResponse)(nil),    // 7: ptop.v1.SubscribeResponse
-	(*ResolveStackRequest)(nil),  // 8: ptop.v1.ResolveStackRequest
-	(*ResolveStackResponse)(nil), // 9: ptop.v1.ResolveStackResponse
-	(Category)(0),                // 10: ptop.v1.Category
-	(*Event)(nil),                // 11: ptop.v1.Event
-	(*StackFrame)(nil),           // 12: ptop.v1.StackFrame
+	(*TargetBuild)(nil),          // 4: ptop.v1.TargetBuild
+	(*GoModule)(nil),             // 5: ptop.v1.GoModule
+	(*BuildSetting)(nil),         // 6: ptop.v1.BuildSetting
+	(*PtopBuild)(nil),            // 7: ptop.v1.PtopBuild
+	(*ProbeInfo)(nil),            // 8: ptop.v1.ProbeInfo
+	(*StreamMeta)(nil),           // 9: ptop.v1.StreamMeta
+	(*SubscribeResponse)(nil),    // 10: ptop.v1.SubscribeResponse
+	(*ResolveStackRequest)(nil),  // 11: ptop.v1.ResolveStackRequest
+	(*ResolveStackResponse)(nil), // 12: ptop.v1.ResolveStackResponse
+	(Category)(0),                // 13: ptop.v1.Category
+	(*Event)(nil),                // 14: ptop.v1.Event
+	(*StackFrame)(nil),           // 15: ptop.v1.StackFrame
 }
 var file_service_proto_depIdxs = []int32{
-	10, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
+	13, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
 	0,  // 1: ptop.v1.TargetInfo.mode:type_name -> ptop.v1.TargetMode
-	5,  // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
-	4,  // 3: ptop.v1.TargetInfo.ptop:type_name -> ptop.v1.PtopBuild
-	1,  // 4: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
-	3,  // 5: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
-	11, // 6: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
-	6,  // 7: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	12, // 8: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
-	2,  // 9: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	8,  // 10: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
-	7,  // 11: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
-	9,  // 12: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
-	11, // [11:13] is the sub-list for method output_type
-	9,  // [9:11] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	8,  // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
+	7,  // 3: ptop.v1.TargetInfo.ptop:type_name -> ptop.v1.PtopBuild
+	4,  // 4: ptop.v1.TargetInfo.target_build:type_name -> ptop.v1.TargetBuild
+	5,  // 5: ptop.v1.TargetBuild.main:type_name -> ptop.v1.GoModule
+	5,  // 6: ptop.v1.TargetBuild.deps:type_name -> ptop.v1.GoModule
+	6,  // 7: ptop.v1.TargetBuild.vcs:type_name -> ptop.v1.BuildSetting
+	5,  // 8: ptop.v1.GoModule.replace:type_name -> ptop.v1.GoModule
+	1,  // 9: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
+	3,  // 10: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
+	14, // 11: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
+	9,  // 12: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
+	15, // 13: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
+	2,  // 14: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	11, // 15: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
+	10, // 16: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	12, // 17: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
+	16, // [16:18] is the sub-list for method output_type
+	14, // [14:16] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -843,7 +1096,7 @@ func file_service_proto_init() {
 		return
 	}
 	file_event_proto_init()
-	file_service_proto_msgTypes[5].OneofWrappers = []any{
+	file_service_proto_msgTypes[8].OneofWrappers = []any{
 		(*SubscribeResponse_Event)(nil),
 		(*SubscribeResponse_Meta)(nil),
 	}
@@ -853,7 +1106,7 @@ func file_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   8,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

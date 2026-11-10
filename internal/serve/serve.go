@@ -168,6 +168,7 @@ func fixedTargetRegistry(ctx context.Context, target Target, feed *collector.Fee
 	}
 	hub := NewHub(target, buildID, set)
 	hub.build = build.wire()
+	hub.targetBuild = readTargetBuild(hub.target)
 	hub.Start(ctx, bus)
 	return &fixedRegistry{target: target, hub: hub, resolver: resolver}
 }

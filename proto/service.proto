@@ -67,6 +67,52 @@ message TargetInfo {
   // compares their probe sets — or it reads a change of instrumentation as a
   // change of behaviour.
   PtopBuild ptop = 6;
+  // What the target binary is built from (#157): its Go toolchain, main module
+  // and every dependency module, read from the executable's own build info.
+  // Pid mode only. Absent when the executable records no Go build info (a C,
+  // Rust or JVM target), when it could not be read, and in cgroup mode, where
+  // one process's build is not the subtree's. A consumer reads absent as
+  // unknown.
+  //
+  // It is what tells a dependency's frame from the application's: Go frame
+  // names do not, and the main module path does. Two captures' module lists
+  // are also the dependency diff of a deploy, without the code diff.
+  TargetBuild target_build = 7;
+}
+
+// TargetBuild is what a Go binary records about its own build, in the
+// .go.buildinfo section that `-s -w` does not strip.
+message TargetBuild {
+  // The toolchain that built it ("go1.26.10").
+  string go_version = 1;
+  // The main package's import path ("github.com/acme/svc/cmd/api").
+  string path = 2;
+  // The module the main package belongs to. Its version is "(devel)" for a
+  // binary built from a checkout rather than from a module version.
+  GoModule main = 3;
+  // Every other module linked into the binary, sorted by path.
+  repeated GoModule deps = 4;
+  // The vcs.* build settings only: vcs, vcs.revision, vcs.time, vcs.modified.
+  // The other settings are withheld: -ldflags lands among them, and
+  // `-X main.apiKey=...` is a known way to put a secret into a binary.
+  repeated BuildSetting vcs = 5;
+}
+
+// GoModule is one module as the binary records it.
+message GoModule {
+  string path = 1;
+  string version = 2;
+  // The go.sum checksum. Empty for a replaced module and for the main module.
+  string sum = 3;
+  // The module a `replace` directive substituted for this one: a local path
+  // has no version. Absent when nothing replaced it.
+  GoModule replace = 4;
+}
+
+// BuildSetting is one key=value build setting.
+message BuildSetting {
+  string key = 1;
+  string value = 2;
 }
 
 // PtopBuild identifies a ptop binary. Every field is empty when unknown.
