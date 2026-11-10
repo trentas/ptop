@@ -236,6 +236,13 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			CgroupId: x.CgroupID, Cgroup: x.Cgroup, Container: x.Container,
 		}}
 
+	case collector.RunqLatency:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_THREAD
+		ev.Payload = &pb.Event_RunqLatency{RunqLatency: &pb.RunqLatency{
+			Buckets: x.Buckets, Count: x.Count, SumNs: x.SumNs,
+		}}
+
 	case collector.HostSample:
 		// CATEGORY_PROCESS, like ProcContext: the conditions the numbers were
 		// measured under (#153).

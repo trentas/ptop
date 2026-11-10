@@ -12,12 +12,14 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-// ThreadsTracer loads threads.bpf.o, attaches sched:sched_switch, and exposes
-// Totals() to read tid_state (keyed by the target's namespace-local TIDs).
+// ThreadsTracer loads threads.bpf.o, attaches sched:sched_switch and
+// sched:sched_wakeup, and exposes Totals() to read tid_state (keyed by the
+// target's namespace-local TIDs) and RunqHistogram().
 type ThreadsTracer struct {
 	coll     *ebpf.Collection
-	link     link.Link
+	links    []link.Link
 	stateMap *ebpf.Map
+	histMap  *ebpf.Map
 }
 
 func OpenThreadsTracer(target Target) (*ThreadsTracer, error) {
@@ -59,17 +61,30 @@ func OpenThreadsTracer(target Target) (*ThreadsTracer, error) {
 		return nil, errors.New("tid_state map missing")
 	}
 
-	prog := coll.Programs["handle_sched_switch"]
-	if prog == nil {
+	t.histMap = coll.Maps["runq_hist"]
+	if t.histMap == nil {
 		t.Close()
-		return nil, errors.New("handle_sched_switch program missing")
+		return nil, errors.New("runq_hist map missing")
 	}
-	l, err := link.Tracepoint("sched", "sched_switch", prog, nil)
-	if err != nil {
-		t.Close()
-		return nil, fmt.Errorf("attach sched/sched_switch: %w", err)
+
+	// sched_wakeup ends a sleep where it ends, so the wait for a CPU after it
+	// is run-queue time (#151).
+	for _, tp := range []struct{ name, prog string }{
+		{"sched_switch", "handle_sched_switch"},
+		{"sched_wakeup", "handle_sched_wakeup"},
+	} {
+		prog := coll.Programs[tp.prog]
+		if prog == nil {
+			t.Close()
+			return nil, fmt.Errorf("%s program missing", tp.prog)
+		}
+		l, err := link.Tracepoint("sched", tp.name, prog, nil)
+		if err != nil {
+			t.Close()
+			return nil, fmt.Errorf("attach sched/%s: %w", tp.name, err)
+		}
+		t.links = append(t.links, l)
 	}
-	t.link = l
 
 	return t, nil
 }
@@ -139,14 +154,36 @@ func (t *ThreadsTracer) Totals() (map[uint32]ThreadTotals, error) {
 	return out, nil
 }
 
+// RunqHistogram sums the per-CPU run-queue histogram: every wait for a CPU
+// the target's threads finished since the attach (#151).
+func (t *ThreadsTracer) RunqHistogram() (RunqHist, error) {
+	var out RunqHist
+	if t == nil || t.histMap == nil {
+		return out, errors.New("tracer not initialized")
+	}
+	var key uint32
+	var perCPU []RunqHist
+	if err := t.histMap.Lookup(&key, &perCPU); err != nil {
+		return out, err
+	}
+	for _, h := range perCPU {
+		for i := range out.Bucket {
+			out.Bucket[i] += h.Bucket[i]
+		}
+		out.Count += h.Count
+		out.SumNs += h.SumNs
+	}
+	return out, nil
+}
+
 func (t *ThreadsTracer) Close() error {
 	if t == nil {
 		return nil
 	}
-	if t.link != nil {
-		_ = t.link.Close()
-		t.link = nil
+	for _, l := range t.links {
+		_ = l.Close()
 	}
+	t.links = nil
 	if t.coll != nil {
 		t.coll.Close()
 		t.coll = nil

@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -25,16 +26,42 @@ import (
 //   - one asleep from mid-case on, after running. The tracer knows it, and its
 //     sleep is an interval still open at every read;
 //   - two burners pinned to one CPU. Each is preempted for the other, so about
-//     half its time is a wait for a CPU, not a sleep.
+//     half its time is a wait for a CPU, not a sleep;
+//   - on the same CPU, a SCHED_IDLE thread that sleeps 1ms at a time. A
+//     SCHED_IDLE task does not preempt the burners when it wakes, so nearly
+//     all its time is the wait for a CPU after each wakeup.
 //
 // Before #150 both sleepers read 0% off-CPU in every window, and the burners'
-// wait for the CPU read as off-CPU.
+// wait for the CPU read as off-CPU. Before #151's sched_wakeup the idle
+// sleeper's wait after each wakeup read as asleep.
 
 // threadsWindow is one published snapshot and the span it covers, from the
 // previous snapshot's arrival to its own.
 type threadsWindow struct {
 	from, to time.Time
 	byTID    map[int]collector.ThreadInfo
+}
+
+// runqAt is a RunqLatency snapshot and when it arrived.
+type runqAt struct {
+	at time.Time
+	h  collector.RunqLatency
+}
+
+// idleSleeper sleeps 1ms at a time until until, as SCHED_IDLE, then puts the
+// thread back to SCHED_OTHER before it returns to the runtime.
+func idleSleeper(tid chan<- int, until time.Time) error {
+	if err := unix.SchedSetAttr(0, &unix.SchedAttr{Policy: unix.SCHED_IDLE}, 0); err != nil {
+		tid <- 0
+		return fmt.Errorf("SCHED_IDLE: %w", err)
+	}
+	defer func() { _ = unix.SchedSetAttr(0, &unix.SchedAttr{Policy: unix.SCHED_NORMAL}, 0) }()
+	tid <- unix.Gettid()
+	nap := unix.NsecToTimespec(int64(time.Millisecond))
+	for time.Now().Before(until) {
+		_ = unix.ClockNanosleep(unix.CLOCK_MONOTONIC, 0, &nap, nil)
+	}
+	return nil
 }
 
 var threadsBurnSink uint64
@@ -79,6 +106,13 @@ func checkThreads(g *grader, pid int) {
 		return
 	}
 	shared := cpus[len(cpus)-1]
+	// Every planted thread is a locked OS thread, and a locked thread whose
+	// goroutine waits for a Go P sleeps in the kernel until it gets one. With
+	// the burners and the idle sleeper holding every P, they would park each
+	// other and read asleep for the Go scheduler's reasons, not the kernel's.
+	// A P for each of them, and for the collector, keeps the measurement the
+	// kernel's.
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(len(cpus) + 4))
 	t0, err := bpf.MonotonicNanos()
 	if err != nil {
 		g.broken("threads", "the monotonic clock", err)
@@ -118,6 +152,7 @@ func checkThreads(g *grader, pid int) {
 	}
 	attach := time.Now()
 	var windows []threadsWindow
+	var runq []runqAt
 	stop, received := make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(received)
@@ -126,6 +161,10 @@ func checkThreads(g *grader, pid int) {
 		for {
 			select {
 			case v := <-ch:
+				if h, ok := v.(collector.RunqLatency); ok {
+					runq = append(runq, runqAt{at: time.Now(), h: h})
+					continue
+				}
 				ts, ok := v.([]collector.ThreadInfo)
 				if !ok {
 					continue
@@ -161,6 +200,17 @@ func checkThreads(g *grader, pid int) {
 		}()
 	}
 	burners := []int{<-burnTIDs, <-burnTIDs}
+	idleTID := make(chan int, 1)
+	var idleErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		pinErr := onCPU(shared, func() { idleErr = idleSleeper(idleTID, burnUntil) })
+		if idleErr == nil {
+			idleErr = pinErr
+		}
+	}()
+	idle := <-idleTID
 	burnStart := time.Now()
 
 	time.Sleep(time.Until(attach.Add(6200 * time.Millisecond)))
@@ -206,12 +256,28 @@ func checkThreads(g *grader, pid int) {
 	sleeperCheck("asleep since before the attach", early, attach)
 	sleeperCheck("asleep since mid-case, after running (#150)", late, lateAsleep)
 
+	// The wait after a wakeup is run-queue time (#151).
+	if idleErr != nil || idle == 0 {
+		g.broken("threads", "the SCHED_IDLE sleeper", fmt.Errorf("%v", idleErr))
+	} else if ws := span(idle, burnStart, burnUntil); len(ws) < 2 {
+		g.broken("threads", "SCHED_IDLE sleeper", fmt.Errorf("%d windows inside the burn, want at least 2", len(ws)))
+	} else {
+		g.check("threads", "SCHED_IDLE sleeper beside the burners: its wait after each wakeup is run queue, not asleep (#151)",
+			// Measured: ~0/40/60 with sched_wakeup, 0/100/0 without it.
+			allWindows(ws, func(t collector.ThreadInfo) bool { return t.RunqWaitPct >= 25 && t.OffCpuPct <= 75 }),
+			"run queue ≥ 25%, off ≤ 75% (0/100/0 without sched_wakeup)", shares(ws))
+	}
+
+	var burnerRunq time.Duration
 	for i, tid := range burners {
 		who := fmt.Sprintf("burner %d of 2 on one CPU", i+1)
 		ws := span(tid, burnStart, burnUntil)
 		if len(ws) < 2 {
 			g.broken("threads", who, fmt.Errorf("%d windows inside the burn, want at least 2", len(ws)))
 			continue
+		}
+		for _, t := range ws {
+			burnerRunq += time.Duration(t.RunqWaitPct / 100 * float64(time.Second))
 		}
 		g.check("threads", who+": the wait for the CPU is run queue, not off-CPU (#150)",
 			allWindows(ws, func(t collector.ThreadInfo) bool {
@@ -223,6 +289,26 @@ func checkThreads(g *grader, pid int) {
 				return s >= 97 && s <= 100.5
 			}), "[97%, 100%]", sums(ws))
 	}
+
+	// The run-queue histogram holds the same waits by length: over the burn it
+	// has at least the burners' (#151). Snapshots are cumulative.
+	var before, after *collector.RunqLatency
+	for i := range runq {
+		if !runq[i].at.After(burnStart.Add(margin)) {
+			before = &runq[i].h
+		}
+		if !runq[i].at.After(burnUntil.Add(-margin)) {
+			after = &runq[i].h
+		}
+	}
+	if before == nil || after == nil || after.Count <= before.Count {
+		g.broken("threads", "run-queue histogram over the burn", fmt.Errorf("%d snapshots, none bracketing the burn", len(runq)))
+		return
+	}
+	sum := time.Duration(after.SumNs - before.SumNs)
+	g.note("threads", "run-queue histogram over the burn: %d waits, %v", after.Count-before.Count, sum.Round(time.Millisecond))
+	g.check("threads", "the run-queue histogram holds at least the burners' waits", sum >= burnerRunq*8/10,
+		fmt.Sprintf("≥ 80%% of %v", burnerRunq.Round(time.Millisecond)), sum.Round(time.Millisecond).String())
 }
 
 func allWindows(ws []collector.ThreadInfo, ok func(collector.ThreadInfo) bool) bool {

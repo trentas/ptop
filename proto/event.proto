@@ -98,6 +98,7 @@ message Event {
     CpuProfile cpu_profile = 31; // #125 — periodic per-function CPU attribution
     NetThroughputSample net_throughput = 32; // #128 — monotonic network volume + rate
     HostSample host = 33; // #153 — host steal and the target cgroup's limits, periodic
+    RunqLatency runq_latency = 34; // #151 — the target's waits for a CPU, by length
   }
 }
 
@@ -462,21 +463,35 @@ message ThreadInfo {
   string waiting = 5; // blocking lock/syscall name, empty if none
   uint64 ctx_switches = 6; // eBPF-only; 0 via /proc
   // off_cpu_pct: % of the window the thread spent switched out asleep (S, D,
-  // T...): waiting on a lock, I/O, a timer or for work to arrive. The kernel
-  // does not tell a stall from idleness; `waiting` says on what. It includes
-  // the wait for a CPU after the wakeup that ended the sleep. A sleep still
-  // going on when the window closes counts in that window. eBPF-only; 0 via
-  // /proc.
+  // T...), from the switch-out to the wakeup: waiting on a lock, I/O, a timer
+  // or for work to arrive. The kernel does not tell a stall from idleness;
+  // `waiting` says on what. A sleep still going on when the window closes
+  // counts in that window. eBPF-only; 0 via /proc.
   double off_cpu_pct = 7;
-  // runq_wait_pct: % of the window the thread was runnable but not on a CPU
-  // after being preempted: saturation, where off_cpu_pct is waiting on
-  // something else. eBPF-only; 0 via /proc. cpu_pct + off_cpu_pct +
+  // runq_wait_pct: % of the window the thread was runnable but not on a CPU,
+  // after a wakeup or a preemption, until it was switched in: saturation,
+  // where off_cpu_pct is waiting on something else. RunqLatency has the same
+  // waits by length. eBPF-only; 0 via /proc. cpu_pct + off_cpu_pct +
   // runq_wait_pct is 100 for a thread seen for the whole window; less is a
   // thread that did not exist for all of it or was not seen yet.
   double runq_wait_pct = 8;
 }
 message ThreadSnapshot {
   repeated ThreadInfo threads = 1;
+}
+
+// RunqLatency is every wait for a CPU the target's threads finished since the
+// threads tracer attached (#151), from the wakeup or preemption that made a
+// thread runnable to the switch-in that ran it, by length. Category THREAD.
+// Cumulative, so a consumer takes the difference between two snapshots for a
+// window and percentiles from the buckets, and a dropped snapshot loses
+// nothing. eBPF-only.
+message RunqLatency {
+  // 32 buckets: bucket i counts the waits of [2^i, 2^(i+1)) µs, bucket 0 also
+  // those under 1 µs, and the last everything longer.
+  repeated uint64 buckets = 1;
+  uint64 count = 2;
+  uint64 sum_ns = 3;
 }
 
 // ─── I/O ──────────────────────────────────────────────────────────────────

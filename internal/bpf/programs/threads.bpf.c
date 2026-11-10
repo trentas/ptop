@@ -13,6 +13,7 @@
 //   threads_target_pid  ARRAY[1]   struct target_filter (written by Go)
 //   root2ns             LRU_HASH   root-ns tid → namespace-local tid
 //   tid_state           HASH       ns-local tid → struct thread_state
+//   runq_hist           PERCPU_ARRAY[1]  log2(µs) histogram of run-queue waits (#151)
 //
 // PID-namespace handling:
 //   sched_switch delivers prev_pid/next_pid as ROOT-namespace TIDs, but the
@@ -39,8 +40,12 @@
 //   is open and since when, and the Go side adds the open part at read time
 //   (ThreadsTracer.Totals), the way cpu_on_since does for the CPU axis.
 //
-//   The wait between a wakeup and the switch-in that follows is still off-CPU
-//   here: telling it apart needs sched_wakeup, which is #151.
+//   A sleep ends at the wakeup, not at the switch-in that follows it: the
+//   sched_wakeup handler closes the asleep interval there and opens a runnable
+//   one, so the wait for a CPU after a wakeup is run-queue time like the wait
+//   after a preemption (#151). Every runnable interval that ends at a switch-in
+//   also goes into runq_hist, a log2 histogram of how long the target's threads
+//   waited for a CPU.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
@@ -72,6 +77,28 @@ struct sched_switch_args {
 // the zombie listed.
 #define PREV_STATE_EXITED 0x30
 
+// Layout of the sched:sched_wakeup tracepoint. pid is the woken task's, in
+// the root namespace; `current` is the waker, so the filter is root2ns.
+// /sys/kernel/tracing/events/sched/sched_wakeup/format
+struct sched_wakeup_args {
+    unsigned long long _pad;
+    char comm[16];   // offset 8
+    int pid;         // offset 24
+    int prio;        // offset 28
+    int target_cpu;  // offset 32
+};
+
+#define RUNQ_BUCKETS 32
+
+// runq_hist counts the target's run-queue waits by length: bucket i holds the
+// waits of [2^i, 2^(i+1)) µs, and bucket 0 those under 2 µs. Per CPU, summed
+// by the Go side; cumulative since the attach.
+struct runq_hist {
+    __u64 bucket[RUNQ_BUCKETS];
+    __u64 count;
+    __u64 sum_ns;
+};
+
 #define OFF_ASLEEP   0
 #define OFF_RUNNABLE 1
 #define OFF_EXITED   2
@@ -99,6 +126,13 @@ struct {
     __type(value, struct target_filter);
     __uint(max_entries, 1);
 } threads_target_pid SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __type(key, __u32);
+    __type(value, struct runq_hist);
+    __uint(max_entries, 1);
+} runq_hist SEC(".maps");
 
 // root2ns maps a root-namespace TID to the target's namespace-local TID.
 // Self-populated from the `prev` side of sched_switch; LRU evicts dead TIDs.
@@ -128,6 +162,39 @@ static __always_inline struct thread_state *get_or_create_state(__u32 tid)
     struct thread_state zero = {};
     bpf_map_update_elem(&tid_state, &tid, &zero, BPF_ANY);
     return bpf_map_lookup_elem(&tid_state, &tid);
+}
+
+static __always_inline __u32 log2_u32(__u32 v)
+{
+    __u32 r, shift;
+    r = (v > 0xFFFF) << 4; v >>= r;
+    shift = (v > 0xFF) << 3; v >>= shift; r |= shift;
+    shift = (v > 0xF) << 2; v >>= shift; r |= shift;
+    shift = (v > 0x3) << 1; v >>= shift; r |= shift;
+    r |= (v >> 1);
+    return r;
+}
+
+static __always_inline __u32 log2_u64(__u64 v)
+{
+    __u32 hi = v >> 32;
+    return hi ? log2_u32(hi) + 32 : log2_u32((__u32)v);
+}
+
+// record_runq puts one finished wait for a CPU into the histogram.
+static __always_inline void record_runq(__u64 ns)
+{
+    __u32 key = 0;
+    struct runq_hist *h = bpf_map_lookup_elem(&runq_hist, &key);
+    if (!h)
+        return;
+    __u64 us = ns / 1000;
+    __u32 b = us ? log2_u64(us) : 0;
+    if (b >= RUNQ_BUCKETS)
+        b = RUNQ_BUCKETS - 1;
+    h->bucket[b]++;  // per-CPU value: no other CPU writes it
+    h->count++;
+    h->sum_ns += ns;
 }
 
 // charge_off closes an off interval into the total its kind belongs to.
@@ -189,9 +256,37 @@ int handle_sched_switch(struct sched_switch_args *ctx)
             __u64 on = s->last_on_cpu_ns, off = s->last_off_cpu_ns;
             __u64 was = s->off_kind;
             s->last_on_cpu_ns = now;
-            if (off > on)
+            if (off > on) {
                 charge_off(s, was, now - off);
+                if (was == OFF_RUNNABLE)
+                    record_runq(now - off);
+            }
         }
     }
+    return 0;
+}
+
+// A target thread asleep becomes runnable: its sleep ends here, and the wait
+// for a CPU that follows is run-queue time (#151). The handler runs in the
+// waker's context with the woken task's runqueue locked, so it cannot race the
+// switch-in that ends the wait. A wakeup of a thread not asleep (already
+// runnable, or never switched out) changes nothing.
+SEC("tracepoint/sched/sched_wakeup")
+int handle_sched_wakeup(struct sched_wakeup_args *ctx)
+{
+    __u32 root = (__u32)ctx->pid;
+    __u32 *ns_tid = bpf_map_lookup_elem(&root2ns, &root);
+    if (!ns_tid)
+        return 0;
+    struct thread_state *s = bpf_map_lookup_elem(&tid_state, ns_tid);
+    if (!s)
+        return 0;
+    __u64 on = s->last_on_cpu_ns, off = s->last_off_cpu_ns;
+    if (off <= on || s->off_kind != OFF_ASLEEP)
+        return 0;
+    __u64 now = bpf_ktime_get_ns();
+    s->last_off_cpu_ns = now;
+    s->off_kind = OFF_RUNNABLE;
+    __sync_fetch_and_add(&s->off_cpu_ns_total, now - off);
     return 0;
 }

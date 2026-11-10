@@ -67,6 +67,11 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				return len(th) == 1 && th[0].GetTid() == 11 && th[0].GetCtxSwitches() == 4 &&
 					th[0].GetOffCpuPct() == 62.5 && th[0].GetRunqWaitPct() == 12.5
 			}},
+		{"runq_latency", collector.RunqLatency{Timestamp: time.Unix(5, 0), Buckets: []uint64{0, 3, 1}, Count: 4, SumNs: 9000},
+			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
+				r := e.GetRunqLatency()
+				return len(r.GetBuckets()) == 3 && r.GetBuckets()[1] == 3 && r.GetCount() == 4 && r.GetSumNs() == 9000
+			}},
 		{"host", collector.HostSample{StealPct: 7.5, StealKnown: true, Timestamp: time.Unix(4, 0),
 			Limits: collector.CgroupLimits{Cgroup: "/a.slice", CPUMax: "50000 100000", MemoryMax: "max"}},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {

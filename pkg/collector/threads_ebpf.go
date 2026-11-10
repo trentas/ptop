@@ -87,6 +87,9 @@ func (c *ThreadsEBPFCollector) loop() {
 			if threads, err := c.collect(); err == nil {
 				publish(c.ch, threads)
 			}
+			if h, err := c.runqLatency(); err == nil {
+				publish(c.ch, h)
+			}
 		}
 	}
 }
@@ -175,4 +178,16 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		c.windows.end(endAt, alive)
 	}
 	return out, nil
+}
+
+// runqLatency is the run-queue histogram as the tracer has it (#151).
+func (c *ThreadsEBPFCollector) runqLatency() (RunqLatency, error) {
+	c.mu.Lock()
+	tracer := c.tracer
+	c.mu.Unlock()
+	h, err := tracer.RunqHistogram()
+	if err != nil {
+		return RunqLatency{}, err
+	}
+	return RunqLatency{Timestamp: time.Now(), Buckets: append([]uint64(nil), h.Bucket[:]...), Count: h.Count, SumNs: h.SumNs}, nil
 }

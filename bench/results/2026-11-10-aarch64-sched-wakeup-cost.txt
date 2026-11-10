@@ -1,0 +1,57 @@
+Host
+----
+arch          aarch64 (ARM), 2 cores (Parallels VM)
+kernel        7.0.0-43-generic
+ptop          feat/151-runq-after-wakeup against main (73f09cf), eBPF build (-tags=ebpf)
+target        an idle `sleep 600`: its threads take no part in the load
+load          a non-target ping-pong: two locked threads bounce a byte over two
+              pipes, each blocking in read until the other writes
+command       sudo probecost -window 10s, while ptop --pid <sleep> --serve ran
+
+What #151 adds is a program on sched:sched_wakeup, which runs for EVERY wakeup
+on the host and cannot be filtered before it runs: the event fires in the
+waker's context, so the only identity it carries is the woken task's pid, and
+the program looks that up in root2ns to learn whether it is the target's. The
+load is chosen to make that lookup miss as often as possible, as it does on a
+real host where nearly every wakeup belongs to someone else.
+
+Three rounds, each the ptop from main and then this branch, ten seconds of
+probecost apiece. Only the sched programs are shown; the rest are unchanged.
+
+program              type             runs/s    ns/run   % of a core
+round 1, main
+handle_sched_sw      TracePoint       230598       101        2.327%
+handle_sched_sw      TracePoint       230598        80        1.851%
+round 1, branch
+handle_sched_sw      TracePoint       230293        96        2.202%
+handle_sched_sw      TracePoint       230293        69        1.593%
+handle_sched_wa      TracePoint       118206        57        0.670%
+round 2, main
+handle_sched_sw      TracePoint       224987       101        2.273%
+handle_sched_sw      TracePoint       224987        82        1.846%
+round 2, branch
+handle_sched_sw      TracePoint       228108        92        2.090%
+handle_sched_sw      TracePoint       228108        68        1.555%
+handle_sched_wa      TracePoint       117366        59        0.695%
+round 3, main
+handle_sched_sw      TracePoint       223796       101        2.257%
+handle_sched_sw      TracePoint       223796        84        1.888%
+round 3, branch
+handle_sched_sw      TracePoint       246594        91        2.235%
+handle_sched_sw      TracePoint       246593        72        1.770%
+handle_sched_wa      TracePoint       126177        55        0.695%
+
+Reading
+-------
+- handle_sched_wakeup costs 55-59 ns a wakeup, nearly all of it the root2ns
+  miss. At this host's ~120k wakeups a second that is 0.7% of a core; it scales
+  with the host's wakeup rate, not the target's: ~0.6% of a core per 100k
+  wakeups a second, ~6% at a million.
+- The two sched_switch programs (cpu and threads) are unchanged within noise:
+  the threads one gained a branch for the histogram, on the switch-ins of the
+  target's own threads only.
+- The ping-pong's own throughput (74k-114k round trips a second with either
+  ptop, 122k with none) moved more between rounds than between builds, so it
+  says nothing about the difference. The kernel's run-time accounting does.
+- The runs/s of handle_sched_wakeup is about half of sched_switch's: a pipe
+  read that finds its byte already there wakes nobody.

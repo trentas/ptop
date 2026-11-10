@@ -689,18 +689,33 @@ already (`cpu_on_since`), the threads axis did not.
 - **Off-CPU is split by `prev_state`.** Switched out runnable (preempted, or a
   yield) is a wait for a CPU, `runq_wait_pct`, which is saturation. Switched out
   asleep is `off_cpu_pct`. They point at opposite fixes, and the docs already
-  promised the split the program did not make. The wait between a wakeup and
-  the switch-in after it is still inside `off_cpu_pct` until a `sched_wakeup`
-  probe exists (#151).
+  promised the split the program did not make.
+- **A sleep ends at the wakeup (#151).** `handle_sched_wakeup` closes the asleep
+  interval when a target thread is woken and opens a runnable one, so the wait
+  for a CPU after a wakeup is run-queue time too. Every runnable interval that
+  ends at a switch-in also lands in `runq_hist`, a per-CPU log2(µs) histogram
+  published cumulatively as `RunqLatency`. The event fires for every wakeup on
+  the host, in the waker's context, so the only filter is a `root2ns` lookup by
+  the woken pid. It costs 55-59 ns a wakeup, about 0.6% of a core per 100k
+  host wakeups a second (`bench/results/2026-11-10-aarch64-sched-wakeup-cost.txt`).
 - **A read can tear.** The totals sit before the stamps in `thread_state` and
   the program writes a stamp before the total it closes into, so a lookup copying
   in address order cannot see an interval twice. Nothing guarantees that order,
   so the collector keeps a high-water mark per thread: a torn read moves a slice
   into the next window and never counts it twice in sum.
 
-The selftest's `threads` case plants a thread asleep since before the attach,
-one asleep since mid-case after running, and two burners pinned to one CPU.
-Each of the three fixes, reverted on its own, fails its own check.
+The selftest's `threads` case plants:
+- a thread asleep since before the attach;
+- one asleep since mid-case, after running;
+- two burners pinned to one CPU;
+- beside them, a `SCHED_IDLE` thread that sleeps 1ms at a time. It does not
+  preempt the burners when it wakes, so it reads about 0/40/60 on/off/runq;
+  without `sched_wakeup` it reads 0/100/0.
+
+Each fix, reverted on its own, fails its own check. The case raises
+`GOMAXPROCS` while it runs. A locked thread whose goroutine waits for a Go P
+sleeps in the kernel, so with every P held the planted threads park one another,
+and the reading would be Go's scheduling, not the kernel's.
 
 When a counter is charged at the end of an interval, ask what a window that sees
 no end reads.
