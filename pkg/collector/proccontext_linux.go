@@ -28,7 +28,6 @@ type ProcContextCollector struct {
 // setuid/setns, not to poll hot.
 const procContextInterval = 3 * time.Second
 
-
 func NewProcContextCollector() *ProcContextCollector {
 	return &ProcContextCollector{
 		ch:   make(chan interface{}, 4),

@@ -367,21 +367,32 @@ type ThreadInfo struct {
 	// eBPF threads collector is active; via /proc this stays zero.
 	CtxSwitches uint64
 	// OffCpuPct: % of the window the thread spent switched out asleep (S, D,
-	// T…): waiting on a lock, I/O, a timer, a child, or for work to arrive.
-	// The kernel does not tell a stall from idleness; Waiting and the futex
-	// and I/O axes say on what. It includes the wait for a CPU after the
-	// wakeup that ended the sleep (telling that apart needs sched_wakeup,
-	// #151). A sleep still going on when the window closes counts in the
-	// window it happened in (#150). eBPF-only; 0 via /proc.
+	// T…), from the switch-out to the wakeup (#151): waiting on a lock, I/O,
+	// a timer, a child, or for work to arrive. The kernel does not tell a
+	// stall from idleness; Waiting and the futex and I/O axes say on what. A
+	// sleep still going on when the window closes counts in the window it
+	// happened in (#150). eBPF-only; 0 via /proc.
 	OffCpuPct float64
-	// RunqWaitPct: % of the window the thread was runnable but not on a CPU
-	// after being preempted (#150) — saturation, where OffCpuPct is waiting
-	// on something else. eBPF-only; 0 via /proc.
+	// RunqWaitPct: % of the window the thread was runnable but not on a CPU,
+	// after a wakeup (#151) or a preemption (#150), until it was switched in —
+	// saturation, where OffCpuPct is waiting on something else. RunqLatency
+	// has the same waits by length. eBPF-only; 0 via /proc.
 	//
 	// CPUPct + OffCpuPct + RunqWaitPct is 100% for a thread the tracer knew
 	// for the whole window. Less is a thread that did not exist for all of
 	// it, or whose first slice the tracer had not seen yet.
 	RunqWaitPct float64
+}
+
+// RunqLatency is every wait for a CPU the target's threads finished since the
+// threads tracer attached (#151), by length, cumulative: Buckets[i] counts the
+// waits of [2^i, 2^(i+1)) µs, Buckets[0] also those under 1 µs, the last
+// everything longer. eBPF-only.
+type RunqLatency struct {
+	Timestamp time.Time
+	Buckets   []uint64
+	Count     uint64
+	SumNs     uint64
 }
 
 // ─── Locks (futex) ───────────────────────────────────────────────────────────

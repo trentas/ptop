@@ -12,6 +12,13 @@ func TestThreadStateMatchesTheProgramsLayout(t *testing.T) {
 	}
 }
 
+func TestRunqHistMatchesTheProgramsLayout(t *testing.T) {
+	// threads.bpf.c: struct runq_hist is 32 buckets + count + sum, all __u64.
+	if got := unsafe.Sizeof(RunqHist{}); got != (RunqBuckets+2)*8 {
+		t.Fatalf("RunqHist is %d bytes, the program's struct is %d", got, (RunqBuckets+2)*8)
+	}
+}
+
 func TestCloseAtAddsTheOpenInterval(t *testing.T) {
 	const at = 10_000
 	cases := []struct {

@@ -58,3 +58,16 @@ func (s ThreadState) closeAt(at uint64) ThreadTotals {
 	}
 	return tt
 }
+
+// RunqBuckets is the run-queue histogram's bucket count: bucket i holds the
+// waits of [2^i, 2^(i+1)) µs, bucket 0 those under 2 µs, the last everything
+// longer.
+const RunqBuckets = 32
+
+// RunqHist mirrors `struct runq_hist` in programs/threads.bpf.c: the target's
+// waits for a CPU by length, cumulative since the attach (#151).
+type RunqHist struct {
+	Bucket [RunqBuckets]uint64
+	Count  uint64
+	SumNs  uint64
+}

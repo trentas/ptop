@@ -13,4 +13,5 @@ func (*ThreadsTracer) PruneDeadTIDs([]int) error       { return errThreadsStub }
 func (*ThreadsTracer) Totals() (map[uint32]ThreadTotals, error) {
 	return nil, errThreadsStub
 }
-func (*ThreadsTracer) Close() error { return nil }
+func (*ThreadsTracer) RunqHistogram() (RunqHist, error) { return RunqHist{}, errThreadsStub }
+func (*ThreadsTracer) Close() error                     { return nil }
