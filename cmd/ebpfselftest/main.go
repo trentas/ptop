@@ -80,6 +80,7 @@ func suite() []selfCase {
 		{"cpu", "on-CPU time agrees with the kernel's own accounting, quiet and busy (#108)", checkCPUAccuracy},
 		{"cpusite", "CPU samples name the function that burned them (#125)", checkCPUAttribution},
 		{"cpuprof", "the published profile splits a planted 60/30/10 burn within its binomial interval (#125)", checkCPUProfile},
+		{"cpukernel", "the profile declares user frames only, and counts the samples that caught the CPU in the kernel (#152)", checkCPUKernel},
 		{"syscalls", "a known count is named and counted exactly, a known sleep is timed (#139)", checkSyscalls},
 		{"futex", "waits on a known word: counted, timed, named by the waiter (#89)", checkFutex},
 		{"goalloc", "two call sites at a known rate and ratio, and the census adds up (#108, #109)", checkGoAlloc},
@@ -453,9 +454,10 @@ func checkCPUAttribution(g *grader, pid int) {
 // This is a self-time profile: there is no walking past machinery here, the way
 // the heap axis walks past the allocator, because on this axis the machinery IS
 // where the time went.
-func foldSamplesByFunc(prof *bpf.CPUProfiler, sym *symbol.Symbolizer, samples map[int32]uint64) (byFunc map[string]uint64, total, unresolved uint64) {
+func foldSamplesByFunc(prof *bpf.CPUProfiler, sym *symbol.Symbolizer, samples map[int32]bpf.CPUProfCount) (byFunc map[string]uint64, total, unresolved uint64) {
 	byFunc = make(map[string]uint64, len(samples))
-	for sid, n := range samples {
+	for sid, c := range samples {
+		n := c.Samples
 		total += n
 		frames, err := prof.ResolveStack(sid)
 		if err != nil || len(frames) == 0 {

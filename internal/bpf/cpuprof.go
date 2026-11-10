@@ -26,7 +26,7 @@ import (
 // the requested rate now published beside the achieved one.
 type CPUProfiler struct {
 	coll    *ebpf.Collection
-	counts  *ebpf.Map // cpuprof_counts: stack_id → samples
+	counts  *ebpf.Map // cpuprof_counts: stack_id → CPUProfCount
 	stacks  *ebpf.Map // cpuprof_stacks: STACK_TRACE
 	rate    *ebpf.Map // cpuprof_rate: per-CPU {fired, hit}
 	perfFDs []int     // one per online CPU
@@ -177,13 +177,13 @@ func OpenCPUProfiler(target Target, hz int) (*CPUProfiler, error) {
 // is that samples landing between the two passes are deleted uncounted —
 // bounded by how long the walk takes (milliseconds) against a window of about
 // a second, and paid only by stacks that are being sampled right now.
-func (p *CPUProfiler) Samples() (map[int32]uint64, error) {
+func (p *CPUProfiler) Samples() (map[int32]CPUProfCount, error) {
 	if p == nil || p.counts == nil {
 		return nil, errors.New("profiler not initialized")
 	}
-	out := make(map[int32]uint64, 64)
+	out := make(map[int32]CPUProfCount, 64)
 	var k int32
-	var v uint64
+	var v CPUProfCount
 	iter := p.counts.Iterate()
 	for iter.Next(&k, &v) {
 		out[k] = v

@@ -43,6 +43,8 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			RequestedRateHz:   x.RequestedRateHz,
 			TotalSites:        x.TotalSites,
 			OmittedSamples:    x.OmittedSamples,
+			StackScope:        stackScopes[x.StackScope],
+			KernelModeSamples: x.KernelSamples,
 		}}
 
 	case []collector.SyscallEvent:
@@ -333,6 +335,13 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 	return out
 }
 
+// stackScopes maps the collector's scope onto the wire enum. A scope this
+// server does not know becomes UNSPECIFIED, read by a consumer as unknown,
+// never as USER (#152).
+var stackScopes = map[string]pb.StackScope{
+	collector.StackScopeUser: pb.StackScope_STACK_SCOPE_USER,
+}
+
 func cpuSites(in []collector.CPUSite) []*pb.CpuSite {
 	out := make([]*pb.CpuSite, len(in))
 	for i, s := range in {
@@ -343,6 +352,8 @@ func cpuSites(in []collector.CPUSite) []*pb.CpuSite {
 			StackId:  taggedStackID(StackSourceCPUProf, s.StackID),
 			Samples:  s.Samples,
 			SharePct: s.SharePct,
+
+			KernelModeSamples: s.KernelSamples,
 		}
 	}
 	return out

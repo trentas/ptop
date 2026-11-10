@@ -102,6 +102,60 @@ func (Category) EnumDescriptor() ([]byte, []int) {
 	return file_event_proto_rawDescGZIP(), []int{0}
 }
 
+// StackScope is what a CPU profile's sites can be (#152).
+type StackScope int32
+
+const (
+	// Unknown: a server that predates the field.
+	StackScope_STACK_SCOPE_UNSPECIFIED StackScope = 0
+	// User frames only; kernel time folded into the frame that entered it.
+	StackScope_STACK_SCOPE_USER StackScope = 1
+	// Kernel leaves named too. Not produced yet: naming them needs kallsyms and
+	// a kptr_restrict decision.
+	StackScope_STACK_SCOPE_USER_AND_KERNEL StackScope = 2
+)
+
+// Enum value maps for StackScope.
+var (
+	StackScope_name = map[int32]string{
+		0: "STACK_SCOPE_UNSPECIFIED",
+		1: "STACK_SCOPE_USER",
+		2: "STACK_SCOPE_USER_AND_KERNEL",
+	}
+	StackScope_value = map[string]int32{
+		"STACK_SCOPE_UNSPECIFIED":     0,
+		"STACK_SCOPE_USER":            1,
+		"STACK_SCOPE_USER_AND_KERNEL": 2,
+	}
+)
+
+func (x StackScope) Enum() *StackScope {
+	p := new(StackScope)
+	*p = x
+	return p
+}
+
+func (x StackScope) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (StackScope) Descriptor() protoreflect.EnumDescriptor {
+	return file_event_proto_enumTypes[1].Descriptor()
+}
+
+func (StackScope) Type() protoreflect.EnumType {
+	return &file_event_proto_enumTypes[1]
+}
+
+func (x StackScope) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use StackScope.Descriptor instead.
+func (StackScope) EnumDescriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{1}
+}
+
 // ProbeState is what became of one collector for one target (#112).
 //
 // The three ways a subsystem goes quiet are unrelated and call for opposite
@@ -157,11 +211,11 @@ func (x ProbeState) String() string {
 }
 
 func (ProbeState) Descriptor() protoreflect.EnumDescriptor {
-	return file_event_proto_enumTypes[1].Descriptor()
+	return file_event_proto_enumTypes[2].Descriptor()
 }
 
 func (ProbeState) Type() protoreflect.EnumType {
-	return &file_event_proto_enumTypes[1]
+	return &file_event_proto_enumTypes[2]
 }
 
 func (x ProbeState) Number() protoreflect.EnumNumber {
@@ -170,7 +224,7 @@ func (x ProbeState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ProbeState.Descriptor instead.
 func (ProbeState) EnumDescriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{1}
+	return file_event_proto_rawDescGZIP(), []int{2}
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
@@ -969,10 +1023,15 @@ type CpuSite struct {
 	// to 18% of the time. Without the count a consumer reports sampling noise as
 	// a behavioural regression, which is this axis's version of the bug #112
 	// fixed for absent probes.
-	Samples       uint64  `protobuf:"varint,9,opt,name=samples,proto3" json:"samples,omitempty"`
-	SharePct      float64 `protobuf:"fixed64,10,opt,name=share_pct,json=sharePct,proto3" json:"share_pct,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Samples  uint64  `protobuf:"varint,9,opt,name=samples,proto3" json:"samples,omitempty"`
+	SharePct float64 `protobuf:"fixed64,10,opt,name=share_pct,json=sharePct,proto3" json:"share_pct,omitempty"`
+	// Of samples, how many caught the CPU in kernel mode: a syscall, a fault or
+	// an interrupt taken on the target's behalf, credited to this user frame
+	// because kernel frames are not named (#152). "This function's 40% is 35
+	// points of syscall" reads here, where the function is ranked.
+	KernelModeSamples uint64 `protobuf:"varint,11,opt,name=kernel_mode_samples,json=kernelModeSamples,proto3" json:"kernel_mode_samples,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CpuSite) Reset() {
@@ -1075,6 +1134,13 @@ func (x *CpuSite) GetSharePct() float64 {
 	return 0
 }
 
+func (x *CpuSite) GetKernelModeSamples() uint64 {
+	if x != nil {
+		return x.KernelModeSamples
+	}
+	return 0
+}
+
 // CpuProfile is the periodic per-function CPU attribution snapshot (#125): the
 // WHERE axis, published BESIDE CpuSample's HOW MUCH and never merged into it.
 //
@@ -1128,8 +1194,19 @@ type CpuProfile struct {
 	// contract, and the same reason, as HeapSnapshot's (#109).
 	TotalSites     uint32 `protobuf:"varint,7,opt,name=total_sites,json=totalSites,proto3" json:"total_sites,omitempty"`
 	OmittedSamples uint64 `protobuf:"varint,8,opt,name=omitted_samples,json=omittedSamples,proto3" json:"omitted_samples,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// What a site in this profile can be (#152). USER: user frames only; time
+	// the target spent in the kernel is folded into the user frame that entered
+	// it, so a kernel function never appears and a consumer classifying sites by
+	// origin must not read that as "no kernel time". UNSPECIFIED is a server
+	// older than this field, which says nothing: read it as unknown, not as USER.
+	StackScope StackScope `protobuf:"varint,9,opt,name=stack_scope,json=stackScope,proto3,enum=ptop.v1.StackScope" json:"stack_scope,omitempty"`
+	// Of total_samples, how many caught the CPU in kernel mode, from the
+	// interrupted instruction pointer: no kernel unwinding, no kallsyms. They
+	// stay in the share of the user frame that entered the kernel; this says how
+	// much of the profile that is (#152).
+	KernelModeSamples uint64 `protobuf:"varint,10,opt,name=kernel_mode_samples,json=kernelModeSamples,proto3" json:"kernel_mode_samples,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *CpuProfile) Reset() {
@@ -1214,6 +1291,20 @@ func (x *CpuProfile) GetTotalSites() uint32 {
 func (x *CpuProfile) GetOmittedSamples() uint64 {
 	if x != nil {
 		return x.OmittedSamples
+	}
+	return 0
+}
+
+func (x *CpuProfile) GetStackScope() StackScope {
+	if x != nil {
+		return x.StackScope
+	}
+	return StackScope_STACK_SCOPE_UNSPECIFIED
+}
+
+func (x *CpuProfile) GetKernelModeSamples() uint64 {
+	if x != nil {
+		return x.KernelModeSamples
 	}
 	return 0
 }
@@ -4564,7 +4655,7 @@ const file_event_proto_rawDesc = "" +
 	"\fprobe_change\x18$ \x01(\v2\x12.ptop.v1.ProbeInfoH\x00R\vprobeChangeB\t\n" +
 	"\apayload\"(\n" +
 	"\tCpuSample\x12\x1b\n" +
-	"\tusage_pct\x18\x01 \x01(\x01R\busagePct\"\xf6\x01\n" +
+	"\tusage_pct\x18\x01 \x01(\x01R\busagePct\"\xa6\x02\n" +
 	"\aCpuSite\x12\x12\n" +
 	"\x04addr\x18\x01 \x01(\x04R\x04addr\x12\x19\n" +
 	"\baddr_hex\x18\x02 \x01(\tR\aaddrHex\x12\x12\n" +
@@ -4576,7 +4667,8 @@ const file_event_proto_rawDesc = "" +
 	"\bstack_id\x18\b \x01(\x04R\astackId\x12\x18\n" +
 	"\asamples\x18\t \x01(\x04R\asamples\x12\x1b\n" +
 	"\tshare_pct\x18\n" +
-	" \x01(\x01R\bsharePct\"\xc1\x02\n" +
+	" \x01(\x01R\bsharePct\x12.\n" +
+	"\x13kernel_mode_samples\x18\v \x01(\x04R\x11kernelModeSamples\"\xa7\x03\n" +
 	"\n" +
 	"CpuProfile\x12&\n" +
 	"\x05sites\x18\x01 \x03(\v2\x10.ptop.v1.CpuSiteR\x05sites\x12#\n" +
@@ -4587,7 +4679,11 @@ const file_event_proto_rawDesc = "" +
 	"\x11requested_rate_hz\x18\x06 \x01(\x01R\x0frequestedRateHz\x12\x1f\n" +
 	"\vtotal_sites\x18\a \x01(\rR\n" +
 	"totalSites\x12'\n" +
-	"\x0fomitted_samples\x18\b \x01(\x04R\x0eomittedSamples\"j\n" +
+	"\x0fomitted_samples\x18\b \x01(\x04R\x0eomittedSamples\x124\n" +
+	"\vstack_scope\x18\t \x01(\x0e2\x13.ptop.v1.StackScopeR\n" +
+	"stackScope\x12.\n" +
+	"\x13kernel_mode_samples\x18\n" +
+	" \x01(\x04R\x11kernelModeSamples\"j\n" +
 	"\vSyscallStat\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05count\x18\x02 \x01(\x04R\x05count\x12\"\n" +
@@ -4873,7 +4969,12 @@ const file_event_proto_rawDesc = "" +
 	"\x0fCATEGORY_SIGNAL\x10\n" +
 	"\x12\x14\n" +
 	"\x10CATEGORY_PROCESS\x10\v\x12\x15\n" +
-	"\x11CATEGORY_SECURITY\x10\f*\x90\x01\n" +
+	"\x11CATEGORY_SECURITY\x10\f*`\n" +
+	"\n" +
+	"StackScope\x12\x1b\n" +
+	"\x17STACK_SCOPE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10STACK_SCOPE_USER\x10\x01\x12\x1f\n" +
+	"\x1bSTACK_SCOPE_USER_AND_KERNEL\x10\x02*\x90\x01\n" +
 	"\n" +
 	"ProbeState\x12\x1b\n" +
 	"\x17PROBE_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -4896,113 +4997,115 @@ func file_event_proto_rawDescGZIP() []byte {
 	return file_event_proto_rawDescData
 }
 
-var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
 var file_event_proto_goTypes = []any{
 	(Category)(0),               // 0: ptop.v1.Category
-	(ProbeState)(0),             // 1: ptop.v1.ProbeState
-	(*StackRef)(nil),            // 2: ptop.v1.StackRef
-	(*StackFrame)(nil),          // 3: ptop.v1.StackFrame
-	(*Event)(nil),               // 4: ptop.v1.Event
-	(*CpuSample)(nil),           // 5: ptop.v1.CpuSample
-	(*CpuSite)(nil),             // 6: ptop.v1.CpuSite
-	(*CpuProfile)(nil),          // 7: ptop.v1.CpuProfile
-	(*SyscallStat)(nil),         // 8: ptop.v1.SyscallStat
-	(*SyscallSnapshot)(nil),     // 9: ptop.v1.SyscallSnapshot
-	(*NetConn)(nil),             // 10: ptop.v1.NetConn
-	(*NetworkSnapshot)(nil),     // 11: ptop.v1.NetworkSnapshot
-	(*NetThroughputSample)(nil), // 12: ptop.v1.NetThroughputSample
-	(*NetErrorEvent)(nil),       // 13: ptop.v1.NetErrorEvent
-	(*TLSPayloadEvent)(nil),     // 14: ptop.v1.TLSPayloadEvent
-	(*MemStats)(nil),            // 15: ptop.v1.MemStats
-	(*HeapEvent)(nil),           // 16: ptop.v1.HeapEvent
-	(*HeapCallSite)(nil),        // 17: ptop.v1.HeapCallSite
-	(*HeapSnapshot)(nil),        // 18: ptop.v1.HeapSnapshot
-	(*ThreadInfo)(nil),          // 19: ptop.v1.ThreadInfo
-	(*ThreadSnapshot)(nil),      // 20: ptop.v1.ThreadSnapshot
-	(*RunqLatency)(nil),         // 21: ptop.v1.RunqLatency
-	(*IoWaitSample)(nil),        // 22: ptop.v1.IoWaitSample
-	(*IoThroughputSample)(nil),  // 23: ptop.v1.IoThroughputSample
-	(*IoFileStats)(nil),         // 24: ptop.v1.IoFileStats
-	(*LatencyBucket)(nil),       // 25: ptop.v1.LatencyBucket
-	(*IoSnapshot)(nil),          // 26: ptop.v1.IoSnapshot
-	(*FSEvent)(nil),             // 27: ptop.v1.FSEvent
-	(*SignalEvent)(nil),         // 28: ptop.v1.SignalEvent
-	(*ProcContext)(nil),         // 29: ptop.v1.ProcContext
-	(*HostSample)(nil),          // 30: ptop.v1.HostSample
-	(*CpuThrottling)(nil),       // 31: ptop.v1.CpuThrottling
-	(*CgroupPressure)(nil),      // 32: ptop.v1.CgroupPressure
-	(*Pressure)(nil),            // 33: ptop.v1.Pressure
-	(*PressureStall)(nil),       // 34: ptop.v1.PressureStall
-	(*ProbeInfo)(nil),           // 35: ptop.v1.ProbeInfo
-	(*CaptureCost)(nil),         // 36: ptop.v1.CaptureCost
-	(*ProbeCost)(nil),           // 37: ptop.v1.ProbeCost
-	(*CgroupLimits)(nil),        // 38: ptop.v1.CgroupLimits
-	(*ProcLifecycleEvent)(nil),  // 39: ptop.v1.ProcLifecycleEvent
-	(*SecurityEvent)(nil),       // 40: ptop.v1.SecurityEvent
-	(*FdEntry)(nil),             // 41: ptop.v1.FdEntry
-	(*FdSnapshot)(nil),          // 42: ptop.v1.FdSnapshot
-	(*FdEvent)(nil),             // 43: ptop.v1.FdEvent
-	(*LockEntry)(nil),           // 44: ptop.v1.LockEntry
-	(*LockSnapshot)(nil),        // 45: ptop.v1.LockSnapshot
-	(*TimelineEvent)(nil),       // 46: ptop.v1.TimelineEvent
+	(StackScope)(0),             // 1: ptop.v1.StackScope
+	(ProbeState)(0),             // 2: ptop.v1.ProbeState
+	(*StackRef)(nil),            // 3: ptop.v1.StackRef
+	(*StackFrame)(nil),          // 4: ptop.v1.StackFrame
+	(*Event)(nil),               // 5: ptop.v1.Event
+	(*CpuSample)(nil),           // 6: ptop.v1.CpuSample
+	(*CpuSite)(nil),             // 7: ptop.v1.CpuSite
+	(*CpuProfile)(nil),          // 8: ptop.v1.CpuProfile
+	(*SyscallStat)(nil),         // 9: ptop.v1.SyscallStat
+	(*SyscallSnapshot)(nil),     // 10: ptop.v1.SyscallSnapshot
+	(*NetConn)(nil),             // 11: ptop.v1.NetConn
+	(*NetworkSnapshot)(nil),     // 12: ptop.v1.NetworkSnapshot
+	(*NetThroughputSample)(nil), // 13: ptop.v1.NetThroughputSample
+	(*NetErrorEvent)(nil),       // 14: ptop.v1.NetErrorEvent
+	(*TLSPayloadEvent)(nil),     // 15: ptop.v1.TLSPayloadEvent
+	(*MemStats)(nil),            // 16: ptop.v1.MemStats
+	(*HeapEvent)(nil),           // 17: ptop.v1.HeapEvent
+	(*HeapCallSite)(nil),        // 18: ptop.v1.HeapCallSite
+	(*HeapSnapshot)(nil),        // 19: ptop.v1.HeapSnapshot
+	(*ThreadInfo)(nil),          // 20: ptop.v1.ThreadInfo
+	(*ThreadSnapshot)(nil),      // 21: ptop.v1.ThreadSnapshot
+	(*RunqLatency)(nil),         // 22: ptop.v1.RunqLatency
+	(*IoWaitSample)(nil),        // 23: ptop.v1.IoWaitSample
+	(*IoThroughputSample)(nil),  // 24: ptop.v1.IoThroughputSample
+	(*IoFileStats)(nil),         // 25: ptop.v1.IoFileStats
+	(*LatencyBucket)(nil),       // 26: ptop.v1.LatencyBucket
+	(*IoSnapshot)(nil),          // 27: ptop.v1.IoSnapshot
+	(*FSEvent)(nil),             // 28: ptop.v1.FSEvent
+	(*SignalEvent)(nil),         // 29: ptop.v1.SignalEvent
+	(*ProcContext)(nil),         // 30: ptop.v1.ProcContext
+	(*HostSample)(nil),          // 31: ptop.v1.HostSample
+	(*CpuThrottling)(nil),       // 32: ptop.v1.CpuThrottling
+	(*CgroupPressure)(nil),      // 33: ptop.v1.CgroupPressure
+	(*Pressure)(nil),            // 34: ptop.v1.Pressure
+	(*PressureStall)(nil),       // 35: ptop.v1.PressureStall
+	(*ProbeInfo)(nil),           // 36: ptop.v1.ProbeInfo
+	(*CaptureCost)(nil),         // 37: ptop.v1.CaptureCost
+	(*ProbeCost)(nil),           // 38: ptop.v1.ProbeCost
+	(*CgroupLimits)(nil),        // 39: ptop.v1.CgroupLimits
+	(*ProcLifecycleEvent)(nil),  // 40: ptop.v1.ProcLifecycleEvent
+	(*SecurityEvent)(nil),       // 41: ptop.v1.SecurityEvent
+	(*FdEntry)(nil),             // 42: ptop.v1.FdEntry
+	(*FdSnapshot)(nil),          // 43: ptop.v1.FdSnapshot
+	(*FdEvent)(nil),             // 44: ptop.v1.FdEvent
+	(*LockEntry)(nil),           // 45: ptop.v1.LockEntry
+	(*LockSnapshot)(nil),        // 46: ptop.v1.LockSnapshot
+	(*TimelineEvent)(nil),       // 47: ptop.v1.TimelineEvent
 }
 var file_event_proto_depIdxs = []int32{
 	0,  // 0: ptop.v1.Event.category:type_name -> ptop.v1.Category
-	2,  // 1: ptop.v1.Event.stack:type_name -> ptop.v1.StackRef
-	5,  // 2: ptop.v1.Event.cpu:type_name -> ptop.v1.CpuSample
-	9,  // 3: ptop.v1.Event.syscalls:type_name -> ptop.v1.SyscallSnapshot
-	11, // 4: ptop.v1.Event.network:type_name -> ptop.v1.NetworkSnapshot
-	15, // 5: ptop.v1.Event.memory:type_name -> ptop.v1.MemStats
-	20, // 6: ptop.v1.Event.threads:type_name -> ptop.v1.ThreadSnapshot
-	22, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
-	23, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
-	26, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
-	42, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
-	43, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
-	45, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
-	46, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
-	18, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
-	16, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
-	13, // 16: ptop.v1.Event.net_error:type_name -> ptop.v1.NetErrorEvent
-	27, // 17: ptop.v1.Event.fs_event:type_name -> ptop.v1.FSEvent
-	28, // 18: ptop.v1.Event.signal:type_name -> ptop.v1.SignalEvent
-	14, // 19: ptop.v1.Event.tls:type_name -> ptop.v1.TLSPayloadEvent
-	29, // 20: ptop.v1.Event.proc_context:type_name -> ptop.v1.ProcContext
-	39, // 21: ptop.v1.Event.proc_lifecycle:type_name -> ptop.v1.ProcLifecycleEvent
-	40, // 22: ptop.v1.Event.security:type_name -> ptop.v1.SecurityEvent
-	7,  // 23: ptop.v1.Event.cpu_profile:type_name -> ptop.v1.CpuProfile
-	12, // 24: ptop.v1.Event.net_throughput:type_name -> ptop.v1.NetThroughputSample
-	30, // 25: ptop.v1.Event.host:type_name -> ptop.v1.HostSample
-	21, // 26: ptop.v1.Event.runq_latency:type_name -> ptop.v1.RunqLatency
-	36, // 27: ptop.v1.Event.capture_cost:type_name -> ptop.v1.CaptureCost
-	35, // 28: ptop.v1.Event.probe_change:type_name -> ptop.v1.ProbeInfo
-	6,  // 29: ptop.v1.CpuProfile.sites:type_name -> ptop.v1.CpuSite
-	8,  // 30: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
-	10, // 31: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
-	17, // 32: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
-	19, // 33: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
-	24, // 34: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
-	25, // 35: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
-	38, // 36: ptop.v1.HostSample.limits:type_name -> ptop.v1.CgroupLimits
-	31, // 37: ptop.v1.HostSample.throttling:type_name -> ptop.v1.CpuThrottling
-	32, // 38: ptop.v1.HostSample.pressure:type_name -> ptop.v1.CgroupPressure
-	33, // 39: ptop.v1.CgroupPressure.cpu:type_name -> ptop.v1.Pressure
-	33, // 40: ptop.v1.CgroupPressure.memory:type_name -> ptop.v1.Pressure
-	33, // 41: ptop.v1.CgroupPressure.io:type_name -> ptop.v1.Pressure
-	34, // 42: ptop.v1.Pressure.some:type_name -> ptop.v1.PressureStall
-	34, // 43: ptop.v1.Pressure.full:type_name -> ptop.v1.PressureStall
-	1,  // 44: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
-	37, // 45: ptop.v1.CaptureCost.probes:type_name -> ptop.v1.ProbeCost
-	3,  // 46: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
-	41, // 47: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
-	3,  // 48: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
-	44, // 49: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
-	50, // [50:50] is the sub-list for method output_type
-	50, // [50:50] is the sub-list for method input_type
-	50, // [50:50] is the sub-list for extension type_name
-	50, // [50:50] is the sub-list for extension extendee
-	0,  // [0:50] is the sub-list for field type_name
+	3,  // 1: ptop.v1.Event.stack:type_name -> ptop.v1.StackRef
+	6,  // 2: ptop.v1.Event.cpu:type_name -> ptop.v1.CpuSample
+	10, // 3: ptop.v1.Event.syscalls:type_name -> ptop.v1.SyscallSnapshot
+	12, // 4: ptop.v1.Event.network:type_name -> ptop.v1.NetworkSnapshot
+	16, // 5: ptop.v1.Event.memory:type_name -> ptop.v1.MemStats
+	21, // 6: ptop.v1.Event.threads:type_name -> ptop.v1.ThreadSnapshot
+	23, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
+	24, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
+	27, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
+	43, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
+	44, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
+	46, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
+	47, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
+	19, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
+	17, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
+	14, // 16: ptop.v1.Event.net_error:type_name -> ptop.v1.NetErrorEvent
+	28, // 17: ptop.v1.Event.fs_event:type_name -> ptop.v1.FSEvent
+	29, // 18: ptop.v1.Event.signal:type_name -> ptop.v1.SignalEvent
+	15, // 19: ptop.v1.Event.tls:type_name -> ptop.v1.TLSPayloadEvent
+	30, // 20: ptop.v1.Event.proc_context:type_name -> ptop.v1.ProcContext
+	40, // 21: ptop.v1.Event.proc_lifecycle:type_name -> ptop.v1.ProcLifecycleEvent
+	41, // 22: ptop.v1.Event.security:type_name -> ptop.v1.SecurityEvent
+	8,  // 23: ptop.v1.Event.cpu_profile:type_name -> ptop.v1.CpuProfile
+	13, // 24: ptop.v1.Event.net_throughput:type_name -> ptop.v1.NetThroughputSample
+	31, // 25: ptop.v1.Event.host:type_name -> ptop.v1.HostSample
+	22, // 26: ptop.v1.Event.runq_latency:type_name -> ptop.v1.RunqLatency
+	37, // 27: ptop.v1.Event.capture_cost:type_name -> ptop.v1.CaptureCost
+	36, // 28: ptop.v1.Event.probe_change:type_name -> ptop.v1.ProbeInfo
+	7,  // 29: ptop.v1.CpuProfile.sites:type_name -> ptop.v1.CpuSite
+	1,  // 30: ptop.v1.CpuProfile.stack_scope:type_name -> ptop.v1.StackScope
+	9,  // 31: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
+	11, // 32: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
+	18, // 33: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
+	20, // 34: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
+	25, // 35: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
+	26, // 36: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
+	39, // 37: ptop.v1.HostSample.limits:type_name -> ptop.v1.CgroupLimits
+	32, // 38: ptop.v1.HostSample.throttling:type_name -> ptop.v1.CpuThrottling
+	33, // 39: ptop.v1.HostSample.pressure:type_name -> ptop.v1.CgroupPressure
+	34, // 40: ptop.v1.CgroupPressure.cpu:type_name -> ptop.v1.Pressure
+	34, // 41: ptop.v1.CgroupPressure.memory:type_name -> ptop.v1.Pressure
+	34, // 42: ptop.v1.CgroupPressure.io:type_name -> ptop.v1.Pressure
+	35, // 43: ptop.v1.Pressure.some:type_name -> ptop.v1.PressureStall
+	35, // 44: ptop.v1.Pressure.full:type_name -> ptop.v1.PressureStall
+	2,  // 45: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
+	38, // 46: ptop.v1.CaptureCost.probes:type_name -> ptop.v1.ProbeCost
+	4,  // 47: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
+	42, // 48: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
+	4,  // 49: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
+	45, // 50: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
+	51, // [51:51] is the sub-list for method output_type
+	51, // [51:51] is the sub-list for method input_type
+	51, // [51:51] is the sub-list for extension type_name
+	51, // [51:51] is the sub-list for extension extendee
+	0,  // [0:51] is the sub-list for field type_name
 }
 
 func init() { file_event_proto_init() }
@@ -5049,7 +5152,7 @@ func file_event_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_proto_rawDesc), len(file_event_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   45,
 			NumExtensions: 0,
 			NumServices:   0,

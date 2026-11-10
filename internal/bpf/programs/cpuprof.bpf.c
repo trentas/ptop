@@ -4,7 +4,7 @@
 //
 // Maps:
 //   cpuprof_target_pid  ARRAY[1]      struct target_filter (written by Go)
-//   cpuprof_counts      HASH          stack_id → samples taken at that stack
+//   cpuprof_counts      HASH          stack_id → {samples, kernel} taken at that stack
 //   cpuprof_stacks      STACK_TRACE   user stacks captured at sample time
 //   cpuprof_rate        PERCPU_ARRAY  {fired, hit} — the ACHIEVED sampling rate
 //
@@ -60,8 +60,16 @@
 // USER stacks only (BPF_F_USER_STACK). Time spent inside a syscall is
 // attributed to the userspace frame that made the call, which is true and
 // cross-references the syscall axis; naming the kernel function would need
-// /proc/kallsyms and a kptr_restrict conversation, and is a declared absence
-// rather than a silent one.
+// /proc/kallsyms and a kptr_restrict conversation.
+//
+// That absence is declared on the wire, not only here (#152): CpuProfile says
+// stack_scope USER, and every count carries how many of its samples caught the
+// CPU in KERNEL mode. A target spending 40% of its time in sendmsg otherwise
+// reads as 40% in the wrapper that called it, and anything ranking application
+// code by share ranks the wrapper. The mode comes from the interrupted
+// instruction pointer: kernel text sits in the upper half of the address space
+// on x86_64 and arm64, user code in the lower, so bit 63 says which. No kernel
+// unwinding, no kallsyms.
 //
 // A failed stack walk returns a negative id, which keys its own bucket here and
 // is published by userspace as an unresolved-sample COUNT rather than as a list
@@ -83,7 +91,9 @@
 // counter, where heap tracks a live set it has to keep.
 
 #include <linux/bpf.h>
+#include <linux/bpf_perf_event.h>
 #include <bpf/bpf_helpers.h>
+#include <bpf/bpf_tracing.h>
 #include "target.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
@@ -112,10 +122,17 @@ struct {
 // Keyed by stack id, like every other aggregate here: one entry per distinct
 // stack, folded into one entry per FUNCTION by userspace. Negative ids (the
 // walk failed) key their own entry and become the unresolved count.
+// One stack's samples, and how many of them interrupted the CPU in kernel mode
+// (#152). Mirrored by CPUProfCount in internal/bpf/cpuprof.go.
+struct cpuprof_count {
+    __u64 samples;
+    __u64 kernel;
+};
+
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __type(key, __s32);
-    __type(value, __u64);
+    __type(value, struct cpuprof_count);
     __uint(max_entries, 8192);
 } cpuprof_counts SEC(".maps");
 
@@ -136,12 +153,12 @@ struct {
 // cpuprof_slot returns this stack's counter, creating it at zero on first
 // sight. BPF_NOEXIST + re-lookup rather than a blind update, so two CPUs
 // sampling the same stack in the same instant cannot lose each other's count.
-static __always_inline __u64 *cpuprof_slot(__s32 sid)
+static __always_inline struct cpuprof_count *cpuprof_slot(__s32 sid)
 {
-    __u64 *n = bpf_map_lookup_elem(&cpuprof_counts, &sid);
+    struct cpuprof_count *n = bpf_map_lookup_elem(&cpuprof_counts, &sid);
     if (n)
         return n;
-    __u64 zero = 0;
+    struct cpuprof_count zero = {};
     bpf_map_update_elem(&cpuprof_counts, &sid, &zero, BPF_NOEXIST);
     return bpf_map_lookup_elem(&cpuprof_counts, &sid);
 }
@@ -153,10 +170,10 @@ static __always_inline __u64 *cpuprof_slot(__s32 sid)
 // ancestor cgroup id. Software clock rather than hardware cycles so it works
 // in a VM or a container with no PMU exposed.
 //
-// ctx is typed void* deliberately: bpf_get_stackid takes it as void*, and this
-// keeps the include surface to what target.bpf.h already pulls in.
+// ctx is the interrupted register state: in kernel mode when the sample landed
+// inside a syscall, a fault or an interrupt taken on the target's behalf.
 SEC("perf_event")
-int handle_cpu_sample(void *ctx)
+int handle_cpu_sample(struct bpf_perf_event_data *ctx)
 {
     __u32 key = 0;
     struct cpuprof_rate_stat *r = bpf_map_lookup_elem(&cpuprof_rate, &key);
@@ -170,8 +187,11 @@ int handle_cpu_sample(void *ctx)
 
     __s32 sid = (__s32)bpf_get_stackid(ctx, &cpuprof_stacks, BPF_F_USER_STACK);
 
-    __u64 *n = cpuprof_slot(sid);
-    if (n)
-        __sync_fetch_and_add(n, 1);
+    struct cpuprof_count *n = cpuprof_slot(sid);
+    if (n) {
+        __sync_fetch_and_add(&n->samples, 1);
+        if ((__u64)PT_REGS_IP(&ctx->regs) >> 63)
+            __sync_fetch_and_add(&n->kernel, 1);
+    }
     return 0;
 }

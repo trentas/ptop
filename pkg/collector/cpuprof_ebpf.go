@@ -157,10 +157,13 @@ func (c *CPUProfEBPFCollector) snapshot() (CPUProfile, error) {
 	c.lastAt, c.lastFired = now, rate.Fired
 
 	raw := make([]rawCPUSite, 0, len(samples))
-	var total uint64
+	var total, kernel uint64
 	for sid, n := range samples {
-		total += n
-		raw = append(raw, c.resolveSite(sid, n))
+		total += n.Samples
+		kernel += n.Kernel
+		r := c.resolveSite(sid, n.Samples)
+		r.Kernel = n.Kernel
+		raw = append(raw, r)
 	}
 	sites, unresolved := foldCPUSites(raw)
 	top, omitted := topCPUSites(sites, cpuProfTopSites)
@@ -175,6 +178,8 @@ func (c *CPUProfEBPFCollector) snapshot() (CPUProfile, error) {
 		RequestedRateHz:   float64(c.prof.RequestedHz()),
 		TotalSites:        uint32(len(sites)),
 		OmittedSamples:    omitted.Samples,
+		StackScope:        StackScopeUser,
+		KernelSamples:     kernel,
 	}, nil
 }
 
