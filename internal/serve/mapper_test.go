@@ -75,6 +75,19 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 					c.GetProbes()[0].GetEstimatePct() == 12.5 && c.GetProbes()[0].GetTrapEntryNs() == 480 &&
 					c.GetProbes()[0].GetCalibration() == "x"
 			}},
+		{"probe_change", collector.ProbeChange{Timestamp: time.Unix(7, 0), Status: collector.ProbeStatus{
+			Name: "heap", State: collector.ProbeDisabled, Detail: "budget"}},
+			pb.Category_CATEGORY_MEMORY, func(e *pb.Event) bool {
+				// The probe's own category: heap → MEMORY.
+				p := e.GetProbeChange()
+				return p.GetName() == "heap" && p.GetState() == pb.ProbeState_PROBE_STATE_DISABLED && p.GetDetail() == "budget"
+			}},
+		{"capture_cost with the target share", collector.CaptureCost{Timestamp: time.Unix(6, 0),
+			Probes: []collector.ProbeCost{{Probe: "heap", TargetSharePct: 42, TargetShareKnown: true}, {Probe: "x"}}},
+			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
+				ps := e.GetCaptureCost().GetProbes()
+				return len(ps) == 2 && ps[0].TargetSharePct != nil && ps[0].GetTargetSharePct() == 42 && ps[1].TargetSharePct == nil
+			}},
 		{"capture_cost, first sample", collector.CaptureCost{Timestamp: time.Unix(6, 0)},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
 				return e.GetCaptureCost() != nil && e.GetCaptureCost().PtopCpuPct == nil

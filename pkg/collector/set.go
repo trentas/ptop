@@ -40,6 +40,11 @@ type SetConfig struct {
 	// explicitly with HeapSampleEveryAllocation.
 	HeapSampleBytes uint64
 
+	// OverheadBudgetPct, when > 0, detaches the heap probe once its estimated
+	// cost stays above this share of the target's own CPU for three windows
+	// in a row, and says so mid-stream (#154). 0 is off.
+	OverheadBudgetPct float64
+
 	// CPUProfHz is the per-CPU sampling rate of the CPU attribution axis
 	// (#125), in Hz. 0 takes bpf.CPUProfDefaultHz — see NormalizeCPUProfHz for
 	// why the default is 99 and not 100.
@@ -404,21 +409,38 @@ func NewSet(cfg SetConfig) *Set {
 		s.probes.active(SubsystemIO, SourceProc)
 	}
 
-	s.startCost(cfg.PID)
+	s.startCost(cfg)
 	return s
 }
 
 // startCost starts the capture's own cost reading (#154): the heap probe's
 // estimate when it runs, and ptop's CPU always. Context, not a probe: nothing
 // to --disable.
-func (s *Set) startCost(pid int) {
+func (s *Set) startCost(cfg SetConfig) {
 	sources := map[string]CostSource{}
 	if s.HeapEBPF != nil {
 		sources[SubsystemHeap] = s.HeapEBPF
 	}
-	if c := NewCostCollector(sources); c.Start(pid) == nil {
+	c := NewCostCollector(sources).WithBudget(cfg.OverheadBudgetPct, s.detach)
+	pid := cfg.PID
+	if cfg.Cgroup != "" {
+		pid = 0
+	}
+	if c.Start(pid) == nil {
 		s.Cost = c
 	}
+}
+
+// detach stops a running probe mid-capture and records why in the probe set,
+// so a handshake taken after it says disabled (#154). Only the heap probe has a
+// cost worth a budget.
+func (s *Set) detach(name, reason string) error {
+	if name != SubsystemHeap || s.HeapEBPF == nil {
+		return fmt.Errorf("no running %s probe to detach", name)
+	}
+	s.HeapEBPF.Stop()
+	s.probes.transition(ProbeStatus{Name: name, State: ProbeDisabled, Detail: reason})
+	return nil
 }
 
 // enabled reports whether a subsystem should be started, recording it as
@@ -531,7 +553,7 @@ func (s *Set) startCgroup(cfg SetConfig) {
 		s.Sources.Security = "eBPF"
 	}
 	// No heap probe over a subtree, but ptop's own CPU is still worth saying.
-	s.startCost(0)
+	s.startCost(cfg)
 }
 
 // startCgroupCollector starts c against a cgroup subtree, honouring --disable and

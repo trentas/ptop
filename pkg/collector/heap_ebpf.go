@@ -54,6 +54,12 @@ type HeapEBPFCollector struct {
 	stop     chan struct{}
 	pid      int
 
+	// Stop runs once, and only closes the tracers after both loops have left
+	// them: it is called at runtime too, when --overhead-budget detaches the
+	// probe (#154), not only on the way out of the process.
+	stopOnce sync.Once
+	loops    sync.WaitGroup
+
 	// sampleBytes is the Go lane's stack-sampling rate: bytes of allocation
 	// between recorded samples (#108). A rate of 1 records every allocation
 	// (HeapSampleEveryAllocation). The libc lane ignores it — it pairs alloc
@@ -139,24 +145,37 @@ func (c *HeapEBPFCollector) Start(pid int) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "heap: call-site symbolization unavailable for pid %d: %v\n", pid, err)
 	}
-	go c.readLoop()
-	go c.publishLoop()
+	c.loops.Add(2)
+	go func() { defer c.loops.Done(); c.readLoop() }()
+	go func() { defer c.loops.Done(); c.publishLoop() }()
 	return nil
 }
 
 func (c *HeapEBPFCollector) Stop() {
-	close(c.stop)
-	if c.tracer != nil {
+	c.stopOnce.Do(func() {
+		// publishLoop leaves on stop; readLoop is blocked in the ring buffer
+		// and leaves when the read is interrupted. Only then are the tracers
+		// closed, so nothing reads a field Close is clearing.
+		close(c.stop)
+		c.goTracer.InterruptNext()
+		c.tracer.InterruptNext()
+		c.loops.Wait()
 		_ = c.tracer.Close()
-		c.tracer = nil
-	}
-	if c.goTracer != nil {
 		_ = c.goTracer.Close()
-		c.goTracer = nil
-	}
-	if c.sym != nil {
-		_ = c.sym.Close()
-		c.sym = nil
+		if c.sym != nil {
+			_ = c.sym.Close()
+		}
+	})
+}
+
+// stopping reports whether Stop has begun: a read error then is the
+// interrupted read, not a transient one to retry.
+func (c *HeapEBPFCollector) stopping() bool {
+	select {
+	case <-c.stop:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -174,7 +193,7 @@ func (c *HeapEBPFCollector) readLoopLibc() {
 	for {
 		ev, err := c.tracer.Next()
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || c.stopping() {
 				return
 			}
 			continue // transient; keep reading
@@ -207,7 +226,7 @@ func (c *HeapEBPFCollector) readLoopGo() {
 	for {
 		ev, err := c.goTracer.Next()
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || c.stopping() {
 				return
 			}
 			continue // transient; keep reading

@@ -87,7 +87,7 @@ ptop/
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── restart.bpf.h      a call the kernel re-runs after a signal is one call (#160)
 │   │   │   ├── probecost.bpf.h    heap probes count their hits and time their own body (#154)
-│   │   │   ├── calib.bpf.c        empty uprobe/uretprobe: the trap cost, calibrated at startup (#154)
+│   │   │   ├── calib.bpf.c        empty uprobe: the trap cost, calibrated at startup (#154); never a uretprobe on Go
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
@@ -737,18 +737,62 @@ second:
 - **Hits** are counted in the kernel (`probecost.bpf.h`).
 - **Program time** is timed there on one hit in 64. Timing every hit would be a
   cost of its own.
-- **Trap costs** are calibrated at startup. `calib.bpf.c`'s empty programs go on
-  a ptop function (found through `.gopclntab`, so a stripped release works),
+- **The entry trap** is calibrated at startup. `calib.bpf.c`'s empty uprobe goes
+  on a ptop function (found through `.gopclntab`, so a stripped release works),
   and calls are timed against bare calls, fastest of five rounds. The trap is
-  most of a hit: ~485ns of ~530ns on the reference arm64 VM. Leaving it out
-  reads 0.07× of the real cost.
+  most of a hit: ~485ns of ~530ns on the reference arm64 VM, ~2µs on CI amd64.
+  Leaving it out reads 0.07× of the real cost.
+- **Never a uretprobe on Go code, ptop's included.** A uretprobe rewrites the
+  return address on the goroutine's stack. A GC that scans the stack meanwhile
+  meets a PC in no Go function and dies (SIGSEGV in
+  `runtime.(*unwinder).next`). The first calibration had a uretprobe for the
+  return trap. It crashed the selftest on both CI runners the first time it
+  ran beside a busy allocator, and would have crashed ptop on a busy host. The
+  return trap is not calibrated, so the libc lane's estimate is a floor by it.
+  The Go allocation lane has always hooked `mallocgc` with a uprobe for this
+  reason.
 - **The selftest grades the estimate against the thing itself.** A thread's CPU
   time per allocation is measured with the probe detached and attached, and the
   estimate lands at 0.87–0.89× of the difference.
 
 `CostCollector` is context: it has no `--disable` name, and `blind` lets it
-through. The budget that detaches the heap probe, and the mid-stream probe-state
-event it needs, are the rest of #154.
+through.
+
+`--overhead-budget <pct>` puts the estimate to use.
+- **The unit** is the estimate as a share of the target's CPU, probe time
+  included (`target_share_pct`, capped at 100; unknown below 50ms of target CPU,
+  since `/proc/<pid>/stat` counts 10ms ticks). The first version used the
+  overhead over the target's own work, `est/(cpu−est)`. It had no value exactly
+  when the probe was most of the target's CPU. A calibration a quarter high then
+  put the estimate above `cpu`, and the budget never fired.
+- **The calibration times the thread's CPU clock** (`CLOCK_THREAD_CPUTIME_ID`),
+  not wall time. With the allocator competing for 2 CPUs, wall time read the trap
+  at 713ns where it was ~500.
+- **The trigger:** three windows above the budget call `Set.detach`. It stops
+  the heap collector and records the transition in the probe set.
+  `probeLog.transition` is the one way out of `active`; `set` keeps the first
+  active status.
+- **The `ProbeChange` event:**
+  - it reaches the wire as `Event.probe_change`, in the probe's own category, so
+    it travels in order with the events it explains;
+  - the hub replaces its copy of the probe set (`probesMu`), so later
+    handshakes are current;
+  - the TUI puts it on the timeline.
+- **`HeapEBPFCollector.Stop` is safe mid-capture.** It runs once, interrupts the
+  ring-buffer read, waits for both loops, and only then closes the tracers.
+  Before, it was only reached on the way out. It cleared the tracer the reader
+  loop was using, and a reader between two reads would take "not initialized"
+  for a transient error and retry forever.
+
+The selftest's `budget` case runs a heap-only `Set` at a 1% budget against a
+flat-out allocator, and grades:
+- the detach and its reason;
+- the probe set;
+- no heap snapshot after the detach;
+- an idle ptop afterwards.
+
+That last check is a guard on the outcome. The reader race has a narrow window,
+and the old `Stop` passed it.
 
 ### A call the kernel re-runs after a signal is one call (#160)
 
@@ -962,6 +1006,7 @@ ptop --pid <PID> --debuginfod-urls https://debuginfod.example   name the servers
 ptop --pid <PID> --heap-sample-bytes 0   record EVERY Go allocation (exact per site, very expensive)
 ptop --pid <PID> --cpu-sample-hz 250   CPU attribution: stack samples/s/CPU (default 99, #125)
 ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
+ptop --pid <PID> --overhead-budget 5   detach heap when its estimate stays > 5% of the target's CPU for 3 windows (#154)
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
 ptop --caps                 which capabilities this binary holds, and which collectors they run
 ptop --version              print version + commit + build date

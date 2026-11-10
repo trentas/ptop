@@ -1,6 +1,9 @@
 package collector
 
-import "sort"
+import (
+	"sort"
+	"sync"
+)
 
 // What became of each collector, and why that has to leave the process.
 //
@@ -58,13 +61,18 @@ type ProbeStatus struct {
 // part — the attach error — exists only at the moment of the failure. Deriving
 // the set afterwards from which collectors are nil would recover the states and
 // throw away every reason.
-type probeLog struct{ m map[string]ProbeStatus }
+type probeLog struct {
+	mu sync.Mutex // a probe can change state mid-capture (#154)
+	m  map[string]ProbeStatus
+}
 
 // set records st unless the probe is already active. A subsystem with a /proc
 // fallback is walked twice — eBPF first, then /proc — so the eBPF failure must
 // not overwrite the fallback that succeeded, nor the reverse. Active is the
 // answer whenever any lane produced data.
 func (l *probeLog) set(st ProbeStatus) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if l.m == nil {
 		l.m = make(map[string]ProbeStatus)
 	}
@@ -82,7 +90,20 @@ func (l *probeLog) active(name, source string) {
 // set, which refuses to touch an active status: the caveat belongs to the very
 // lane that succeeded. Anything but an active probe is left alone — its Detail
 // already says why it is not running.
+// transition records a change of state after startup, overriding an active
+// probe: the one way a probe stops being active (#154).
+func (l *probeLog) transition(st ProbeStatus) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.m == nil {
+		l.m = make(map[string]ProbeStatus)
+	}
+	l.m[st.Name] = st
+}
+
 func (l *probeLog) caveat(name, note string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if st, ok := l.m[name]; ok && st.State == ProbeActive {
 		st.Detail = note
 		l.m[name] = st
@@ -112,6 +133,8 @@ func (l *probeLog) failed(name string, err error, ebpfAvailable bool) {
 // statuses returns every recorded subsystem, sorted by name so two captures of
 // the same configuration report byte-identical probe sets.
 func (l *probeLog) statuses() []ProbeStatus {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	if len(l.m) == 0 {
 		return nil
 	}

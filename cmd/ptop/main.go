@@ -42,6 +42,7 @@ func main() {
 	debuginfod := flag.Bool("debuginfod", false, "Resolve symbols for STRIPPED modules from the debuginfod servers in $DEBUGINFOD_URLS, keyed by build-id. Network lookup is off unless asked for")
 	debuginfodURLs := flag.String("debuginfod-urls", "", "debuginfod servers to query, comma/space separated (implies --debuginfod; overrides $DEBUGINFOD_URLS)")
 	symbolCache := flag.String("symbol-cache", "", "Local symbol store, <dir>/<build-id>/debuginfo — read before any network and written after a fetch. Alone it resolves offline from an unpacked vendor bundle")
+	overheadBudget := flag.Float64("overhead-budget", 0, "Detach the heap probe when its estimated cost stays above this % of the target's own CPU for three windows in a row, and say so on the stream (e.g. 5). 0 never detaches")
 	heapSample := flag.Uint64("heap-sample-bytes", bpf.GoAllocDefaultSampleBytes, "Go allocation lane: bytes allocated between recorded call-site samples. 0 records every allocation — exact per site, and a large multiple of the target's own CPU time")
 	cpuProfHz := flag.Int("cpu-sample-hz", bpf.CPUProfDefaultHz, "CPU attribution axis: stack samples per second per CPU. Names the functions the target runs in, beside the exact on-CPU nanoseconds")
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
@@ -74,6 +75,10 @@ func main() {
 
 	// Rejected here, before anything attaches: a typo in --disable must not
 	// leave the subsystem running while the operator believes it is off.
+	if *overheadBudget < 0 {
+		fmt.Fprintln(os.Stderr, "error: --overhead-budget must be a percentage ≥ 0 (0 is off)")
+		os.Exit(2)
+	}
 	disable, err := collector.ParseDisable(*disableSpec)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: --disable: %v\n", err)
@@ -203,7 +208,7 @@ func main() {
 	base := collector.SetConfig{
 		NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap,
 		Disable: disable, HeapSampleBytes: heapSampleBytes, Symbols: symbolOpts,
-		CPUProfHz: *cpuProfHz,
+		CPUProfHz: *cpuProfHz, OverheadBudgetPct: *overheadBudget,
 	}
 
 	// Transport security of the event stream (#95) — distinct from --tls, which
@@ -257,23 +262,24 @@ func main() {
 
 		var tuiCfg *tui.Config
 		if *withTUI {
-			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, CPUProfHz: *cpuProfHz, Symbols: symbolOpts}
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, CPUProfHz: *cpuProfHz, Symbols: symbolOpts, OverheadBudgetPct: *overheadBudget}
 		}
 		runServe(*serveAddr, target, base, opts, tuiCfg)
 		return
 	}
 
 	runTUI(tui.Config{
-		PID:             *pid,
-		FPS:             *fps,
-		NoEBPF:          *noEBPF,
-		Export:          *export,
-		TLS:             tlsEnabled,
-		TLSMaxBytes:     tlsCap,
-		Disable:         disable,
-		HeapSampleBytes: heapSampleBytes,
-		CPUProfHz:       *cpuProfHz,
-		Symbols:         symbolOpts,
+		PID:               *pid,
+		FPS:               *fps,
+		NoEBPF:            *noEBPF,
+		Export:            *export,
+		TLS:               tlsEnabled,
+		TLSMaxBytes:       tlsCap,
+		Disable:           disable,
+		HeapSampleBytes:   heapSampleBytes,
+		CPUProfHz:         *cpuProfHz,
+		Symbols:           symbolOpts,
+		OverheadBudgetPct: *overheadBudget,
 	})
 }
 

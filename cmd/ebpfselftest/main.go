@@ -85,6 +85,7 @@ func suite() []selfCase {
 		{"goalloc", "two call sites at a known rate and ratio, and the census adds up (#108, #109)", checkGoAlloc},
 		{"threads", "a sleep still going on counts in its window; a preempted thread waits in the run queue, not off-CPU (#150)", checkThreads},
 		{"cost", "the heap probe's estimated cost per hit is within 2× of what an allocation costs with it attached (#154)", checkCost},
+		{"budget", "--overhead-budget detaches the heap probe after three windows over it, says so, and leaves nothing spinning (#154)", checkBudget},
 		{"io", "blocking reads land in their latency bucket; writes and unlinks are seen on every CPU (#159)", checkIO},
 		{"restart", "a read or futex wait the kernel re-runs after a signal counts once; one that returned EINTR counts apart (#160, #164)", checkRestart},
 		{"saturation", "a burner capped at 20% CPU is throttled and stalls; lifting the cap shows mid-capture (#151, #153)", checkSaturation},

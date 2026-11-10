@@ -199,48 +199,6 @@ message PtopBuild {
   string build_date = 3;
 }
 
-// ProbeState is what became of one collector for one target (#112).
-//
-// The three ways a subsystem goes quiet are unrelated and call for opposite
-// reactions — a probe the operator switched off is a knob they can turn back
-// on, one that failed to attach is a broken deployment, and a target that
-// simply did not do the thing is the only one that is a finding. Before this
-// existed all three reached a consumer as the same absence.
-enum ProbeState {
-  PROBE_STATE_UNSPECIFIED = 0;
-  // Attached, and producing events for this target.
-  PROBE_STATE_ACTIVE = 1;
-  // Not asked for: named in --disable, or needing an eBPF lane --no-ebpf turned
-  // off, or opt-in and not opted into (--tls).
-  PROBE_STATE_DISABLED = 2;
-  // Asked for and could not attach: missing capabilities, no tracefs, kernel
-  // too old, no symbol to hook. The target is instrumented less than requested,
-  // and nothing but this field says so after the fact.
-  PROBE_STATE_FAILED = 3;
-  // Cannot exist here: this build embeds no eBPF programs, the platform has no
-  // such source, or the scope structurally excludes it (a uprobe into one
-  // process's mapped libc has no meaning over a cgroup subtree).
-  PROBE_STATE_UNSUPPORTED = 4;
-}
-
-// ProbeInfo is one collector's outcome for the target of this stream.
-message ProbeInfo {
-  // Subsystem name, spelled as --disable accepts it: cpu, threads, memory,
-  // heap, syscalls, io, network, futex, signals, lifecycle, security, tls, fd.
-  string name = 1;
-  ProbeState state = 2;
-  // Where an ACTIVE probe's numbers come from: "eBPF" or "/proc". Empty
-  // otherwise. The same subsystem read through different sources is not the
-  // same measurement, so this is part of the comparison key too.
-  string source = 3;
-  // Why a probe that is not ACTIVE is not running — the attach error, or the
-  // flag that switched it off. On an ACTIVE probe, a caveat: what it attached
-  // and still could not see, such as connections that predate the capture and
-  // could not be seeded (#140); empty when there is none. Operator-facing prose;
-  // do not parse it.
-  string detail = 4;
-}
-
 // StreamMeta is an out-of-band signal interleaved in the stream. It carries the
 // subscription handshake (target, sent once before any event) and reports
 // backpressure: how many events the server dropped for this subscriber because

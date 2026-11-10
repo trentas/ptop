@@ -18,8 +18,10 @@ import (
 type Hub struct {
 	target  Target
 	buildID string          // target exec build-id, stamped onto every StackRef (#54)
-	probes  []*pb.ProbeInfo // what became of each collector, for the handshake (#112)
-	build   *pb.PtopBuild   // which ptop this is, for the handshake (#145); nil = unknown
+	probes  []*pb.ProbeInfo // what became of each collector, for the handshake (#112); probesMu
+	// probesMu guards probes, which a mid-capture change replaces (#154).
+	probesMu sync.Mutex
+	build    *pb.PtopBuild // which ptop this is, for the handshake (#145); nil = unknown
 	// what the target binary is built from, for the handshake (#157); nil in
 	// cgroup mode and whenever it is unknown
 	targetBuild *pb.TargetBuild
@@ -54,12 +56,15 @@ func NewHub(target Target, buildID string, set *collector.Set) *Hub {
 // (#157), and the machine and limits it runs under (#153). The limits are read
 // per subscriber, at subscribe time.
 func (h *Hub) targetInfo() *pb.TargetInfo {
+	h.probesMu.Lock()
+	probes := h.probes
+	h.probesMu.Unlock()
 	if h.target.IsCgroup() {
 		return &pb.TargetInfo{
 			Mode:       pb.TargetMode_TARGET_MODE_CGROUP,
 			CgroupPath: h.target.CgroupPath,
 			CgroupId:   h.target.CgroupID,
-			Probes:     h.probes,
+			Probes:     probes,
 			Ptop:       h.build,
 			Host:       h.host,
 			Limits:     targetLimits(h.target),
@@ -68,7 +73,7 @@ func (h *Hub) targetInfo() *pb.TargetInfo {
 	return &pb.TargetInfo{
 		Mode:        pb.TargetMode_TARGET_MODE_PID,
 		Pid:         int32(h.target.PID),
-		Probes:      h.probes,
+		Probes:      probes,
 		Ptop:        h.build,
 		TargetBuild: h.targetBuild,
 		Host:        h.host,
@@ -95,14 +100,61 @@ func probeInfos(set *collector.Set) []*pb.ProbeInfo {
 	}
 	out := make([]*pb.ProbeInfo, 0, len(sts))
 	for _, st := range sts {
-		out = append(out, &pb.ProbeInfo{
-			Name:   st.Name,
-			State:  probeStates[st.State],
-			Source: st.Source,
-			Detail: st.Detail,
-		})
+		out = append(out, probeInfo(st))
 	}
 	return out
+}
+
+func probeInfo(st collector.ProbeStatus) *pb.ProbeInfo {
+	return &pb.ProbeInfo{Name: st.Name, State: probeStates[st.State], Source: st.Source, Detail: st.Detail}
+}
+
+// probeCategories maps a subsystem to the category its events carry, so a
+// probe's change of state reaches the subscribers of its axis (#154).
+var probeCategories = map[string]pb.Category{
+	collector.SubsystemCPU:       pb.Category_CATEGORY_CPU,
+	collector.SubsystemCPUProf:   pb.Category_CATEGORY_CPU,
+	collector.SubsystemThreads:   pb.Category_CATEGORY_THREAD,
+	collector.SubsystemMemory:    pb.Category_CATEGORY_MEMORY,
+	collector.SubsystemHeap:      pb.Category_CATEGORY_MEMORY,
+	collector.SubsystemSyscalls:  pb.Category_CATEGORY_SYSCALL,
+	collector.SubsystemIO:        pb.Category_CATEGORY_IO,
+	collector.SubsystemNetwork:   pb.Category_CATEGORY_NETWORK,
+	collector.SubsystemTLS:       pb.Category_CATEGORY_NETWORK,
+	collector.SubsystemFutex:     pb.Category_CATEGORY_LOCK,
+	collector.SubsystemSignals:   pb.Category_CATEGORY_SIGNAL,
+	collector.SubsystemLifecycle: pb.Category_CATEGORY_PROCESS,
+	collector.SubsystemSecurity:  pb.Category_CATEGORY_SECURITY,
+	collector.SubsystemFD:        pb.Category_CATEGORY_FD,
+}
+
+func probeCategory(name string) pb.Category {
+	if c, ok := probeCategories[name]; ok {
+		return c
+	}
+	return pb.Category_CATEGORY_TIMELINE
+}
+
+// noteProbeChange keeps the handshake current: a subscriber that arrives after
+// a probe changed state is told the state it is in now (#154). It also says so
+// on stderr, the way the probe set is reported at startup.
+func (h *Hub) noteProbeChange(pc collector.ProbeChange) {
+	info := probeInfo(pc.Status)
+	h.probesMu.Lock()
+	replaced := false
+	probes := make([]*pb.ProbeInfo, 0, len(h.probes)+1)
+	for _, p := range h.probes {
+		if p.GetName() == info.GetName() {
+			p, replaced = info, true
+		}
+		probes = append(probes, p)
+	}
+	if !replaced {
+		probes = append(probes, info)
+	}
+	h.probes = probes
+	h.probesMu.Unlock()
+	fmt.Fprintf(os.Stderr, "[ptop] ⚠ %s probe is now %s: %s\n", pc.Status.Name, pc.Status.State, pc.Status.Detail)
 }
 
 // Start attaches the hub to the shared collector bus (#71) — the same bus the
@@ -126,6 +178,9 @@ func (h *Hub) handle(v interface{}) {
 	// own up-to-date uid/gid/cgroup_id.
 	if pc, ok := v.(collector.ProcContext); ok {
 		h.setIdent(pc)
+	}
+	if pc, ok := v.(collector.ProbeChange); ok {
+		h.noteProbeChange(pc)
 	}
 	if ev := toEvent(h.target.PID, h.buildID, v); ev != nil {
 		h.stampIdent(ev)
@@ -200,12 +255,15 @@ func (h *Hub) sinkCount() int {
 // server announces itself, is the least this can do; the handshake is what
 // makes it survive into the artifact.
 func (h *Hub) probeSummary() []string {
-	if len(h.probes) == 0 {
+	h.probesMu.Lock()
+	probes := h.probes
+	h.probesMu.Unlock()
+	if len(probes) == 0 {
 		return nil
 	}
 	byState := map[pb.ProbeState]int{}
 	var failed []string
-	for _, p := range h.probes {
+	for _, p := range probes {
 		byState[p.GetState()]++
 		if p.GetState() == pb.ProbeState_PROBE_STATE_FAILED {
 			failed = append(failed, fmt.Sprintf("%s (%s)", p.GetName(), p.GetDetail()))
