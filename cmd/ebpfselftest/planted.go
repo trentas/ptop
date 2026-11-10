@@ -912,9 +912,10 @@ func checkBlind(g *grader, pid int) {
 		"failed, with the error", fmt.Sprintf("%s (%q)", tls.State, tls.Detail))
 
 	// Nothing is attached, so nothing may publish a measurement: a value here
-	// would read as a target nobody was watching. The one exception is
-	// ProcContext, which is no probe's reading but the target's identity
-	// (namespaces, cgroup, ids) and has no --disable name to switch it off.
+	// would read as a target nobody was watching. The exceptions are context,
+	// not any probe's reading of the target, and have no --disable name:
+	// ProcContext, the target's identity (namespaces, cgroup, ids), and
+	// HostSample, the host's steal and the target cgroup's limits (#153).
 	//
 	// The handler goes on before the bus starts draining, so a value published
 	// in the first instant is not missed.
@@ -923,7 +924,8 @@ func checkBlind(g *grader, pid int) {
 	var mu sync.Mutex
 	var seen []string
 	h := bus.AddHandler(func(v any) {
-		if _, identity := v.(collector.ProcContext); identity {
+		switch v.(type) {
+		case collector.ProcContext, collector.HostSample:
 			return
 		}
 		mu.Lock()

@@ -145,6 +145,58 @@ func (ProbeState) EnumDescriptor() ([]byte, []int) {
 	return file_service_proto_rawDescGZIP(), []int{1}
 }
 
+type Virtualization_State int32
+
+const (
+	// Unknown: nothing on this host says. arm64 has no CPU flag for it.
+	Virtualization_STATE_UNSPECIFIED Virtualization_State = 0
+	// x86 without the cpuinfo "hypervisor" flag.
+	Virtualization_STATE_BARE_METAL Virtualization_State = 1
+	// The cpuinfo "hypervisor" flag, or /sys/hypervisor/type.
+	Virtualization_STATE_VIRTUALIZED Virtualization_State = 2
+)
+
+// Enum value maps for Virtualization_State.
+var (
+	Virtualization_State_name = map[int32]string{
+		0: "STATE_UNSPECIFIED",
+		1: "STATE_BARE_METAL",
+		2: "STATE_VIRTUALIZED",
+	}
+	Virtualization_State_value = map[string]int32{
+		"STATE_UNSPECIFIED": 0,
+		"STATE_BARE_METAL":  1,
+		"STATE_VIRTUALIZED": 2,
+	}
+)
+
+func (x Virtualization_State) Enum() *Virtualization_State {
+	p := new(Virtualization_State)
+	*p = x
+	return p
+}
+
+func (x Virtualization_State) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Virtualization_State) Descriptor() protoreflect.EnumDescriptor {
+	return file_service_proto_enumTypes[2].Descriptor()
+}
+
+func (Virtualization_State) Type() protoreflect.EnumType {
+	return &file_service_proto_enumTypes[2]
+}
+
+func (x Virtualization_State) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Virtualization_State.Descriptor instead.
+func (Virtualization_State) EnumDescriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{5, 0}
+}
+
 // SubscribeRequest opens a stream. categories filters which Event categories
 // the server sends; empty means all.
 //
@@ -254,7 +306,18 @@ type TargetInfo struct {
 	// It is what tells a dependency's frame from the application's: Go frame
 	// names do not, and the main module path does. Two captures' module lists
 	// are also the dependency diff of a deploy, without the code diff.
-	TargetBuild   *TargetBuild `protobuf:"bytes,7,opt,name=target_build,json=targetBuild,proto3" json:"target_build,omitempty"`
+	TargetBuild *TargetBuild `protobuf:"bytes,7,opt,name=target_build,json=targetBuild,proto3" json:"target_build,omitempty"`
+	// The machine the target runs on (#153): kernel, CPU and hypervisor. Version
+	// N on arm64 against N-1 on x86, or on the next CPU generation, moves every
+	// CPU number and most latencies, and a diff that does not know it blames the
+	// code. Read once from /proc and /sys. Nothing that identifies the box
+	// (hostname, instance id, serial) is read: a comparison needs the hardware
+	// class, not which machine it was.
+	Host *HostInfo `protobuf:"bytes,8,opt,name=host,proto3" json:"host,omitempty"`
+	// The target cgroup's limits when this subscriber subscribed (#153). They
+	// change at runtime, so HostSample carries them again every window. In pid
+	// mode the process's current cgroup, in cgroup mode the target cgroup.
+	Limits        *CgroupLimits `protobuf:"bytes,9,opt,name=limits,proto3" json:"limits,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -338,6 +401,340 @@ func (x *TargetInfo) GetTargetBuild() *TargetBuild {
 	return nil
 }
 
+func (x *TargetInfo) GetHost() *HostInfo {
+	if x != nil {
+		return x.Host
+	}
+	return nil
+}
+
+func (x *TargetInfo) GetLimits() *CgroupLimits {
+	if x != nil {
+		return x.Limits
+	}
+	return nil
+}
+
+// HostInfo is the hardware class of the host. A field ptop could not read is
+// empty, and a consumer reads it as unknown.
+type HostInfo struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	KernelRelease  string                 `protobuf:"bytes,1,opt,name=kernel_release,json=kernelRelease,proto3" json:"kernel_release,omitempty"` // uname -r
+	Machine        string                 `protobuf:"bytes,2,opt,name=machine,proto3" json:"machine,omitempty"`                                  // uname -m: "x86_64", "aarch64"
+	Cpu            *HostCpu               `protobuf:"bytes,3,opt,name=cpu,proto3" json:"cpu,omitempty"`
+	Virtualization *Virtualization        `protobuf:"bytes,4,opt,name=virtualization,proto3" json:"virtualization,omitempty"`
+	// DMI, as /sys/class/dmi/id reports it: the system vendor and product
+	// ("Amazon EC2" / "m7g.large", "Google" / "Google Compute Engine"). The
+	// serial and UUID beside them are not read.
+	DmiVendor     string `protobuf:"bytes,5,opt,name=dmi_vendor,json=dmiVendor,proto3" json:"dmi_vendor,omitempty"`
+	DmiProduct    string `protobuf:"bytes,6,opt,name=dmi_product,json=dmiProduct,proto3" json:"dmi_product,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostInfo) Reset() {
+	*x = HostInfo{}
+	mi := &file_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostInfo) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostInfo) ProtoMessage() {}
+
+func (x *HostInfo) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostInfo.ProtoReflect.Descriptor instead.
+func (*HostInfo) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *HostInfo) GetKernelRelease() string {
+	if x != nil {
+		return x.KernelRelease
+	}
+	return ""
+}
+
+func (x *HostInfo) GetMachine() string {
+	if x != nil {
+		return x.Machine
+	}
+	return ""
+}
+
+func (x *HostInfo) GetCpu() *HostCpu {
+	if x != nil {
+		return x.Cpu
+	}
+	return nil
+}
+
+func (x *HostInfo) GetVirtualization() *Virtualization {
+	if x != nil {
+		return x.Virtualization
+	}
+	return nil
+}
+
+func (x *HostInfo) GetDmiVendor() string {
+	if x != nil {
+		return x.DmiVendor
+	}
+	return ""
+}
+
+func (x *HostInfo) GetDmiProduct() string {
+	if x != nil {
+		return x.DmiProduct
+	}
+	return ""
+}
+
+// HostCpu identifies the CPU as /proc/cpuinfo reports it for the first
+// processor, plus how many there are. x86 and arm64 name different things.
+type HostCpu struct {
+	state       protoimpl.MessageState `protogen:"open.v1"`
+	Vendor      string                 `protobuf:"bytes,1,opt,name=vendor,proto3" json:"vendor,omitempty"`                               // x86 vendor_id ("GenuineIntel"); arm64 "CPU implementer" ("0x41")
+	ModelName   string                 `protobuf:"bytes,2,opt,name=model_name,json=modelName,proto3" json:"model_name,omitempty"`        // x86 "model name"; empty on arm64, where the kernel names no model
+	Family      string                 `protobuf:"bytes,3,opt,name=family,proto3" json:"family,omitempty"`                               // x86 "cpu family"; arm64 "CPU architecture"
+	Model       string                 `protobuf:"bytes,4,opt,name=model,proto3" json:"model,omitempty"`                                 // x86 "model"; arm64 "CPU part"
+	Stepping    string                 `protobuf:"bytes,5,opt,name=stepping,proto3" json:"stepping,omitempty"`                           // x86 "stepping"; arm64 "CPU revision"
+	Variant     string                 `protobuf:"bytes,6,opt,name=variant,proto3" json:"variant,omitempty"`                             // arm64 "CPU variant"; empty on x86
+	Microcode   string                 `protobuf:"bytes,7,opt,name=microcode,proto3" json:"microcode,omitempty"`                         // x86 "microcode"; empty on arm64
+	LogicalCpus uint32                 `protobuf:"varint,8,opt,name=logical_cpus,json=logicalCpus,proto3" json:"logical_cpus,omitempty"` // online CPUs
+	// /sys/devices/system/cpu/smt/control: "on", "off", "forceoff",
+	// "notsupported", "notimplemented"; empty when unreadable.
+	Smt string `protobuf:"bytes,9,opt,name=smt,proto3" json:"smt,omitempty"`
+	// Core types on a heterogeneous CPU, each with its CPU count: Intel's
+	// "cpu_core" (P) and "cpu_atom" (E), or one entry per arm64 implementer:part.
+	// Empty when every core is the same.
+	CoreTypes     []*CoreType `protobuf:"bytes,10,rep,name=core_types,json=coreTypes,proto3" json:"core_types,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HostCpu) Reset() {
+	*x = HostCpu{}
+	mi := &file_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HostCpu) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HostCpu) ProtoMessage() {}
+
+func (x *HostCpu) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HostCpu.ProtoReflect.Descriptor instead.
+func (*HostCpu) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *HostCpu) GetVendor() string {
+	if x != nil {
+		return x.Vendor
+	}
+	return ""
+}
+
+func (x *HostCpu) GetModelName() string {
+	if x != nil {
+		return x.ModelName
+	}
+	return ""
+}
+
+func (x *HostCpu) GetFamily() string {
+	if x != nil {
+		return x.Family
+	}
+	return ""
+}
+
+func (x *HostCpu) GetModel() string {
+	if x != nil {
+		return x.Model
+	}
+	return ""
+}
+
+func (x *HostCpu) GetStepping() string {
+	if x != nil {
+		return x.Stepping
+	}
+	return ""
+}
+
+func (x *HostCpu) GetVariant() string {
+	if x != nil {
+		return x.Variant
+	}
+	return ""
+}
+
+func (x *HostCpu) GetMicrocode() string {
+	if x != nil {
+		return x.Microcode
+	}
+	return ""
+}
+
+func (x *HostCpu) GetLogicalCpus() uint32 {
+	if x != nil {
+		return x.LogicalCpus
+	}
+	return 0
+}
+
+func (x *HostCpu) GetSmt() string {
+	if x != nil {
+		return x.Smt
+	}
+	return ""
+}
+
+func (x *HostCpu) GetCoreTypes() []*CoreType {
+	if x != nil {
+		return x.CoreTypes
+	}
+	return nil
+}
+
+// CoreType is one kind of core on a heterogeneous CPU.
+type CoreType struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Cpus          uint32                 `protobuf:"varint,2,opt,name=cpus,proto3" json:"cpus,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CoreType) Reset() {
+	*x = CoreType{}
+	mi := &file_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CoreType) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CoreType) ProtoMessage() {}
+
+func (x *CoreType) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CoreType.ProtoReflect.Descriptor instead.
+func (*CoreType) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CoreType) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *CoreType) GetCpus() uint32 {
+	if x != nil {
+		return x.Cpus
+	}
+	return 0
+}
+
+// Virtualization is whether the target runs under a hypervisor.
+type Virtualization struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	State Virtualization_State   `protobuf:"varint,1,opt,name=state,proto3,enum=ptop.v1.Virtualization_State" json:"state,omitempty"`
+	// The hypervisor, when known: /sys/hypervisor/type ("xen"), else the DMI
+	// vendor of a virtualized host.
+	Hypervisor    string `protobuf:"bytes,2,opt,name=hypervisor,proto3" json:"hypervisor,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Virtualization) Reset() {
+	*x = Virtualization{}
+	mi := &file_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Virtualization) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Virtualization) ProtoMessage() {}
+
+func (x *Virtualization) ProtoReflect() protoreflect.Message {
+	mi := &file_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Virtualization.ProtoReflect.Descriptor instead.
+func (*Virtualization) Descriptor() ([]byte, []int) {
+	return file_service_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Virtualization) GetState() Virtualization_State {
+	if x != nil {
+		return x.State
+	}
+	return Virtualization_STATE_UNSPECIFIED
+}
+
+func (x *Virtualization) GetHypervisor() string {
+	if x != nil {
+		return x.Hypervisor
+	}
+	return ""
+}
+
 // TargetBuild is what a Go binary records about its own build, in the
 // .go.buildinfo section that `-s -w` does not strip.
 type TargetBuild struct {
@@ -361,7 +758,7 @@ type TargetBuild struct {
 
 func (x *TargetBuild) Reset() {
 	*x = TargetBuild{}
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -373,7 +770,7 @@ func (x *TargetBuild) String() string {
 func (*TargetBuild) ProtoMessage() {}
 
 func (x *TargetBuild) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[2]
+	mi := &file_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -386,7 +783,7 @@ func (x *TargetBuild) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TargetBuild.ProtoReflect.Descriptor instead.
 func (*TargetBuild) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{2}
+	return file_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *TargetBuild) GetGoVersion() string {
@@ -440,7 +837,7 @@ type GoModule struct {
 
 func (x *GoModule) Reset() {
 	*x = GoModule{}
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -452,7 +849,7 @@ func (x *GoModule) String() string {
 func (*GoModule) ProtoMessage() {}
 
 func (x *GoModule) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[3]
+	mi := &file_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -465,7 +862,7 @@ func (x *GoModule) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GoModule.ProtoReflect.Descriptor instead.
 func (*GoModule) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{3}
+	return file_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GoModule) GetPath() string {
@@ -507,7 +904,7 @@ type BuildSetting struct {
 
 func (x *BuildSetting) Reset() {
 	*x = BuildSetting{}
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -519,7 +916,7 @@ func (x *BuildSetting) String() string {
 func (*BuildSetting) ProtoMessage() {}
 
 func (x *BuildSetting) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[4]
+	mi := &file_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -532,7 +929,7 @@ func (x *BuildSetting) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BuildSetting.ProtoReflect.Descriptor instead.
 func (*BuildSetting) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{4}
+	return file_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *BuildSetting) GetKey() string {
@@ -570,7 +967,7 @@ type PtopBuild struct {
 
 func (x *PtopBuild) Reset() {
 	*x = PtopBuild{}
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -582,7 +979,7 @@ func (x *PtopBuild) String() string {
 func (*PtopBuild) ProtoMessage() {}
 
 func (x *PtopBuild) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[5]
+	mi := &file_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -595,7 +992,7 @@ func (x *PtopBuild) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PtopBuild.ProtoReflect.Descriptor instead.
 func (*PtopBuild) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{5}
+	return file_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PtopBuild) GetVersion() string {
@@ -642,7 +1039,7 @@ type ProbeInfo struct {
 
 func (x *ProbeInfo) Reset() {
 	*x = ProbeInfo{}
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -654,7 +1051,7 @@ func (x *ProbeInfo) String() string {
 func (*ProbeInfo) ProtoMessage() {}
 
 func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[6]
+	mi := &file_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -667,7 +1064,7 @@ func (x *ProbeInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProbeInfo.ProtoReflect.Descriptor instead.
 func (*ProbeInfo) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{6}
+	return file_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ProbeInfo) GetName() string {
@@ -714,7 +1111,7 @@ type StreamMeta struct {
 
 func (x *StreamMeta) Reset() {
 	*x = StreamMeta{}
-	mi := &file_service_proto_msgTypes[7]
+	mi := &file_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -726,7 +1123,7 @@ func (x *StreamMeta) String() string {
 func (*StreamMeta) ProtoMessage() {}
 
 func (x *StreamMeta) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[7]
+	mi := &file_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -739,7 +1136,7 @@ func (x *StreamMeta) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StreamMeta.ProtoReflect.Descriptor instead.
 func (*StreamMeta) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{7}
+	return file_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *StreamMeta) GetDropped() uint64 {
@@ -771,7 +1168,7 @@ type SubscribeResponse struct {
 
 func (x *SubscribeResponse) Reset() {
 	*x = SubscribeResponse{}
-	mi := &file_service_proto_msgTypes[8]
+	mi := &file_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -783,7 +1180,7 @@ func (x *SubscribeResponse) String() string {
 func (*SubscribeResponse) ProtoMessage() {}
 
 func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[8]
+	mi := &file_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -796,7 +1193,7 @@ func (x *SubscribeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubscribeResponse.ProtoReflect.Descriptor instead.
 func (*SubscribeResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{8}
+	return file_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SubscribeResponse) GetKind() isSubscribeResponse_Kind {
@@ -859,7 +1256,7 @@ type ResolveStackRequest struct {
 
 func (x *ResolveStackRequest) Reset() {
 	*x = ResolveStackRequest{}
-	mi := &file_service_proto_msgTypes[9]
+	mi := &file_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -871,7 +1268,7 @@ func (x *ResolveStackRequest) String() string {
 func (*ResolveStackRequest) ProtoMessage() {}
 
 func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[9]
+	mi := &file_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -884,7 +1281,7 @@ func (x *ResolveStackRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackRequest.ProtoReflect.Descriptor instead.
 func (*ResolveStackRequest) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{9}
+	return file_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *ResolveStackRequest) GetStackId() uint64 {
@@ -914,7 +1311,7 @@ type ResolveStackResponse struct {
 
 func (x *ResolveStackResponse) Reset() {
 	*x = ResolveStackResponse{}
-	mi := &file_service_proto_msgTypes[10]
+	mi := &file_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -926,7 +1323,7 @@ func (x *ResolveStackResponse) String() string {
 func (*ResolveStackResponse) ProtoMessage() {}
 
 func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_service_proto_msgTypes[10]
+	mi := &file_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -939,7 +1336,7 @@ func (x *ResolveStackResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResolveStackResponse.ProtoReflect.Descriptor instead.
 func (*ResolveStackResponse) Descriptor() ([]byte, []int) {
-	return file_service_proto_rawDescGZIP(), []int{10}
+	return file_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *ResolveStackResponse) GetFrames() []*StackFrame {
@@ -965,7 +1362,7 @@ const file_service_proto_rawDesc = "" +
 	"\n" +
 	"categories\x18\x01 \x03(\x0e2\x11.ptop.v1.CategoryR\n" +
 	"categories\x12\x10\n" +
-	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\x92\x02\n" +
+	"\x03pid\x18\x02 \x01(\x05R\x03pid\"\xe8\x02\n" +
 	"\n" +
 	"TargetInfo\x12'\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x13.ptop.v1.TargetModeR\x04mode\x12\x10\n" +
@@ -975,7 +1372,44 @@ const file_service_proto_rawDesc = "" +
 	"\tcgroup_id\x18\x04 \x01(\x04R\bcgroupId\x12*\n" +
 	"\x06probes\x18\x05 \x03(\v2\x12.ptop.v1.ProbeInfoR\x06probes\x12&\n" +
 	"\x04ptop\x18\x06 \x01(\v2\x12.ptop.v1.PtopBuildR\x04ptop\x127\n" +
-	"\ftarget_build\x18\a \x01(\v2\x14.ptop.v1.TargetBuildR\vtargetBuild\"\xb7\x01\n" +
+	"\ftarget_build\x18\a \x01(\v2\x14.ptop.v1.TargetBuildR\vtargetBuild\x12%\n" +
+	"\x04host\x18\b \x01(\v2\x11.ptop.v1.HostInfoR\x04host\x12-\n" +
+	"\x06limits\x18\t \x01(\v2\x15.ptop.v1.CgroupLimitsR\x06limits\"\xf0\x01\n" +
+	"\bHostInfo\x12%\n" +
+	"\x0ekernel_release\x18\x01 \x01(\tR\rkernelRelease\x12\x18\n" +
+	"\amachine\x18\x02 \x01(\tR\amachine\x12\"\n" +
+	"\x03cpu\x18\x03 \x01(\v2\x10.ptop.v1.HostCpuR\x03cpu\x12?\n" +
+	"\x0evirtualization\x18\x04 \x01(\v2\x17.ptop.v1.VirtualizationR\x0evirtualization\x12\x1d\n" +
+	"\n" +
+	"dmi_vendor\x18\x05 \x01(\tR\tdmiVendor\x12\x1f\n" +
+	"\vdmi_product\x18\x06 \x01(\tR\n" +
+	"dmiProduct\"\xa9\x02\n" +
+	"\aHostCpu\x12\x16\n" +
+	"\x06vendor\x18\x01 \x01(\tR\x06vendor\x12\x1d\n" +
+	"\n" +
+	"model_name\x18\x02 \x01(\tR\tmodelName\x12\x16\n" +
+	"\x06family\x18\x03 \x01(\tR\x06family\x12\x14\n" +
+	"\x05model\x18\x04 \x01(\tR\x05model\x12\x1a\n" +
+	"\bstepping\x18\x05 \x01(\tR\bstepping\x12\x18\n" +
+	"\avariant\x18\x06 \x01(\tR\avariant\x12\x1c\n" +
+	"\tmicrocode\x18\a \x01(\tR\tmicrocode\x12!\n" +
+	"\flogical_cpus\x18\b \x01(\rR\vlogicalCpus\x12\x10\n" +
+	"\x03smt\x18\t \x01(\tR\x03smt\x120\n" +
+	"\n" +
+	"core_types\x18\n" +
+	" \x03(\v2\x11.ptop.v1.CoreTypeR\tcoreTypes\"2\n" +
+	"\bCoreType\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04cpus\x18\x02 \x01(\rR\x04cpus\"\xb2\x01\n" +
+	"\x0eVirtualization\x123\n" +
+	"\x05state\x18\x01 \x01(\x0e2\x1d.ptop.v1.Virtualization.StateR\x05state\x12\x1e\n" +
+	"\n" +
+	"hypervisor\x18\x02 \x01(\tR\n" +
+	"hypervisor\"K\n" +
+	"\x05State\x12\x15\n" +
+	"\x11STATE_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10STATE_BARE_METAL\x10\x01\x12\x15\n" +
+	"\x11STATE_VIRTUALIZED\x10\x02\"\xb7\x01\n" +
 	"\vTargetBuild\x12\x1d\n" +
 	"\n" +
 	"go_version\x18\x01 \x01(\tR\tgoVersion\x12\x12\n" +
@@ -1044,50 +1478,62 @@ func file_service_proto_rawDescGZIP() []byte {
 	return file_service_proto_rawDescData
 }
 
-var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
+var file_service_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_service_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_service_proto_goTypes = []any{
 	(TargetMode)(0),              // 0: ptop.v1.TargetMode
 	(ProbeState)(0),              // 1: ptop.v1.ProbeState
-	(*SubscribeRequest)(nil),     // 2: ptop.v1.SubscribeRequest
-	(*TargetInfo)(nil),           // 3: ptop.v1.TargetInfo
-	(*TargetBuild)(nil),          // 4: ptop.v1.TargetBuild
-	(*GoModule)(nil),             // 5: ptop.v1.GoModule
-	(*BuildSetting)(nil),         // 6: ptop.v1.BuildSetting
-	(*PtopBuild)(nil),            // 7: ptop.v1.PtopBuild
-	(*ProbeInfo)(nil),            // 8: ptop.v1.ProbeInfo
-	(*StreamMeta)(nil),           // 9: ptop.v1.StreamMeta
-	(*SubscribeResponse)(nil),    // 10: ptop.v1.SubscribeResponse
-	(*ResolveStackRequest)(nil),  // 11: ptop.v1.ResolveStackRequest
-	(*ResolveStackResponse)(nil), // 12: ptop.v1.ResolveStackResponse
-	(Category)(0),                // 13: ptop.v1.Category
-	(*Event)(nil),                // 14: ptop.v1.Event
-	(*StackFrame)(nil),           // 15: ptop.v1.StackFrame
+	(Virtualization_State)(0),    // 2: ptop.v1.Virtualization.State
+	(*SubscribeRequest)(nil),     // 3: ptop.v1.SubscribeRequest
+	(*TargetInfo)(nil),           // 4: ptop.v1.TargetInfo
+	(*HostInfo)(nil),             // 5: ptop.v1.HostInfo
+	(*HostCpu)(nil),              // 6: ptop.v1.HostCpu
+	(*CoreType)(nil),             // 7: ptop.v1.CoreType
+	(*Virtualization)(nil),       // 8: ptop.v1.Virtualization
+	(*TargetBuild)(nil),          // 9: ptop.v1.TargetBuild
+	(*GoModule)(nil),             // 10: ptop.v1.GoModule
+	(*BuildSetting)(nil),         // 11: ptop.v1.BuildSetting
+	(*PtopBuild)(nil),            // 12: ptop.v1.PtopBuild
+	(*ProbeInfo)(nil),            // 13: ptop.v1.ProbeInfo
+	(*StreamMeta)(nil),           // 14: ptop.v1.StreamMeta
+	(*SubscribeResponse)(nil),    // 15: ptop.v1.SubscribeResponse
+	(*ResolveStackRequest)(nil),  // 16: ptop.v1.ResolveStackRequest
+	(*ResolveStackResponse)(nil), // 17: ptop.v1.ResolveStackResponse
+	(Category)(0),                // 18: ptop.v1.Category
+	(*CgroupLimits)(nil),         // 19: ptop.v1.CgroupLimits
+	(*Event)(nil),                // 20: ptop.v1.Event
+	(*StackFrame)(nil),           // 21: ptop.v1.StackFrame
 }
 var file_service_proto_depIdxs = []int32{
-	13, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
+	18, // 0: ptop.v1.SubscribeRequest.categories:type_name -> ptop.v1.Category
 	0,  // 1: ptop.v1.TargetInfo.mode:type_name -> ptop.v1.TargetMode
-	8,  // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
-	7,  // 3: ptop.v1.TargetInfo.ptop:type_name -> ptop.v1.PtopBuild
-	4,  // 4: ptop.v1.TargetInfo.target_build:type_name -> ptop.v1.TargetBuild
-	5,  // 5: ptop.v1.TargetBuild.main:type_name -> ptop.v1.GoModule
-	5,  // 6: ptop.v1.TargetBuild.deps:type_name -> ptop.v1.GoModule
-	6,  // 7: ptop.v1.TargetBuild.vcs:type_name -> ptop.v1.BuildSetting
-	5,  // 8: ptop.v1.GoModule.replace:type_name -> ptop.v1.GoModule
-	1,  // 9: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
-	3,  // 10: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
-	14, // 11: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
-	9,  // 12: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
-	15, // 13: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
-	2,  // 14: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
-	11, // 15: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
-	10, // 16: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
-	12, // 17: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
-	16, // [16:18] is the sub-list for method output_type
-	14, // [14:16] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	13, // 2: ptop.v1.TargetInfo.probes:type_name -> ptop.v1.ProbeInfo
+	12, // 3: ptop.v1.TargetInfo.ptop:type_name -> ptop.v1.PtopBuild
+	9,  // 4: ptop.v1.TargetInfo.target_build:type_name -> ptop.v1.TargetBuild
+	5,  // 5: ptop.v1.TargetInfo.host:type_name -> ptop.v1.HostInfo
+	19, // 6: ptop.v1.TargetInfo.limits:type_name -> ptop.v1.CgroupLimits
+	6,  // 7: ptop.v1.HostInfo.cpu:type_name -> ptop.v1.HostCpu
+	8,  // 8: ptop.v1.HostInfo.virtualization:type_name -> ptop.v1.Virtualization
+	7,  // 9: ptop.v1.HostCpu.core_types:type_name -> ptop.v1.CoreType
+	2,  // 10: ptop.v1.Virtualization.state:type_name -> ptop.v1.Virtualization.State
+	10, // 11: ptop.v1.TargetBuild.main:type_name -> ptop.v1.GoModule
+	10, // 12: ptop.v1.TargetBuild.deps:type_name -> ptop.v1.GoModule
+	11, // 13: ptop.v1.TargetBuild.vcs:type_name -> ptop.v1.BuildSetting
+	10, // 14: ptop.v1.GoModule.replace:type_name -> ptop.v1.GoModule
+	1,  // 15: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
+	4,  // 16: ptop.v1.StreamMeta.target:type_name -> ptop.v1.TargetInfo
+	20, // 17: ptop.v1.SubscribeResponse.event:type_name -> ptop.v1.Event
+	14, // 18: ptop.v1.SubscribeResponse.meta:type_name -> ptop.v1.StreamMeta
+	21, // 19: ptop.v1.ResolveStackResponse.frames:type_name -> ptop.v1.StackFrame
+	3,  // 20: ptop.v1.EventStreamService.Subscribe:input_type -> ptop.v1.SubscribeRequest
+	16, // 21: ptop.v1.EventStreamService.ResolveStack:input_type -> ptop.v1.ResolveStackRequest
+	15, // 22: ptop.v1.EventStreamService.Subscribe:output_type -> ptop.v1.SubscribeResponse
+	17, // 23: ptop.v1.EventStreamService.ResolveStack:output_type -> ptop.v1.ResolveStackResponse
+	22, // [22:24] is the sub-list for method output_type
+	20, // [20:22] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_service_proto_init() }
@@ -1096,7 +1542,7 @@ func file_service_proto_init() {
 		return
 	}
 	file_event_proto_init()
-	file_service_proto_msgTypes[8].OneofWrappers = []any{
+	file_service_proto_msgTypes[12].OneofWrappers = []any{
 		(*SubscribeResponse_Event)(nil),
 		(*SubscribeResponse_Meta)(nil),
 	}
@@ -1105,8 +1551,8 @@ func file_service_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_service_proto_rawDesc), len(file_service_proto_rawDesc)),
-			NumEnums:      2,
-			NumMessages:   11,
+			NumEnums:      3,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

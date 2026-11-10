@@ -28,9 +28,6 @@ type ProcContextCollector struct {
 // setuid/setns, not to poll hot.
 const procContextInterval = 3 * time.Second
 
-// cgroupRoot is the cgroup-v2 unified mount point. Used to resolve a cgroup
-// path to its directory inode (the cgroup id).
-const cgroupRoot = "/sys/fs/cgroup"
 
 func NewProcContextCollector() *ProcContextCollector {
 	return &ProcContextCollector{

@@ -67,6 +67,20 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				return len(th) == 1 && th[0].GetTid() == 11 && th[0].GetCtxSwitches() == 4 &&
 					th[0].GetOffCpuPct() == 62.5 && th[0].GetRunqWaitPct() == 12.5
 			}},
+		{"host", collector.HostSample{StealPct: 7.5, StealKnown: true, Timestamp: time.Unix(4, 0),
+			Limits: collector.CgroupLimits{Cgroup: "/a.slice", CPUMax: "50000 100000", MemoryMax: "max"}},
+			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
+				h := e.GetHost()
+				return h != nil && h.StealPct != nil && h.GetStealPct() == 7.5 &&
+					h.GetLimits().GetCgroup() == "/a.slice" && h.GetLimits().GetCpuMax() == "50000 100000" &&
+					h.GetLimits().GetMemoryMax() == "max" && h.GetLimits().GetCpuWeight() == ""
+			}},
+		{"host, first sample", collector.HostSample{Timestamp: time.Unix(4, 0)},
+			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
+				// No previous sample: steal is absent, not 0; no cgroup read: no limits.
+				h := e.GetHost()
+				return h != nil && h.StealPct == nil && h.GetLimits() == nil
+			}},
 		{"io_wait", collector.IOWaitSample{Pct: 12.5, Timestamp: time.Unix(2, 0)},
 			pb.Category_CATEGORY_IO, func(e *pb.Event) bool { return e.GetIoWait().GetPct() == 12.5 }},
 		{"io_throughput", collector.IOThroughputSample{ReadBytesPerS: 100, WriteOps: 3, Timestamp: time.Unix(3, 0)},

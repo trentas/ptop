@@ -78,6 +78,74 @@ message TargetInfo {
   // names do not, and the main module path does. Two captures' module lists
   // are also the dependency diff of a deploy, without the code diff.
   TargetBuild target_build = 7;
+  // The machine the target runs on (#153): kernel, CPU and hypervisor. Version
+  // N on arm64 against N-1 on x86, or on the next CPU generation, moves every
+  // CPU number and most latencies, and a diff that does not know it blames the
+  // code. Read once from /proc and /sys. Nothing that identifies the box
+  // (hostname, instance id, serial) is read: a comparison needs the hardware
+  // class, not which machine it was.
+  HostInfo host = 8;
+  // The target cgroup's limits when this subscriber subscribed (#153). They
+  // change at runtime, so HostSample carries them again every window. In pid
+  // mode the process's current cgroup, in cgroup mode the target cgroup.
+  CgroupLimits limits = 9;
+}
+
+// HostInfo is the hardware class of the host. A field ptop could not read is
+// empty, and a consumer reads it as unknown.
+message HostInfo {
+  string kernel_release = 1; // uname -r
+  string machine = 2; // uname -m: "x86_64", "aarch64"
+  HostCpu cpu = 3;
+  Virtualization virtualization = 4;
+  // DMI, as /sys/class/dmi/id reports it: the system vendor and product
+  // ("Amazon EC2" / "m7g.large", "Google" / "Google Compute Engine"). The
+  // serial and UUID beside them are not read.
+  string dmi_vendor = 5;
+  string dmi_product = 6;
+}
+
+// HostCpu identifies the CPU as /proc/cpuinfo reports it for the first
+// processor, plus how many there are. x86 and arm64 name different things.
+message HostCpu {
+  string vendor = 1; // x86 vendor_id ("GenuineIntel"); arm64 "CPU implementer" ("0x41")
+  string model_name = 2; // x86 "model name"; empty on arm64, where the kernel names no model
+  string family = 3; // x86 "cpu family"; arm64 "CPU architecture"
+  string model = 4; // x86 "model"; arm64 "CPU part"
+  string stepping = 5; // x86 "stepping"; arm64 "CPU revision"
+  string variant = 6; // arm64 "CPU variant"; empty on x86
+  string microcode = 7; // x86 "microcode"; empty on arm64
+  uint32 logical_cpus = 8; // online CPUs
+  // /sys/devices/system/cpu/smt/control: "on", "off", "forceoff",
+  // "notsupported", "notimplemented"; empty when unreadable.
+  string smt = 9;
+  // Core types on a heterogeneous CPU, each with its CPU count: Intel's
+  // "cpu_core" (P) and "cpu_atom" (E), or one entry per arm64 implementer:part.
+  // Empty when every core is the same.
+  repeated CoreType core_types = 10;
+}
+
+// CoreType is one kind of core on a heterogeneous CPU.
+message CoreType {
+  string name = 1;
+  uint32 cpus = 2;
+}
+
+// Virtualization is whether the target runs under a hypervisor.
+message Virtualization {
+  State state = 1;
+  // The hypervisor, when known: /sys/hypervisor/type ("xen"), else the DMI
+  // vendor of a virtualized host.
+  string hypervisor = 2;
+
+  enum State {
+    // Unknown: nothing on this host says. arm64 has no CPU flag for it.
+    STATE_UNSPECIFIED = 0;
+    // x86 without the cpuinfo "hypervisor" flag.
+    STATE_BARE_METAL = 1;
+    // The cpuinfo "hypervisor" flag, or /sys/hypervisor/type.
+    STATE_VIRTUALIZED = 2;
+  }
 }
 
 // TargetBuild is what a Go binary records about its own build, in the

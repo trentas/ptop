@@ -23,6 +23,7 @@ type Hub struct {
 	// what the target binary is built from, for the handshake (#157); nil in
 	// cgroup mode and whenever it is unknown
 	targetBuild *pb.TargetBuild
+	host        *pb.HostInfo // the machine, read once (#153); nil when nothing could be read
 	mu          sync.Mutex
 	sinks       map[Sink]struct{}
 
@@ -42,14 +43,16 @@ func NewHub(target Target, buildID string, set *collector.Set) *Hub {
 		target:  target,
 		buildID: buildID,
 		probes:  probeInfos(set),
+		host:    hostWire(collector.ReadHostInfo()),
 		sinks:   make(map[Sink]struct{}),
 	}
 }
 
 // targetInfo renders the handshake every subscriber receives before its first
 // event, so a consumer knows the scope of what follows (#94), which probes
-// produced it (#112), which ptop did (#145) and what the target is built from
-// (#157).
+// produced it (#112), which ptop did (#145), what the target is built from
+// (#157), and the machine and limits it runs under (#153). The limits are read
+// per subscriber, at subscribe time.
 func (h *Hub) targetInfo() *pb.TargetInfo {
 	if h.target.IsCgroup() {
 		return &pb.TargetInfo{
@@ -58,6 +61,8 @@ func (h *Hub) targetInfo() *pb.TargetInfo {
 			CgroupId:   h.target.CgroupID,
 			Probes:     h.probes,
 			Ptop:       h.build,
+			Host:       h.host,
+			Limits:     targetLimits(h.target),
 		}
 	}
 	return &pb.TargetInfo{
@@ -66,6 +71,8 @@ func (h *Hub) targetInfo() *pb.TargetInfo {
 		Probes:      h.probes,
 		Ptop:        h.build,
 		TargetBuild: h.targetBuild,
+		Host:        h.host,
+		Limits:      targetLimits(h.target),
 	}
 }
 
