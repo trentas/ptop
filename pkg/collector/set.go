@@ -1,6 +1,7 @@
 package collector
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -116,6 +117,7 @@ type Set struct {
 	CPUProc           *CPUCollector
 	CPUEBPF           *CPUEBPFCollector
 	CPUProfEBPF       *CPUProfEBPFCollector
+	GoPauseEBPF       *GoPauseEBPFCollector
 	ThreadsProc       *ThreadsCollector
 	ThreadsEBPF       *ThreadsEBPFCollector
 	MemProc           *MemCollector
@@ -315,6 +317,12 @@ func NewSet(cfg SetConfig) *Set {
 				return
 			}
 			if err := c.Start(cfg.PID); err != nil {
+				// A probe that only applies to one runtime is unsupported on any
+				// other, which is a fact about the target, not a failure (#175).
+				if errors.Is(err, bpf.ErrNotGo) {
+					s.probes.unsupported(name, "the target is not a Go program")
+					return
+				}
 				warnEBPFFailure(name, err)
 				s.probes.failed(name, err, bpf.Available)
 				return
@@ -349,6 +357,14 @@ func NewSet(cfg SetConfig) *Set {
 		startEBPF(SubsystemCPUProf, c10, func() {
 			s.CPUProfEBPF = c10
 			s.Sources.CPUProf = "eBPF"
+		})
+
+		// Stop-the-world pauses of a Go target (#175): two entry uprobes on the
+		// runtime's own stop and restart, so the pause is exact. Unsupported on
+		// any other runtime.
+		c11 := NewGoPauseEBPFCollector()
+		startEBPF(SubsystemGoPause, c11, func() {
+			s.GoPauseEBPF = c11
 		})
 
 		c4 := NewFutexEBPFCollector(syms)
@@ -671,6 +687,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.MemEBPF, s.MemEBPF != nil)
 	add(s.HeapEBPF, s.HeapEBPF != nil)
 	add(s.CPUProfEBPF, s.CPUProfEBPF != nil)
+	add(s.GoPauseEBPF, s.GoPauseEBPF != nil)
 	add(s.IOWait, s.IOWait != nil)
 	add(s.IOThroughput, s.IOThroughput != nil)
 	add(s.SyscallsEBPF, s.SyscallsEBPF != nil)
