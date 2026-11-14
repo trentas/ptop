@@ -810,14 +810,30 @@ to step around it.
   number reused since reads `fd=N`, which is a gap. Crediting the new file would
   be a wrong answer.
 - **Cgroup mode still names nothing.** The key would need the process too.
+- **The cost is the walk.** It adds 16–33ns per traced read or write in
+  `sys_enter`, out of ~700ns the io probe already spends per event. An open
+  record is lost in the open's own cost
+  (`bench/results/2026-11-14-aarch64-io-fd-identity-cost.txt`).
 
-The selftest's io case opens, writes and closes each file at once, writes two
-files in turn on one fd number (`reuse-a`, `reuse-b`, 7 and 13 writes, and the
-case fails if the kernel did not reuse the number), and checks that no write is
-credited to a bare `fd=N`. Against the old collector it fails both ways. The
+The selftest's io case:
+- opens, writes and closes each file at once;
+- writes two files in turn on one fd number (`reuse-a`, `reuse-b`, 7 and 13
+  writes). It retries until a round gets the same number, because the selftest's
+  own collector opens `/proc/self/fdinfo` and can take the number in between.
+  It fails if no round does.
+- checks that no write is credited to a bare `fd=N`.
+
+A build with the old naming fails it on every run, crediting a closed file's
+writes to `fd=N` or to the next file. So does one that ignores the opens. The
 unit tests in `io_names_linux_test.go` pin each half of the namer
-deterministically, since how soon the collector reads an event is not
-something a planted workload controls.
+deterministically, since a planted workload cannot control how soon the
+collector reads an event.
+
+Loading a CO-RE program leaves garbage in ptop's process, and in the selftest
+that process is also the target. The io case therefore runs a GC and waits
+200ms before it plants anything. Without that wait, the first planted read
+waited up to 30ms for the writer, where it should take 10ms, and missed its
+latency bucket. A real target is another process and never waits on ptop's GC.
 
 ### A total charged when an interval ends reads a long one as zero (#150)
 

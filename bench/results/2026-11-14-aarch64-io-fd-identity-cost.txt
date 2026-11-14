@@ -1,0 +1,60 @@
+Host
+----
+arch          aarch64 (ARM), 2 cores (Parallels VM)
+kernel        7.0.0-43-generic
+ptop          fix/162-io-path-at-syscall-time against main (cb0a6cb), eBPF build (-tags=ebpf)
+ptop flags    --serve unix:///tmp/p.sock --disable everything but io
+target        a Go loop, run 14s in a privileged container, two modes:
+              rw    read(/dev/zero) then write(/dev/null), 512 bytes each
+              open  open(O_CREAT|O_TRUNC), a 1-byte write, close, on /tmp
+command       probecost -window 10s, started 2s after ptop attached
+
+What #162 adds to the io probe:
+  - at sys_enter of every read and write the TARGET makes, a walk of its fd
+    table (fdfile.bpf.h) for the file's inode number, about six
+    CO-RE reads;
+  - an 8-byte inode in each event (48 bytes, was 32);
+  - at the exit of every successful open the target makes, a record of
+    48 + 256 bytes with the path copied from user memory.
+Every other syscall on the host still costs only the number test.
+
+Each mode was run three times, alternating main and the branch. "alone" is
+the target's own rate with no probe attached, then the same target's rate
+with io attached, then probecost's figures.
+
+rw
+--
+              alone        io attached   sys_enter ns/run   sys_exit ns/run
+main   1      2,306,071/s  563,000/s     84                 573
+branch 1      2,396,429/s  450,786/s     103                735
+main   2      2,348,357/s  504,786/s     87                 648
+branch 2      2,435,714/s  457,143/s     118                626
+main   3      2,418,714/s  485,714/s     85                 637
+branch 3      2,367,429/s  459,214/s     108                759
+
+sys_enter: +16 to +33 ns a run, every round. That is the fd-table walk.
+sys_exit: 573-648 on main, 626-759 on the branch. The ranges overlap, so
+three rounds cannot separate a difference there from the noise.
+The target with io attached: 518k/s on main (mean), 456k/s on the branch,
+12% fewer operations. That figure includes the collector, which competes with
+the target for the host's 2 CPUs.
+
+Not #162, and worth its own issue: on main the io probe already costs this
+target 4-5x its throughput (2.3M/s alone, ~0.5M/s attached). Every read and
+write is one ring-buffer event and ~600ns in sys_exit, plus the collector
+reading it. Per CLAUDE.md, a probe whose cost scales with something the
+target does often should be sampled.
+
+open
+----
+              alone        io attached   sys_enter ns/run   sys_exit ns/run
+main   1      4,386/s      7,114/s       102                744
+branch 1      10,664/s     10,214/s      106                892
+main   2      9,550/s      10,964/s      102                989
+branch 2      10,493/s     10,814/s      104                890
+main   3      11,114/s     11,207/s      104                1059
+branch 3      9,943/s      11,257/s      103                893
+
+An open costs ~90us here (the container's /tmp is overlayfs), so the open
+record cannot be seen: sys_exit is 744-1059 on main and 890-893 on the branch,
+and the target's rate moves more between runs than between builds.
