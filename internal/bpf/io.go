@@ -15,21 +15,37 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
-// IOEvent is the 1:1 layout of struct io_event in programs/io.bpf.c.
-// Fixed size 32 bytes; binary.LittleEndian.Read parses it directly from the ring buffer.
+// IOEvent is one record of the io_events ring: a read or a write, or (#162) a
+// successful open naming the fd it returned. The header is struct io_event in
+// programs/io.bpf.c, ioEventSize bytes; an open is struct io_open_event, the
+// header followed by the path.
 type IOEvent struct {
 	TsNs  uint64
 	LatNs uint64
 	Bytes uint64
-	FD    uint32
-	Op    uint32 // 0=read, 1=write
-	TGID  uint32
-	_     uint32 // pad
+	// Ino is the inode number of the file behind FD when the call entered (for
+	// an open, when it returned) — what /proc/<pid>/fdinfo/<fd> prints as
+	// `ino:`. 0 when the fd table could not be read.
+	Ino  uint64
+	FD   uint32
+	Op   uint32 // IOOpRead, IOOpWrite, IOOpOpen
+	TGID uint32
+	// Dfd and Path are an open's: the path as the program passed it, and the
+	// directory fd it is relative to (unix.AT_FDCWD for the working directory).
+	Dfd  int32
+	Path string
 }
 
 const (
 	IOOpRead  uint32 = 0
 	IOOpWrite uint32 = 1
+	IOOpOpen  uint32 = 2
+)
+
+// ioEventSize is sizeof(struct io_event); an open carries ioPathMax more bytes.
+const (
+	ioEventSize = 48
+	ioPathMax   = 256
 )
 
 // FSEventRecord is the 1:1 layout of struct fs_event in programs/io.bpf.c (#57).
@@ -168,11 +184,33 @@ func (t *IOTracer) Next() (IOEvent, error) {
 		}
 		return ev, err
 	}
-	if len(rec.RawSample) < 32 {
-		return ev, fmt.Errorf("short event: %d bytes", len(rec.RawSample))
+	return decodeIOEvent(rec.RawSample)
+}
+
+// decodeIOEvent parses one io_events record.
+func decodeIOEvent(raw []byte) (IOEvent, error) {
+	var ev IOEvent
+	if len(raw) < ioEventSize {
+		return ev, fmt.Errorf("short event: %d bytes", len(raw))
 	}
-	if err := binary.Read(bytes.NewReader(rec.RawSample), binary.LittleEndian, &ev); err != nil {
-		return ev, fmt.Errorf("decode event: %w", err)
+	le := binary.LittleEndian
+	ev.TsNs = le.Uint64(raw[0:])
+	ev.LatNs = le.Uint64(raw[8:])
+	ev.Bytes = le.Uint64(raw[16:])
+	ev.Ino = le.Uint64(raw[24:])
+	ev.FD = le.Uint32(raw[32:])
+	ev.Op = le.Uint32(raw[36:])
+	ev.TGID = le.Uint32(raw[40:])
+	ev.Dfd = int32(le.Uint32(raw[44:]))
+	if ev.Op == IOOpOpen {
+		if len(raw) < ioEventSize+ioPathMax {
+			return ev, fmt.Errorf("short open event: %d bytes", len(raw))
+		}
+		path := raw[ioEventSize : ioEventSize+ioPathMax]
+		if i := bytes.IndexByte(path, 0); i >= 0 {
+			path = path[:i]
+		}
+		ev.Path = string(path)
 	}
 	return ev, nil
 }

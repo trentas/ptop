@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -700,10 +701,20 @@ func checkIO(g *grader, pid int) {
 	}
 	pipePath := fmt.Sprintf("pipe:[%d]", st.Ino) // what /proc/<pid>/fd links it as
 
-	var pinErr error
-	var held []int // the per-CPU files' fds, closed once the collector has stopped
+	var pinErr, reuseErr error
+	reusedFD := -1
+	var reusedNames []string
 	c := collector.NewIOEBPFCollector()
 	vals, err := collect(c, pid, 700*time.Millisecond, func() {
+		// The collector's start is this process's too, and it is not over
+		// when Start returns: loading a CO-RE program leaves tens of MB to
+		// collect. Collected while the reads below wait on the writer, it held
+		// the FIRST planted read up to 30ms on a 2-CPU host (#162), against
+		// ~10.3ms on a build whose io program relocated nothing. A target is
+		// another process and never waits on ptop's GC; only this case, which
+		// grades a latency against a fixed bucket, needs to wait it out.
+		runtime.GC()
+		time.Sleep(200 * time.Millisecond)
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
@@ -723,21 +734,12 @@ func checkIO(g *grader, pid int) {
 		})
 		<-done
 
-		// The collector names a file by reading /proc/<pid>/fd/<n> when it
-		// processes the event, and remembers the answer by fd NUMBER for a
-		// couple of seconds. So every file written here is opened before any
-		// is written and stays open until the collector stops: a file closed
-		// by then reads as "fd=N", and a number reused within the cache's
-		// lifetime is credited to the file that held it before.
+		// Each file is opened, written and closed at once, the way a log or a
+		// config write is: closed long before the collector reads its events,
+		// and its fd number free for the next one. The collector used to name
+		// a file by its fd's link when it processed the event and remember it
+		// by number, so these read "fd=N" or went to the previous file (#162).
 		for _, cpu := range cpus {
-			fd, err := unix.Open(writePath(dir, cpu), unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC, 0o600)
-			if err != nil {
-				pinErr = fmt.Errorf("cpu %d: open: %w", cpu, err)
-				return
-			}
-			held = append(held, fd)
-		}
-		for i, cpu := range cpus {
 			for j := 0; j < perCPU; j++ {
 				// open+close and nothing else: os.WriteFile would issue a
 				// zero-length write(2) on the way.
@@ -745,11 +747,16 @@ func checkIO(g *grader, pid int) {
 					_ = unix.Close(fd)
 				}
 			}
-			fd := held[i]
 			if err := onCPU(cpu, func() {
+				fd, err := unix.Open(writePath(dir, cpu), unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC, 0o600)
+				if err != nil {
+					pinErr = fmt.Errorf("cpu %d: open: %w", cpu, err)
+					return
+				}
 				for j := 0; j < perCPU; j++ {
 					_, _ = unix.Write(fd, []byte{1})
 				}
+				_ = unix.Close(fd)
 				for j := 0; j < perCPU; j++ {
 					_ = unix.Unlinkat(unix.AT_FDCWD, unlinkPath(dir, cpu, j), 0)
 				}
@@ -757,16 +764,21 @@ func checkIO(g *grader, pid int) {
 				pinErr = fmt.Errorf("cpu %d: %w", cpu, err)
 			}
 		}
+
+		// Two files on one fd number in turn, whatever the CPU count: the
+		// second must not be credited to the first.
+		reusedFD, reusedNames, reuseErr = plantReusedFD(dir)
 	})
-	for _, fd := range held {
-		_ = unix.Close(fd)
-	}
 	if err != nil {
 		g.broken("io", "attach", err)
 		return
 	}
 	if pinErr != nil {
 		g.broken("io", "pin a thread to each CPU", pinErr)
+		return
+	}
+	if reuseErr != nil {
+		g.broken("io", "two files on one fd number", reuseErr)
 		return
 	}
 
@@ -808,7 +820,7 @@ func checkIO(g *grader, pid int) {
 
 	for _, cpu := range cpus {
 		w := writes[writePath(dir, cpu)]
-		g.check("io", fmt.Sprintf("writes made on CPU %d (#159)", cpu), w == perCPU, fmt.Sprint(perCPU), fmt.Sprint(w))
+		g.check("io", fmt.Sprintf("writes made on CPU %d, to a file closed at once (#159, #162)", cpu), w == perCPU, fmt.Sprint(perCPU), fmt.Sprint(w))
 		n := 0
 		for i := 0; i < perCPU; i++ {
 			if deleted[unlinkPath(dir, cpu, i)] {
@@ -818,6 +830,63 @@ func checkIO(g *grader, pid int) {
 		g.check("io", fmt.Sprintf("unlinks made on CPU %d, as fs events (#159)", cpu), n == perCPU,
 			fmt.Sprint(perCPU), fmt.Sprint(n))
 	}
+
+	for i, f := range reusedFiles {
+		w := writes[filepath.Join(dir, reusedNames[i])]
+		g.check("io", fmt.Sprintf("writes to %s, on fd %d in its turn (#162)", reusedNames[i], reusedFD),
+			w == uint64(f.writes), fmt.Sprint(f.writes), fmt.Sprint(w))
+	}
+	unnamed := uint64(0)
+	for path, w := range writes {
+		if strings.HasPrefix(path, "fd=") {
+			unnamed += w
+		}
+	}
+	g.check("io", "writes credited to a bare fd number (#162)", unnamed == 0, "0", fmt.Sprint(unnamed))
+}
+
+// reusedFiles are written in turn on one fd number, each with its own count so
+// that a write credited to the wrong one shows.
+var reusedFiles = []struct {
+	name   string
+	writes int
+}{{"reuse-a", 7}, {"reuse-b", 13}}
+
+// plantReusedFD opens, writes and closes each of reusedFiles in turn, until a
+// round in which the kernel gave them the same fd number, and returns that
+// number and the round's file names. Without reuse the case would pass without
+// testing it, so no such round is a failure of the case.
+//
+// It takes rounds because this process is its own target: the collector, in
+// another thread, opens /proc/self/fdinfo/<n> to check a name, and an open
+// landing between one file's close and the next one's open takes the number.
+func plantReusedFD(dir string) (int, []string, error) {
+	const rounds = 10
+	for round := 0; round < rounds; round++ {
+		fd0, same := -1, true
+		var names []string
+		for _, f := range reusedFiles {
+			name := fmt.Sprintf("%s-%d", f.name, round)
+			fd, err := unix.Open(filepath.Join(dir, name), unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_CLOEXEC, 0o600)
+			if err != nil {
+				return 0, nil, err
+			}
+			for j := 0; j < f.writes; j++ {
+				_, _ = unix.Write(fd, []byte{1})
+			}
+			_ = unix.Close(fd)
+			names = append(names, name)
+			if fd0 < 0 {
+				fd0 = fd
+			} else if fd != fd0 {
+				same = false
+			}
+		}
+		if same {
+			return fd0, names, nil
+		}
+	}
+	return 0, nil, fmt.Errorf("no round of %d gave %s and %s one fd number", rounds, reusedFiles[0].name, reusedFiles[1].name)
 }
 
 func writePath(dir string, cpu int) string     { return fmt.Sprintf("%s/w%d", dir, cpu) }

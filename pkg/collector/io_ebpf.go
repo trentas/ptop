@@ -5,7 +5,6 @@ package collector
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -18,45 +17,38 @@ import (
 // and aggregates by PATH in 500ms windows. Output is the IOStats.TopFiles +
 // LatencyBuckets, updated and published over the channel.
 //
-// fd→path resolution: lookup via /proc/<pid>/fd/<fd> readlink, with a 2s
-// cache to reduce overhead. New FDs resolve on first appearance.
+// A file is named as it was when the call ran, from the open that installed
+// its fd or from the fd's link checked against the event's inode (fileNames,
+// #162). One it cannot name is "fd=N".
 type IOEBPFCollector struct {
 	tracer *bpf.IOTracer
 	ch     chan interface{}
 	stop   chan struct{}
 	pid    int
+	names  *fileNames // read loop only
 
 	mu      sync.Mutex
-	files   map[string]*ioFileAgg     // path → counters
-	pathFor map[uint32]pathCacheEntry // fd → path (cached)
-	buckets []LatencyBucket           // pre-built baseline buckets
+	files   map[string]*ioFileAgg // path → counters
+	buckets []LatencyBucket       // pre-built baseline buckets
 }
 
 type ioFileAgg struct {
-	reads     uint64
-	writes    uint64
-	bytes     uint64
-	latSumNs  uint64
-	latCount  uint64
-	latMaxNs  uint64
-	fileType  string
+	reads    uint64
+	writes   uint64
+	bytes    uint64
+	latSumNs uint64
+	latCount uint64
+	latMaxNs uint64
+	fileType string
 }
-
-type pathCacheEntry struct {
-	path  string
-	at    time.Time
-}
-
-const ioPathCacheTTL = 2 * time.Second
 
 func NewIOEBPFCollector() *IOEBPFCollector {
 	return &IOEBPFCollector{
 		// Buffered for the 500ms snapshot ticker plus bursty per-event fs
 		// events (#57); all senders drop on overflow.
-		ch:      make(chan interface{}, 64),
-		stop:    make(chan struct{}),
-		files:   make(map[string]*ioFileAgg),
-		pathFor: make(map[uint32]pathCacheEntry),
+		ch:    make(chan interface{}, 64),
+		stop:  make(chan struct{}),
+		files: make(map[string]*ioFileAgg),
 		buckets: []LatencyBucket{
 			{Label: "<0.1ms"},
 			{Label: "0.1-1ms"},
@@ -72,9 +64,9 @@ func (c *IOEBPFCollector) Start(pid int) error { return c.start(bpf.TargetPID(pi
 // StartCgroup tracks I/O across a whole cgroup subtree instead of one pid
 // (#94). Implements CgroupTargeter.
 //
-// Byte counters and latency histograms are unaffected, but top-file PATHS come
-// out empty: resolving an fd to a path means reading /proc/<pid>/fd/<n>, and a
-// subtree has no single pid to read it from.
+// Byte counters and latency histograms are unaffected, but top files are named
+// "fd=N": naming one means reading /proc/<pid>/fd/<n>, and a subtree has no
+// single pid to read it from (fileNames).
 func (c *IOEBPFCollector) StartCgroup(spec string) error {
 	return c.start(bpf.TargetCgroup(spec), 0)
 }
@@ -86,6 +78,7 @@ func (c *IOEBPFCollector) start(t bpf.Target, pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
+	c.names = newFileNames(pid)
 	go c.readLoop()    // consumes io_events ringbuf, populates c.files
 	go c.publishLoop() // every 500ms publishes a snapshot of the aggregates
 	// Drain fs-semantics events (#57). tracer is passed explicitly (not read
@@ -147,7 +140,12 @@ func (c *IOEBPFCollector) fsReadLoop(tracer *bpf.IOTracer) {
 }
 
 func (c *IOEBPFCollector) processEvent(ev bpf.IOEvent) {
-	path := c.resolvePath(ev.FD)
+	now := time.Now()
+	if ev.Op == bpf.IOOpOpen {
+		c.names.opened(ev.FD, ev.Ino, ev.Dfd, ev.Path, now)
+		return
+	}
+	path := c.names.name(ev.FD, ev.Ino, now)
 	if path == "" {
 		path = fmt.Sprintf("fd=%d", ev.FD)
 	}
@@ -182,29 +180,6 @@ func (c *IOEBPFCollector) processEvent(ev bpf.IOEvent) {
 			c.buckets[bIdx].Write++
 		}
 	}
-}
-
-// resolvePath reads /proc/<pid>/fd/<fd> via readlink, with a 2s cache.
-// Sockets and pipes return paths like "socket:[N]" — caller should
-// filter if it wants only real files. Here we keep everything (sockets
-// appear as "socket:[12345]" in top files, signaling network I/O).
-func (c *IOEBPFCollector) resolvePath(fd uint32) string {
-	c.mu.Lock()
-	if cached, ok := c.pathFor[fd]; ok && time.Since(cached.at) < ioPathCacheTTL {
-		c.mu.Unlock()
-		return cached.path
-	}
-	c.mu.Unlock()
-
-	link, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/%d", c.pid, fd))
-	if err != nil {
-		return ""
-	}
-
-	c.mu.Lock()
-	c.pathFor[fd] = pathCacheEntry{path: link, at: time.Now()}
-	c.mu.Unlock()
-	return link
 }
 
 // publishLoop snapshots the aggregates every 500ms and publishes a partial
