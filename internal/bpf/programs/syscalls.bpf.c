@@ -28,6 +28,7 @@
 #include <asm/unistd.h>
 #include "target.bpf.h"
 #include "restart.bpf.h"
+#include "fdfile.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -76,8 +77,7 @@ struct restart_data {
 // the file's inode type, read once at entry: an anonymous inode (eventfd,
 // epoll, timerfd, signalfd) has no type bits at all.
 //
-// The kernel structs are declared to the depth needed and relocated by CO-RE,
-// the same way network.bpf.c reads a socket: no vmlinux.h.
+// The fd table is read through fdfile.bpf.h, shared with the io axis (#162).
 
 #define FD_CLASS_NONE   0 // not in the read/write family: not classified
 #define FD_CLASS_ANON   1 // anonymous inode: eventfd, epoll, timerfd, signalfd
@@ -93,27 +93,6 @@ struct restart_data {
 #define PTOP_S_IFREG  0100000
 #define PTOP_S_IFCHR  0020000
 #define PTOP_S_IFIFO  0010000
-
-struct inode___ptop {
-    unsigned short i_mode;
-} __attribute__((preserve_access_index));
-
-struct file___ptop {
-    struct inode___ptop *f_inode;
-} __attribute__((preserve_access_index));
-
-struct fdtable___ptop {
-    unsigned int max_fds;
-    struct file___ptop **fd;
-} __attribute__((preserve_access_index));
-
-struct files_struct___ptop {
-    struct fdtable___ptop *fdt;
-} __attribute__((preserve_access_index));
-
-struct task_struct___ptop {
-    struct files_struct___ptop *files;
-} __attribute__((preserve_access_index));
 
 static __always_inline int rw_family(__u32 id)
 {
@@ -144,19 +123,8 @@ static __always_inline int rw_family(__u32 id)
 
 static __always_inline __u32 fd_class(long fd)
 {
-    struct task_struct___ptop *task = (void *)bpf_get_current_task();
-    struct files_struct___ptop *files = BPF_CORE_READ(task, files);
-    if (!files)
-        return FD_CLASS_UNKNOWN;
-    struct fdtable___ptop *fdt = BPF_CORE_READ(files, fdt);
-    if (!fdt)
-        return FD_CLASS_UNKNOWN;
-    unsigned int max = BPF_CORE_READ(fdt, max_fds);
-    if (fd < 0 || fd >= max)
-        return FD_CLASS_UNKNOWN;
-    struct file___ptop **fds = BPF_CORE_READ(fdt, fd);
-    struct file___ptop *f = 0;
-    if (bpf_probe_read_kernel(&f, sizeof(f), &fds[fd]) != 0 || !f)
+    struct file___ptop *f = fd_file(fd);
+    if (!f)
         return FD_CLASS_UNKNOWN;
     unsigned short mode = BPF_CORE_READ(f, f_inode, i_mode);
     switch (mode & PTOP_S_IFMT) {

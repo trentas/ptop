@@ -16,7 +16,9 @@
 //   io_restarting       LRU_HASH   tgid_pid → a read/write stopped by a signal
 //                                  that the kernel may re-run (restart.bpf.h,
 //                                  #160)
-//   io_events           RINGBUF    throughput channel — fd, op, bytes, latency
+//   io_events           RINGBUF    throughput channel — fd, op, bytes, latency,
+//                                  the file's inode, and every successful open
+//                                  with its path (#162)
 //   fs_inflight_map     HASH       tgid_pid → {op, path ptr, newpath ptr} (#57)
 //   fs_events           RINGBUF    fs-semantics channel — op, ret, path(s) (#57)
 //
@@ -42,12 +44,25 @@
 //   the object is compiled on (see "Build tags" in CLAUDE.md, #123). They are
 //   the 64-bit native table: a 32-bit (compat) task numbers its syscalls from
 //   another one, so the loader refuses a 32-bit target in pid mode (io.go).
+//
+// Which file a read or write hit (#162):
+//   the collector used to name the file by reading /proc/<pid>/fd/<n> when it
+//   PROCESSED the event, and remembered the answer by fd number. A file closed
+//   by then lost its name, and a reused number was credited to the file that
+//   held it before. So the probe now says which file it was when the call ran:
+//   each read and write carries the inode number of the file behind its fd,
+//   read at sys_enter (fdfile.bpf.h), and every successful open puts a record
+//   on THIS ring with the new fd, its inode and the path the program passed.
+//   One ring, so the open is read before any read or write on that fd: a
+//   record is consumed in the order it was reserved, and the open's exit comes
+//   before any call on the fd it returned.
 
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <asm/unistd.h>
 #include "target.bpf.h"
 #include "restart.bpf.h"
+#include "fdfile.bpf.h"
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -59,9 +74,12 @@ struct sys_exit_args {
     long ret;
 };
 
-// Op codes — must match the Go side (collector/io_ebpf.go).
+// Op codes — must match IOOp* in internal/bpf/io.go.
 #define OP_READ  0
 #define OP_WRITE 1
+#define OP_OPEN  2 // a successful open: an io_open_event, not a read or write
+
+#define FS_PATH_MAX 256
 
 struct io_inflight {
     __u64 ts_ns;
@@ -69,19 +87,28 @@ struct io_inflight {
     __u32 op;
     __u64 count_req;
     __u64 end_ns; // in io_restarting: when the signal stopped it
+    __u64 ino;    // the file behind fd when the call entered (#162)
 };
 
 // Event published to user-space via ring buffer. Fixed layout, read with
 // binary.LittleEndian on the Go side. Keep in sync with IOEvent in
-// pkg/collector/io_ebpf.go.
+// internal/bpf/io.go.
 struct io_event {
     __u64 ts_ns;
     __u64 lat_ns;
     __u64 bytes;       // ret value (when positive)
+    __u64 ino;         // inode number of the file behind fd; 0 = could not be read
     __u32 fd;
     __u32 op;
     __u32 tgid;
-    __u32 _pad;
+    __s32 dfd;         // OP_OPEN: the directory fd path is relative to; 0 otherwise
+};
+
+// OP_OPEN's record: the header, fd being the descriptor the open returned, and
+// the path as the program passed it — possibly relative to dfd.
+struct io_open_event {
+    struct io_event e;
+    char path[FS_PATH_MAX];
 };
 
 struct {
@@ -124,11 +151,33 @@ static __always_inline void emit_io(const struct io_inflight *inf, __u64 end, lo
     e->ts_ns  = end;
     e->lat_ns = end - inf->ts_ns;
     e->bytes  = ret > 0 ? (__u64)ret : 0;
+    e->ino    = inf->ino;
     e->fd     = inf->fd;
     e->op     = inf->op;
     e->tgid   = tgid;
-    e->_pad   = 0;
+    e->dfd    = 0;
     bpf_ringbuf_submit(e, 0);
+}
+
+// emit_open names the file a successful open installed at fd, on the same ring
+// as the reads and writes on it (#162).
+static __always_inline void emit_open(__u32 fd, __s32 dfd, __u64 path, __u32 tgid)
+{
+    struct io_open_event *o = bpf_ringbuf_reserve(&io_events, sizeof(*o), 0);
+    if (!o)
+        return;
+    o->e.ts_ns  = bpf_ktime_get_ns();
+    o->e.lat_ns = 0;
+    o->e.bytes  = 0;
+    o->e.ino    = fd_ino(fd);
+    o->e.fd     = fd;
+    o->e.op     = OP_OPEN;
+    o->e.tgid   = tgid;
+    o->e.dfd    = dfd;
+    o->path[0]  = '\0';
+    if (path)
+        bpf_probe_read_user_str(o->path, sizeof(o->path), (const void *)path);
+    bpf_ringbuf_submit(o, 0);
 }
 
 static __always_inline void enter_io(__u32 op, __u32 fd, __u64 count)
@@ -142,6 +191,7 @@ static __always_inline void enter_io(__u32 op, __u32 fd, __u64 count)
         .fd        = fd,
         .op        = op,
         .count_req = count,
+        .ino       = fd_ino(fd),
     };
     // The kernel re-running a read or write a signal stopped: one call, timed
     // from its first entry (#160).
@@ -194,6 +244,9 @@ static __always_inline void sigreturn_io(long ret)
 // is still mapped at exit (same task), so reading the pointer there is valid —
 // the proven libbpf-tools opensnoop approach, which avoids carrying a large
 // string through the inflight map.
+//
+// An open that SUCCEEDS is not an fs event: it goes to io_events as the record
+// that names the new fd (emit_open, #162).
 
 #define FS_OP_OPEN_DENIED 0 // open/openat returned EACCES/EPERM
 #define FS_OP_UNLINK      1 // unlink/unlinkat
@@ -202,7 +255,7 @@ static __always_inline void sigreturn_io(long ret)
 #define EACCES 13
 #define EPERM  1
 
-#define FS_PATH_MAX 256
+#define PTOP_AT_FDCWD -100
 
 // raw_syscalls/sys_enter layout: common header (8B), the syscall number, and
 // its six arguments as unsigned long — whatever the syscall, which is why one
@@ -218,6 +271,7 @@ struct sys_enter_args {
 // overwrite races. Tiny value (pointers only); the string is read at exit.
 struct fs_inflight {
     __u32 op;
+    __s32 dfd;     // OPEN: the directory fd path is relative to
     __u64 path;    // const char __user *
     __u64 newpath; // const char __user * (RENAME); 0 otherwise
 };
@@ -247,13 +301,14 @@ struct {
     __uint(max_entries, 1 << 19); // 512KB — fs events are low-rate
 } fs_events SEC(".maps");
 
-static __always_inline void fs_enter(__u32 op, __u64 path, __u64 newpath)
+static __always_inline void fs_enter(__u32 op, __s32 dfd, __u64 path, __u64 newpath)
 {
     if (!is_io_target())
         return;
     __u64 pid_tgid = bpf_get_current_pid_tgid();
     struct fs_inflight inf = {
         .op      = op,
+        .dfd     = dfd,
         .path    = path,
         .newpath = newpath,
     };
@@ -271,12 +326,19 @@ static __always_inline void fs_exit(long ret)
     if (!inf)
         return;
     __u32 op = inf->op;
+    __s32 dfd = inf->dfd;
     __u64 path = inf->path;
     __u64 newpath = inf->newpath;
     bpf_map_delete_elem(&fs_inflight_map, &pid_tgid);
 
-    if (op == FS_OP_OPEN_DENIED && ret != -EACCES && ret != -EPERM)
-        return;
+    if (op == FS_OP_OPEN_DENIED) {
+        if (ret >= 0) {
+            emit_open((__u32)ret, dfd, path, (__u32)(pid_tgid >> 32));
+            return;
+        }
+        if (ret != -EACCES && ret != -EPERM)
+            return;
+    }
 
     struct fs_event *e = bpf_ringbuf_reserve(&fs_events, sizeof(*e), 0);
     if (!e)
@@ -303,6 +365,7 @@ static __always_inline void fs_exit(long ret)
 //   read/write(fd, buf, count)                          fd args[0], count args[2]
 //   open(path, …)                  unlink(path)         path args[0]
 //   openat(dfd, path, …)           unlinkat(dfd, path, flag)   path args[1]
+//   openat2(dfd, path, how, size)                       path args[1]
 //   rename(old, new)                                    args[0], args[1]
 //   renameat/renameat2(olddfd, old, newdfd, new, …)     args[1], args[3]
 // Modern libcs route open/unlink/rename to the *at forms, and arm64 has none of
@@ -319,32 +382,37 @@ int handle_sys_enter(struct sys_enter_args *ctx)
         enter_io(OP_WRITE, (__u32)ctx->args[0], ctx->args[2]);
         break;
     case __NR_openat:
-        fs_enter(FS_OP_OPEN_DENIED, ctx->args[1], 0);
+        fs_enter(FS_OP_OPEN_DENIED, (__s32)ctx->args[0], ctx->args[1], 0);
         break;
+#ifdef __NR_openat2
+    case __NR_openat2:
+        fs_enter(FS_OP_OPEN_DENIED, (__s32)ctx->args[0], ctx->args[1], 0);
+        break;
+#endif
     case __NR_unlinkat:
-        fs_enter(FS_OP_UNLINK, ctx->args[1], 0);
+        fs_enter(FS_OP_UNLINK, 0, ctx->args[1], 0);
         break;
     case __NR_renameat2:
-        fs_enter(FS_OP_RENAME, ctx->args[1], ctx->args[3]);
+        fs_enter(FS_OP_RENAME, 0, ctx->args[1], ctx->args[3]);
         break;
 #ifdef __NR_renameat
     case __NR_renameat:
-        fs_enter(FS_OP_RENAME, ctx->args[1], ctx->args[3]);
+        fs_enter(FS_OP_RENAME, 0, ctx->args[1], ctx->args[3]);
         break;
 #endif
 #ifdef __NR_open
     case __NR_open:
-        fs_enter(FS_OP_OPEN_DENIED, ctx->args[0], 0);
+        fs_enter(FS_OP_OPEN_DENIED, PTOP_AT_FDCWD, ctx->args[0], 0);
         break;
 #endif
 #ifdef __NR_unlink
     case __NR_unlink:
-        fs_enter(FS_OP_UNLINK, ctx->args[0], 0);
+        fs_enter(FS_OP_UNLINK, 0, ctx->args[0], 0);
         break;
 #endif
 #ifdef __NR_rename
     case __NR_rename:
-        fs_enter(FS_OP_RENAME, ctx->args[0], ctx->args[1]);
+        fs_enter(FS_OP_RENAME, 0, ctx->args[0], ctx->args[1]);
         break;
 #endif
     }
@@ -369,6 +437,9 @@ int handle_sys_exit(struct sys_exit_args *ctx)
         sigreturn_io(ctx->ret);
         break;
     case __NR_openat:
+#ifdef __NR_openat2
+    case __NR_openat2:
+#endif
     case __NR_unlinkat:
     case __NR_renameat2:
 #ifdef __NR_renameat

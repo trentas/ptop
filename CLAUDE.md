@@ -87,11 +87,12 @@ ptop/
 │   │   │   ├── target.bpf.h       shared pid-namespace target filter
 │   │   │   ├── restart.bpf.h      a call the kernel re-runs after a signal is one call (#160)
 │   │   │   ├── probecost.bpf.h    heap probes count their hits and time their own body (#154)
+│   │   │   ├── fdfile.bpf.h       the file behind an fd, through the task's fd table (#162, #176)
 │   │   │   ├── calib.bpf.c        empty uprobe: the trap cost, calibrated at startup (#154); never a uretprobe on Go
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
-│   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159)
+│   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159); file inode + opens (#162)
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135)
 │   │   │   ├── threads.bpf.c      sched_switch → on-CPU / asleep / run-queue per thread (#150)
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
@@ -194,6 +195,7 @@ ptop/
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
 │       ├── io_ebpf.go             top files + per-op latency
+│       ├── io_names_linux.go      a file named as it was when the call ran: (fd, inode) + its open (#162)
 │       ├── network_ebpf.go        connections + RTT + bytes
 │       ├── syscalls_ebpf.go       per-syscall counts + latency
 │       ├── futex_ebpf.go          lock graph from futex tracking (#89 call site)
@@ -780,6 +782,42 @@ The selftest's io case plants writes and unlinks on every CPU the process may
 run on, pinned, and grades each CPU separately. Any probe on a
 `syscalls:sys_enter_*` event whose format has a `__data_loc` field needs the
 same treatment before it is trusted.
+
+### A file is named when the call ran, not when the event is read (#162)
+
+The io collector named a file by reading `/proc/<pid>/fd/<n>` when it
+PROCESSED the event, and cached the answer by fd number for two seconds. A file
+closed by then had no link left, so its writes went to a row named `fd=N`
+(logs, temp files, most config writes). `open` hands out the lowest free number,
+so a new file written within two seconds of an old one on the same number was
+credited to the old one. The selftest met it: a file whose number a zero-length
+write had cached read 0 writes for 20 planted. Its io case held every file open
+to step around it.
+
+- **Each event carries the file's inode number**, read at `sys_enter` through
+  the task's fd table (`fdfile.bpf.h`, shared with the syscalls axis's fd
+  class, #176). The io probe now needs BTF, like syscalls and network.
+- **Each successful open is a record on the same ring** as the reads and
+  writes: `openat`, `open` and `openat2`, with the new fd, its inode, the dirfd
+  and the path as passed. A ring is consumed in reservation order, and an
+  open's exit comes before any call on the fd it returned, so the name is
+  always known before the first write.
+- **Names are keyed by (fd, inode)** (`fileNames`). An open names its file. It
+  uses the fd's link when it still holds that inode, since that is the canonical
+  path, and otherwise the path as passed, made absolute. A file the probe saw no
+  open for (opened before the capture, a socket, a pipe, a dup) is named by its
+  link only while `/proc/<pid>/fdinfo/<n>` still reports the event's inode. A
+  number reused since reads `fd=N`, which is a gap. Crediting the new file would
+  be a wrong answer.
+- **Cgroup mode still names nothing.** The key would need the process too.
+
+The selftest's io case opens, writes and closes each file at once, writes two
+files in turn on one fd number (`reuse-a`, `reuse-b`, 7 and 13 writes, and the
+case fails if the kernel did not reuse the number), and checks that no write is
+credited to a bare `fd=N`. Against the old collector it fails both ways. The
+unit tests in `io_names_linux_test.go` pin each half of the namer
+deterministically, since how soon the collector reads an event is not
+something a planted workload controls.
 
 ### A total charged when an interval ends reads a long one as zero (#150)
 
