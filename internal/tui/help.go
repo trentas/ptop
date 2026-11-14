@@ -67,14 +67,24 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		return row
 	}
 
+	// statusRowSrc renders a subsystem that is simulated in the demo: "mock"
+	// there, "real" with a source, and beside a real target with no source,
+	// unavailable with the reason its probe recorded (#149).
+	statusRowSrc := func(name string, ps panelSource, source string) string {
+		if reason, none := m.noSource(ps); none {
+			return statusRowNA(name, reason)
+		}
+		return statusRow(name, m.demo, source)
+	}
+
 	// statusRowMaybeNA picks between the "unavailable" rendering (when
-	// the build target has no Tier 1 path for this subsystem) and the
-	// regular real/mock row.
-	statusRowMaybeNA := func(name string, unavailable bool, naReason string, isMock bool, source string) string {
+	// the build target has no Tier 1 path for this subsystem) and
+	// statusRowSrc.
+	statusRowMaybeNA := func(name string, unavailable bool, naReason string, ps panelSource, source string) string {
 		if unavailable {
 			return statusRowNA(name, naReason)
 		}
-		return statusRow(name, isMock, source)
+		return statusRowSrc(name, ps, source)
 	}
 
 	lines := []string{
@@ -91,7 +101,7 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		row("Ctrl+U", "Clear what's being typed"),
 		"",
 		sectionTitle.Render("State"),
-		row("p, Space", "Pause / resume simulation"),
+		row("p, Space", "Pause / resume the display"),
 		row("?", "Open / close this screen"),
 		row("q, Ctrl+C", "Quit"),
 		"",
@@ -102,8 +112,8 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		"",
 		sectionTitle.Render("Collectors"),
 		statusRowMaybeNA("syscalls", syscallsUnavailable, "no public per-syscall trace on macOS (see #22)",
-			m.usingMockSyscalls, m.syscallsSource),
-		statusRow("cpu", m.usingMockCPU, m.cpuSource),
+			srcSyscalls, m.syscallsSource),
+		statusRowSrc("cpu", srcCPU, m.cpuSource),
 		// CPU attribution (#125) is eBPF-only and never simulated: "real via
 		// eBPF" when the sampler attached, else genuinely unavailable (macOS,
 		// --no-ebpf, or attach failure) — never "mock". Listed even though no
@@ -116,9 +126,9 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			return statusRowNA("cpu-sites", "needs eBPF (perf_event stack sampler)")
 		}(),
 		statusRowMaybeNA("io-files", ioFilesUnavailable, "no public per-file VFS hook on macOS (see #22)",
-			m.usingMockIOFiles, m.ioFilesSource),
-		statusRow("network", m.usingMockNet, m.netSource),
-		statusRow("memory", m.usingMockMem, m.memSource),
+			srcIOFiles, m.ioFilesSource),
+		statusRowSrc("network", srcNetwork, m.netSource),
+		statusRowSrc("memory", srcMemory, m.memSource),
 		// Heap (malloc/free) is eBPF-only and never simulated: it's "real via
 		// eBPF" when the libc uprobes attached, else genuinely unavailable
 		// (macOS, --no-ebpf, or a static / non-libc target) — never "mock".
@@ -129,7 +139,7 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			return statusRowNA("heap", "needs eBPF + a libc-linked target")
 		}(),
 		statusRowMaybeNA("locks", locksUnavailable, "no public __ulock_wait hook on macOS (see #22)",
-			m.locksSource == "", m.locksSource),
+			srcLocks, m.locksSource),
 		// Signals (#58) are eBPF-only and never simulated: "real via eBPF" when
 		// the signal_generate tracepoint attached, else genuinely unavailable
 		// (macOS, --no-ebpf, or attach failure) — never "mock".
@@ -153,10 +163,10 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 				lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Render("○ off") +
 				sourceStyle.Render(" — enable with --tls")
 		}(),
-		statusRow("threads", m.usingMockThreads, m.threadsSource),
-		statusRow("io-wait", m.usingMockIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
-		statusRow("io-throughput", m.usingMockIOThrough, sourceProcOrEmpty(!m.usingMockIOThrough)),
-		statusRow("fds", m.usingMockFDs, sourceProcOrEmpty(!m.usingMockFDs)),
+		statusRowSrc("threads", srcThreads, m.threadsSource),
+		statusRowSrc("io-wait", srcIOWait, sourceProcOrEmpty(!m.usingMockIOWait)),
+		statusRowSrc("io-throughput", srcIOThroughput, sourceProcOrEmpty(!m.usingMockIOThrough)),
+		statusRowSrc("fds", srcFDs, sourceProcOrEmpty(!m.usingMockFDs)),
 		// Execution context (#60) is /proc-based and never simulated: "real via
 		// /proc" when the namespace/cgroup collector started, else structurally
 		// unavailable (macOS has no namespaces/cgroups).

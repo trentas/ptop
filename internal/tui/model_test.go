@@ -161,9 +161,9 @@ func sameStrings(a, b []string) bool {
 	return true
 }
 
-// TestSeed ensures NewModel populates visible fields without nil panic.
+// TestSeed ensures the demo populates visible fields without nil panic.
 func TestSeed(t *testing.T) {
-	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m := demoModel(t)
 	if len(m.CPUHistory) == 0 {
 		t.Error("CPUHistory empty after seed")
 	}

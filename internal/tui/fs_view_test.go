@@ -12,7 +12,7 @@ import (
 // (newest-first), is mirrored into the I/O timeline feed, marks the io-files
 // source as real, and that F5 then renders a denial in the Anomalies panel.
 func TestFSEventMsgUpdatesState(t *testing.T) {
-	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m := modelOnSet(t, procOnlySet())
 	fe := collector.FSEvent{
 		Timestamp: time.Now(),
 		Op:        "denied",
@@ -98,19 +98,30 @@ func TestFSEventMessage(t *testing.T) {
 }
 
 // TestIOAnomaliesHonestSource confirms the panel never invents fs anomalies:
-// a real (non-mock) io-files source with no denials reads healthy; only the
-// mock source shows the simulated polling heuristic.
+// a real io-files source with no denials reads healthy, no source says the
+// denials are not being watched, and only the demo shows the simulated
+// polling heuristic (#149).
 func TestIOAnomaliesHonestSource(t *testing.T) {
-	real := Model{usingMockIOFiles: false}
-	got := renderIOAnomalies(real, 40, 5)
-	if !strings.Contains(got, "no permission denials") {
-		t.Errorf("real source, no denials = %q, want healthy", got)
+	if !ioFilesUnavailable {
+		real := Model{usingMockIOFiles: false}
+		got := renderIOAnomalies(real, 60, 5)
+		if !strings.Contains(got, "no permission denials") {
+			t.Errorf("real source, no denials = %q, want healthy", got)
+		}
+		if strings.Contains(got, "polling") {
+			t.Errorf("real source must not show the simulated polling line: %q", got)
+		}
 	}
-	if strings.Contains(got, "polling") {
-		t.Errorf("real source must not show the simulated polling line: %q", got)
+	none := Model{usingMockIOFiles: true}
+	got := renderIOAnomalies(none, 60, 5)
+	if !strings.Contains(got, "need the eBPF io probe") {
+		t.Errorf("no source = %q, want denials reported as unwatched", got)
 	}
-	mock := Model{usingMockIOFiles: true}
-	if got := renderIOAnomalies(mock, 40, 5); !strings.Contains(got, "polling") {
-		t.Errorf("mock source = %q, want the simulated polling line", got)
+	if strings.Contains(got, "polling") || strings.Contains(got, "no permission denials") {
+		t.Errorf("no source must neither invent an anomaly nor report none: %q", got)
+	}
+	demo := Model{demo: true, usingMockIOFiles: true}
+	if got := renderIOAnomalies(demo, 60, 5); !strings.Contains(got, "polling") {
+		t.Errorf("demo = %q, want the simulated polling line", got)
 	}
 }

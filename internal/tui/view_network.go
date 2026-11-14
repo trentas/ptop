@@ -26,6 +26,9 @@ func renderNetworkView(m Model, w, h int) string {
 	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
 	}
+	if reason, none := m.noSource(srcNetwork); none {
+		return noSourcePanel("Network", reason, w, h)
+	}
 	leftW := w * 2 / 3
 	rightW := w - leftW
 

@@ -53,36 +53,55 @@ func renderOverviewView(m Model, w, h int) string {
 	rightHs := splitFlex([]float64{1.1, 0.9, 0.9, memRatio, evRatio}, h)
 
 	// Coluna esquerda
-	cpu := Panel("CPU",
-		renderCPU(m.CPUHistory, cpuSites, leftW-2, leftHs[0]-3),
-		leftW, leftHs[0])
+	//
+	// A panel whose subsystem has no source says why instead (#149). The CPU
+	// and Memory panels also carry an eBPF axis of their own (hot functions,
+	// heap detail), so while that one has data they keep it and mark only
+	// the sourceless numbers as unmeasured.
+	cpuBody := renderCPU(m.CPUHistory, cpuSites, m.has(srcCPU), leftW-2, leftHs[0]-3)
+	if reason, none := m.noSource(srcCPU); none && cpuSites.WindowMs == 0 {
+		cpuBody = renderNoSource(reason, leftW-2, leftHs[0]-3)
+	}
+	cpu := Panel("CPU", cpuBody, leftW, leftHs[0])
 
 	syscalls := Panel("Top Syscalls",
-		renderSyscallBars(m.SyscallCounts, m.topSyscallNames, leftW-2, leftHs[1]-3),
+		m.orNoSource(srcSyscalls, leftW-2, leftHs[1]-3, func() string {
+			return renderSyscallBars(m.SyscallCounts, m.topSyscallNames, leftW-2, leftHs[1]-3)
+		}),
 		leftW, leftHs[1])
 
 	threads := Panel("Threads",
-		renderThreadList(m.Threads, leftW-2, leftHs[2]-3),
+		m.orNoSource(srcThreads, leftW-2, leftHs[2]-3, func() string {
+			return renderThreadList(m.Threads, leftW-2, leftHs[2]-3)
+		}),
 		leftW, leftHs[2])
 
 	leftCol := lipgloss.JoinVertical(lipgloss.Left, cpu, syscalls, threads)
 
 	// Coluna direita
 	ioPanel := Panel("I/O Throughput",
-		renderIOMini(m.IOStats, m.IOReadHist, m.IOWriteHist, m.ioMaxRead, m.ioMaxWrite, rightW-2),
+		m.orNoSource(srcIOThroughput, rightW-2, rightHs[0]-3, func() string {
+			return renderIOMini(m.IOStats, m.IOReadHist, m.IOWriteHist, m.ioMaxRead, m.ioMaxWrite, m.ioKnown(), rightW-2)
+		}),
 		rightW, rightHs[0])
 
 	fdPanel := Panel("File Descriptors",
-		renderFDMini(m.FDs, rightW-2),
+		m.orNoSource(srcFDs, rightW-2, rightHs[1]-3, func() string {
+			return renderFDMini(m.FDs, rightW-2)
+		}),
 		rightW, rightHs[1])
 
 	netPanel := Panel("Network",
-		renderNetBody(m, rightW-2, rightHs[2]-3),
+		m.orNoSource(srcNetwork, rightW-2, rightHs[2]-3, func() string {
+			return renderNetBody(m, rightW-2, rightHs[2]-3)
+		}),
 		rightW, rightHs[2])
 
-	memPanel := Panel("Memory",
-		renderMemMini(m.MemStats, m.HeapStats, m.HeapLiveHist, rightW-2, rightHs[3]-3),
-		rightW, rightHs[3])
+	memBody := renderMemMini(m.MemStats, m.HeapStats, m.HeapLiveHist, m.has(srcMemory), rightW-2, rightHs[3]-3)
+	if reason, none := m.noSource(srcMemory); none && len(m.HeapStats.TopCallSites) == 0 {
+		memBody = renderNoSource(reason, rightW-2, rightHs[3]-3)
+	}
+	memPanel := Panel("Memory", memBody, rightW, rightHs[3])
 
 	timelinePanel := Panel("Event Stream",
 		renderTimelineCompact(m.Timeline, rightW-2, rightHs[4]-3),

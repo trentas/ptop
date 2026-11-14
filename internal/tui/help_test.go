@@ -172,7 +172,7 @@ func TestFilterEscCancelsKeepsPreviousFilter(t *testing.T) {
 
 // TestFilterFDView_substring confirms that m.filter restricts FDs in F6
 func TestFilterFDView_substring(t *testing.T) {
-	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m := demoModel(t)
 	m.Width = 180
 	m.Height = 40
 	m.ActiveTab = TabFD

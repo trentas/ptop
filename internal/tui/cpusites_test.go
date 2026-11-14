@@ -182,7 +182,7 @@ func TestCPUPanelNeverOverflowsItsWidth(t *testing.T) {
 	}
 	sum := w.fold()
 	for _, width := range []int{20, 40, 60, 80, 120, 200} {
-		body := renderCPU(make([]float64, 60), sum, width, 12)
+		body := renderCPU(make([]float64, 60), sum, true, width, 12)
 		for i, line := range strings.Split(body, "\n") {
 			if got := lipgloss.Width(line); got > width {
 				t.Errorf("w=%d: line %d is %d wide — a panel that overflows wraps and flips the layout\n%q",

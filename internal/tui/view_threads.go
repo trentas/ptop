@@ -23,7 +23,9 @@ func renderThreadsView(m Model, w, h int) string {
 	if len(m.LockGraph) > 4 {
 		lockH = 6
 	}
-	body := renderThreadTable(m.Threads, leftW-2, h-3-lockH) +
+	body := m.orNoSource(srcThreads, leftW-2, h-3-lockH, func() string {
+		return renderThreadTable(m.Threads, leftW-2, h-3-lockH)
+	}) +
 		"\n\n" +
 		renderLockGraph(m, leftW-2)
 
@@ -37,14 +39,17 @@ func renderThreadsView(m Model, w, h int) string {
 }
 
 // renderLockGraph: compact list of the most contended futexes in the current
-// window. When LockGraph is empty (no eBPF futex collector or no contention
-// detected), shows a discrete placeholder. On macOS the lock graph has no
-// Tier 1 source at all (no public __ulock_wait hook), so the placeholder
-// is more explicit.
+// window. On macOS the lock graph has no Tier 1 source at all (no public
+// __ulock_wait hook); on Linux the futex probe can be off or fail to attach.
+// Either way it says so: "no contention detected" is a reading only the probe
+// can take (#149).
 func renderLockGraph(m Model, w int) string {
 	title := MutedStyle.Render("lock graph (futex)")
 	if locksUnavailable {
 		return title + "\n" + renderUnavailableInline("not available on macOS — see ?")
+	}
+	if reason, none := m.noSource(srcLocks); none {
+		return title + "\n" + MutedStyle.Render(truncate("○ no source — "+reason, w))
 	}
 	if len(m.LockGraph) == 0 {
 		return title + "\n" + MutedStyle.Render("(no contention detected)")

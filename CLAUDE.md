@@ -156,6 +156,7 @@ ptop/
 │       ├── tabbar.go              F1-F7 tab bar
 │       ├── statusbar.go           footer with keybindings
 │       ├── help.go                ? overlay (collector source visibility)
+│       ├── nosource.go            a panel with no source says why; simulation is demo-only (#149)
 │       ├── snapshot.go            JSON / JSONL export
 │       ├── view_overview.go       F1
 │       ├── view_syscalls.go       F2
@@ -319,7 +320,7 @@ type Collector interface {
 
 - `Start` returns an error if the data source isn't available (no `/proc`,
   missing `CAP_BPF`, kernel too old). The model logs the warning and falls
-  back to either another source for the same subsystem or simulated data.
+  back to another source for the same subsystem, or shows that it has none.
 - `Stop` must be idempotent and safe even if `Start` failed.
 - `Subscribe` may return `nil` for stub collectors — model handles that.
 - Collectors must **never panic in steady state**. Errors go to stderr
@@ -332,11 +333,27 @@ that succeeds:
 
 1. eBPF collector (richest data, requires `-tags=ebpf` + caps)
 2. `/proc` collector (degraded but real)
-3. simulated/mocked data (only if both above fail — clearly marked in `?` overlay)
+3. none: the panel says `○ no source` and why
 
 The `?` help overlay surfaces the active source per subsystem (`real via eBPF`,
-`real via /proc`, or `mock`). Never lie about the source — users debug with
-this.
+`real via /proc`, or `unavailable` with the reason). Never lie about the source
+— users debug with this.
+
+**Simulated data exists only in the demo**, when nothing at all is attached
+(`Model.demo`, an empty `Set`); `--pid` is required, so in practice that is the
+tests and the dump fixtures. Beside a real target nothing is seeded or ticked.
+A panel whose subsystem has no source renders `renderNoSource` with the reason
+the probe set recorded (`disabled: --no-ebpf`, `failed to attach: …`, or the
+platform), via `Model.noSource` in `internal/tui/nosource.go`. A field no
+collector measures (`IOStats.Fsyncs`, `Opens`) renders `—`, never `0`.
+
+It used to be a third source per subsystem, flagged only in the `?` overlay
+(#149). A `--no-ebpf` run showed invented connections and `/data/db` files
+beside the target's real CPU, the seed ran before the `Set` existed, and the
+timeline and fd-event ticks were never gated at all, so invented paths sat
+between real events in the event stream and in the `--export` snapshot. A
+panel that carries a real axis beside a sourceless one (heap in Memory, hot
+functions in CPU) keeps the real one and marks the rest `—`.
 
 ### Rate classes, and why a full queue is not first-come-first-served
 
