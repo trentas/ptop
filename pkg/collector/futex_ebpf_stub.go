@@ -34,3 +34,6 @@ func (c *FutexEBPFCollector) Subscribe() <-chan interface{} {
 // there is nothing to resolve.
 func (*FutexEBPFCollector) ResolveStack(uint64) ([]symbol.Frame, bool) { return nil, false }
 func (*FutexEBPFCollector) ProcessBuildID() string                     { return "" }
+
+// SetListCap: nothing to cap without eBPF.
+func (*FutexEBPFCollector) SetListCap(int) {}

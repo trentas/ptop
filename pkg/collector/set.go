@@ -57,7 +57,20 @@ type SetConfig struct {
 	// default everywhere — a collector does not reach the network because a
 	// binary happened to be stripped.
 	Symbols symbol.Options
+
+	// ListCap is how many entries the CPU profile, the heap snapshot and the
+	// lock list carry per reading. 0 takes DefaultListCap.
+	//
+	// The stream keeps those lists short, and each says what it cut. A consumer
+	// that sums or differences many readings (the capture report, #156) needs
+	// them long: a site cut from one reading is missing from that reading's
+	// figure, and the sum is then a lower bound rather than a count.
+	ListCap int
 }
+
+// DefaultListCap is how many entries a per-site list carries per reading when
+// SetConfig.ListCap is 0.
+const DefaultListCap = 8
 
 // HeapSampleEveryAllocation is the HeapSampleBytes value that records every
 // allocation rather than sampling: a rate of one byte, which any allocation
@@ -354,6 +367,7 @@ func NewSet(cfg SetConfig) *Set {
 		// subsystem because it is its own probe with its own cost — and because
 		// an operator switching off one must not lose the other.
 		c10 := NewCPUProfEBPFCollector(cpuProfHz(cfg), syms)
+		c10.SetListCap(cfg.ListCap)
 		startEBPF(SubsystemCPUProf, c10, func() {
 			s.CPUProfEBPF = c10
 			s.Sources.CPUProf = "eBPF"
@@ -368,6 +382,7 @@ func NewSet(cfg SetConfig) *Set {
 		})
 
 		c4 := NewFutexEBPFCollector(syms)
+		c4.SetListCap(cfg.ListCap)
 		startEBPF(SubsystemFutex, c4, func() {
 			s.FutexEBPF = c4
 			s.Sources.Locks = "eBPF"
@@ -381,6 +396,7 @@ func NewSet(cfg SetConfig) *Set {
 		// once per allocation, where the others fire on comparatively rare
 		// kernel events. It is the subsystem --disable exists for.
 		c5 := NewHeapEBPFCollector(heapSampleBytes(cfg), syms)
+		c5.SetListCap(cfg.ListCap)
 		startEBPF(SubsystemHeap, c5, func() {
 			s.HeapEBPF = c5
 			s.Sources.Heap = "eBPF"
@@ -560,8 +576,10 @@ func (s *Set) startCgroup(cfg SetConfig) {
 	// nil symbol source on both of these: cgroup mode symbolizes nothing at all
 	// (a subtree has no single memory map to resolve against), so there is
 	// nothing for an off-ELF source to supplement.
-	if c := NewFutexEBPFCollector(nil); s.startCgroupCollector(SubsystemFutex, c, cfg) {
-		s.FutexEBPF = c
+	futex := NewFutexEBPFCollector(nil)
+	futex.SetListCap(cfg.ListCap)
+	if s.startCgroupCollector(SubsystemFutex, futex, cfg) {
+		s.FutexEBPF = futex
 		s.Sources.Locks = "eBPF"
 	}
 	if c := NewSecurityEBPFCollector(nil); s.startCgroupCollector(SubsystemSecurity, c, cfg) {

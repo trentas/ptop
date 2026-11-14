@@ -80,7 +80,8 @@ ptop/
 ├── buf.yaml, buf.gen.yaml         protobuf codegen config (`make proto`)
 ├── proto/                         event stream schema (pkg ptop.v1)
 │   ├── event.proto                unified Event + payloads
-│   └── service.proto              EventStream gRPC service
+│   ├── service.proto              EventStream gRPC service
+│   └── report.proto               CaptureReport: one window, digested (#156)
 ├── cmd/ptop/main.go               entrypoint: parse flags, start model
 ├── cmd/ebpfselftest/              root-only planted-behaviour suite: each axis graded against a known workload, in CI (#155)
 ├── internal/
@@ -136,6 +137,7 @@ ptop/
 │   │   ├── proc.go                sched fork/exec/exit loader → exec lineage (#60)
 │   │   ├── security.go            PROT_EXEC + SELinux AVC loader + stack (#59)
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
+│   ├── report/                    stream events → bounded CaptureReport (#156)
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
@@ -178,6 +180,7 @@ ptop/
 │   │   ├── event.pb.go            Event schema (generated)
 │   │   ├── service.pb.go          Subscribe messages (generated)
 │   │   ├── service_grpc.pb.go     EventStream service (generated)
+│   │   ├── report.pb.go           CaptureReport (generated)
 │   │   └── doc.go                 package doc
 │   ├── collector/                 /proc + eBPF collectors + shared types
 │       ├── types.go               public type contracts (see below)
@@ -1066,6 +1069,44 @@ re-run. That event is rare, so it costs nothing on the syscall path that moving
 the futex exit to `raw_syscalls` would have. The `restart` case plants the same
 alternation on untimed `FUTEX_WAIT`s. Without the rule it read 40 for 30,
 without the verdict 20, and with `SA_RESTART` ignored 40.
+
+### A capture report is the stream, digested (#156)
+
+`internal/report` turns one window of stream events into a `CaptureReport`
+(`proto/report.proto`): what an agent reads instead of writing its own
+bpftrace. It consumes `*streampb.Event`, the values a subscriber and the JSONL
+export receive, and has the shape of a `serve.Sink`, so a report never says
+something the stream did not. The rules are on `CaptureReport`; the ones that
+are easy to get wrong:
+
+- **The first reading is the baseline.** A total is the last reading less the
+  first, never the last reading alone. A collector attached before the window
+  opened has counted that time already, and the load of the other probes
+  takes a second or two.
+- **A per-window figure skips the first reading.** The CPU profile and the io
+  histogram are per window. The first reading's window began before the
+  report did, and leaving it out makes those figures cover the same span as
+  the totals.
+- **A counter keeps a high-water mark** (`mono`). A kernel entry evicted and
+  recreated reads lower, and the difference must not go negative.
+- **The libc heap lane lists the live set, the Go lane what was allocated.**
+  The libc lane keeps live allocations per site, not cumulative ones, so its
+  list is the last reading's. Both lanes' totals integrate the published rates
+  over their intervals.
+- **A sum over cut lists is a lower bound.** The CPU profile, the heap and the
+  lock list are cut per reading (8 on the stream). `SetConfig.ListCap` raises
+  that for a report. Each of those sections counts the readings that arrived
+  already cut (`truncated_readings`); while it is 0, every per-site figure is
+  exact. The lock list does not say what it cut, so a reading as long as the
+  cap counts as cut.
+- **Zero and absent are different answers.** An event section (signals,
+  lifecycle, security, fs, network errors) is present whenever its probe ran
+  on eBPF, so its zeros are measurements. It is absent when nothing could have
+  counted. Print the report with `protojson`'s `EmitDefaultValues`, or the
+  zeros vanish and `"signals": {}` reads as nothing.
+
+`report_test.go` plants each rule with known numbers. Each rule broken on its
+own fails its test.
 
 ---
 

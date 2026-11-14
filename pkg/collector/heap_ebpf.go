@@ -69,6 +69,8 @@ type HeapEBPFCollector struct {
 
 	leakThreshold time.Duration
 
+	listCap int // call sites per snapshot; set before Start
+
 	// libc lane only: allocations/bytes since the last publish, fed by
 	// readLoop. The Go lane reads its totals from the kernel instead — see
 	// ratesGo.
@@ -95,7 +97,7 @@ type heapSite struct {
 
 const (
 	heapDefaultLeakThreshold = 10 * time.Second
-	heapTopCallSites         = 8
+	heapTopCallSites         = DefaultListCap
 	heapPublishInterval      = 500 * time.Millisecond
 )
 
@@ -116,6 +118,15 @@ func NewHeapEBPFCollector(sampleBytes uint64, syms *symbol.Debuginfod) *HeapEBPF
 		leakThreshold: heapDefaultLeakThreshold,
 		siteCache:     make(map[int32]heapSite),
 		stackCache:    make(map[int32][]symbol.Frame),
+		listCap:       heapTopCallSites,
+	}
+}
+
+// SetListCap sets how many call sites a snapshot carries (SetConfig.ListCap).
+// 0 keeps the default. Call it before Start.
+func (c *HeapEBPFCollector) SetListCap(n int) {
+	if n > 0 {
+		c.listCap = n
 	}
 }
 
@@ -406,7 +417,7 @@ func (c *HeapEBPFCollector) snapshotGo() (HeapStats, error) {
 		}})
 	}
 	sites := foldCallSites(raws)
-	top, omitted := topCallSites(sites, heapTopCallSites)
+	top, omitted := topCallSites(sites, c.listCap)
 
 	now := time.Now()
 	allocRate, byteRate := c.ratesGo(now)
@@ -476,7 +487,7 @@ func (c *HeapEBPFCollector) snapshotLibc() (HeapStats, error) {
 		})
 	}
 	sites := foldCallSites(raws)
-	top, omitted := topCallSites(sites, heapTopCallSites)
+	top, omitted := topCallSites(sites, c.listCap)
 
 	now := time.Now()
 	rate, byteRate := c.rates(now)

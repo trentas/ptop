@@ -33,6 +33,7 @@ type FutexEBPFCollector struct {
 	prev       map[uint64]uint64        // uaddr → cumulative waits last window
 	siteCache  map[int32]lockSite       // stack_id → resolved contention site
 	stackCache map[int32][]symbol.Frame // stack_id → full leaf-first frames
+	listCap    int                      // locks per reading; set before Start
 }
 
 // contentionThreshold defines how many new waits in the interval (1s) are
@@ -40,9 +41,9 @@ type FutexEBPFCollector struct {
 // locks, large enough to ignore "ok" mutexes that occasionally block.
 const contentionThreshold = 20
 
-// topLockEntries is how many rows the LockGraph publishes. F4 has a small
-// footprint; keep it compact.
-const topLockEntries = 8
+// topLockEntries is how many rows the LockGraph publishes by default. F4 has a
+// small footprint; keep it compact.
+const topLockEntries = DefaultListCap
 
 // NewFutexEBPFCollector builds the collector. syms is the optional off-ELF
 // symbol source (#119); nil resolves from the mapped image alone.
@@ -54,6 +55,15 @@ func NewFutexEBPFCollector(syms *symbol.Debuginfod) *FutexEBPFCollector {
 		prev:       make(map[uint64]uint64),
 		siteCache:  make(map[int32]lockSite),
 		stackCache: make(map[int32][]symbol.Frame),
+		listCap:    topLockEntries,
+	}
+}
+
+// SetListCap sets how many locks a reading carries (SetConfig.ListCap). 0
+// keeps the default. Call it before Start.
+func (c *FutexEBPFCollector) SetListCap(n int) {
+	if n > 0 {
+		c.listCap = n
 	}
 }
 
@@ -218,7 +228,7 @@ func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 
 	// Everything published is either in the top-N or hot, and rankLocks sorts
 	// by window delta first, so both are prefixes of ranked.
-	resolveN := topLockEntries
+	resolveN := c.listCap
 	if hotN > resolveN {
 		resolveN = hotN
 	}
@@ -229,7 +239,7 @@ func (c *FutexEBPFCollector) snapshot() (snap []LockEntry, hot []LockEntry) {
 		c.attachSite(&ranked[i])
 	}
 
-	snap = ranked[:min(topLockEntries, len(ranked))]
+	snap = ranked[:min(c.listCap, len(ranked))]
 	return snap, ranked[:hotN]
 }
 
