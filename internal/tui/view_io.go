@@ -23,6 +23,10 @@ func renderIOView(m Model, w, h int) string {
 	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
 	}
+	// No io lane at all (--disable io): one panel says so, rather than six.
+	if reason, none := m.noSource(srcIOThroughput); none && !m.has(srcIOWait) && !m.has(srcIOFiles) {
+		return noSourcePanel("I/O", reason, w, h)
+	}
 	leftW := w * 22 / 32 // ratio 2.2 vs 1.0
 	rightW := w - leftW
 
@@ -30,19 +34,25 @@ func renderIOView(m Model, w, h int) string {
 	rightHs := splitFlex([]float64{0.9, 0.5, 2.0}, h)
 
 	throughput := Panel("Throughput — read (cyan) · write (orange)",
-		renderIOLargeThroughput(m.IOStats, m.IOReadHist, m.IOWriteHist, m.ioMaxRead, m.ioMaxWrite, leftW-2, leftHs[0]-3),
+		m.orNoSource(srcIOThroughput, leftW-2, leftHs[0]-3, func() string {
+			return renderIOLargeThroughput(m.IOStats, m.IOReadHist, m.IOWriteHist, m.ioMaxRead, m.ioMaxWrite, leftW-2, leftHs[0]-3)
+		}),
 		leftW, leftHs[0])
 
 	topFiles := Panel("Top Files",
-		renderIOTopFiles(m.IOStats.TopFiles, m.topFilesPaths, leftW-2, leftHs[1]-3),
+		m.orNoSource(srcIOFiles, leftW-2, leftHs[1]-3, func() string {
+			return renderIOTopFiles(m.IOStats.TopFiles, m.topFilesPaths, leftW-2, leftHs[1]-3)
+		}),
 		leftW, leftHs[1])
 
 	latDist := Panel("Latency Distribution",
-		renderIOLatencyDist(m.IOStats.LatencyBuckets, leftW-2, leftHs[2]-3),
+		m.orNoSource(srcIOFiles, leftW-2, leftHs[2]-3, func() string {
+			return renderIOLatencyDist(m.IOStats.LatencyBuckets, leftW-2, leftHs[2]-3)
+		}),
 		leftW, leftHs[2])
 
 	stats := Panel("I/O Stats",
-		renderIOStats(m.IOStats, rightW-2),
+		renderIOStats(m.IOStats, m.ioKnown(), rightW-2),
 		rightW, rightHs[0])
 
 	anomalies := Panel("Anomalies",
@@ -212,19 +222,28 @@ func renderIOLatencyDist(buckets []collector.LatencyBucket, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
-func renderIOStats(s collector.IOStats, w int) string {
-	rows := []struct {
+// renderIOStats: the F5 counters table. known says which fields hold
+// anything (Model.ioKnown); the rest show as unmeasured, never as 0 (#149).
+func renderIOStats(s collector.IOStats, known ioKnown, w int) string {
+	type row struct {
 		label string
 		value string
 		color lipgloss.Color
-	}{
-		{"Total read", fmtBytesPerSec(s.ReadBytesPerS), ColorCyan},
-		{"Total write", fmtBytesPerSec(s.WriteBytesPerS), ColorOrange},
-		{"Read ops", fmt.Sprintf("%d", s.ReadOps), ColorCyan},
-		{"Write ops", fmt.Sprintf("%d", s.WriteOps), ColorOrange},
-		{"fsyncs", fmt.Sprintf("%d", s.Fsyncs), thresholdColor(float64(s.Fsyncs), 20)},
-		{"File opens", fmt.Sprintf("%d", s.Opens), ColorMuted},
-		{"I/O wait", fmt.Sprintf("%.1f%%", s.IOWaitPct), thresholdColor(s.IOWaitPct, 15)},
+	}
+	field := func(label, value string, color lipgloss.Color, ok bool) row {
+		if !ok {
+			return row{label, "—", ColorDim}
+		}
+		return row{label, value, color}
+	}
+	rows := []row{
+		field("Total read", fmtBytesPerSec(s.ReadBytesPerS), ColorCyan, known.Throughput),
+		field("Total write", fmtBytesPerSec(s.WriteBytesPerS), ColorOrange, known.Throughput),
+		field("Read ops", fmt.Sprintf("%d", s.ReadOps), ColorCyan, known.Throughput),
+		field("Write ops", fmt.Sprintf("%d", s.WriteOps), ColorOrange, known.Throughput),
+		field("fsyncs", fmt.Sprintf("%d", s.Fsyncs), thresholdColor(float64(s.Fsyncs), 20), known.Counters),
+		field("File opens", fmt.Sprintf("%d", s.Opens), ColorMuted, known.Counters),
+		field("I/O wait", fmt.Sprintf("%.1f%%", s.IOWaitPct), thresholdColor(s.IOWaitPct, 15), known.IOWait),
 	}
 	lines := []string{}
 	for _, r := range rows {
@@ -241,9 +260,10 @@ func renderIOStats(s collector.IOStats, w int) string {
 
 // renderIOAnomalies surfaces, newest-first: real permission denials (#57, only
 // the eBPF io collector emits them), then the IOStats-derived fsync/I/O-wait
-// threshold anomalies. The "/proc/self/status polling" heuristic is simulated,
-// so it only appears in mock mode. With a real source and nothing wrong, it
-// honestly reports a healthy filesystem rather than inventing a warning.
+// threshold anomalies. The fsync line and the "/proc/self/status polling"
+// heuristic are invented, so they appear only in the demo. With a real source
+// and nothing wrong it reports a healthy filesystem, and without the eBPF io
+// probe it says denials are not being watched rather than that there are none.
 func renderIOAnomalies(m Model, w, h int) string {
 	lines := []string{}
 	room := func() bool { return h <= 0 || len(lines) < h }
@@ -259,19 +279,22 @@ func renderIOAnomalies(m Model, w, h int) string {
 	}
 
 	s := m.IOStats
-	if s.Fsyncs > 15 && room() {
+	// Demo only: no collector counts fsyncs, and the path is invented.
+	if m.demo && s.Fsyncs > 15 && room() {
 		lines = append(lines, RedStyle.Render("⚠ high fsync freq → /data/db"))
 	}
-	if s.IOWaitPct > 15 && room() {
+	if m.has(srcIOWait) && s.IOWaitPct > 15 && room() {
 		lines = append(lines, RedStyle.Render(fmt.Sprintf("⚠ I/O wait %.1f%% → disk saturated", s.IOWaitPct)))
 	}
-	if m.usingMockIOFiles && room() {
+	if m.demo && room() {
 		lines = append(lines, AmberStyle.Render("⚠ /proc/self/status: polling (×12/s)"))
 	}
 
 	if len(lines) == 0 {
-		if m.usingMockIOFiles {
-			return GreenStyle.Render("✓ throughput stable")
+		// Denials come only from the eBPF io probe: without it, "none" would
+		// be a reading nobody took.
+		if !m.has(srcIOFiles) {
+			return MutedStyle.Render("(permission denials need the eBPF io probe)")
 		}
 		return GreenStyle.Render("✓ no permission denials")
 	}

@@ -26,6 +26,9 @@ func renderFDView(m Model, w, h int) string {
 	if w < minTerminalWidth || h < minContentHeight {
 		return MutedStyle.Render("(terminal too small)")
 	}
+	if reason, none := m.noSource(srcFDs); none {
+		return noSourcePanel("File Descriptors", reason, w, h)
+	}
 
 	leftW := w * 25 / 35 // ratio 2.5 : 1.0
 	rightW := w - leftW

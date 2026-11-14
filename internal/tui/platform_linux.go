@@ -27,17 +27,33 @@ const (
 	locksUnavailable    = false
 )
 
-// statusBarSourceLabel is the footer's data-source descriptor. It must
-// describe how this build actually collects, never claim a path it can't
-// take. The kernel release is read live (it used to be hardcoded "6.8"), and
-// the old unmeasured "overhead <0.5%" claim is gone.
+// platformSourceLabel is the footer's data-source descriptor on Linux: the
+// lane that attached, the kernel, and where the CPU axis comes from. Each part
+// is read from what the Set started, never from what this build could do. The
+// kernel release is read live (it used to be hardcoded "6.8"), and the old
+// unmeasured "overhead <0.5%" claim is gone.
 //
 // It used to end "sampling 100Hz", which described the CPU axis when that axis
 // counted perf_event samples. It does not sample any more — it reads the
 // scheduler's own accounting of the target's slices (#108) — so the claim
 // went with the mechanism rather than being left to age into a lie.
-func statusBarSourceLabel() string {
-	return "eBPF kernel " + kernelRelease() + " · cpu from sched_switch"
+//
+// It was a constant until #149, "eBPF kernel <release> · cpu from
+// sched_switch", and so it said that under --no-ebpf, and on a host where the
+// cpu probe failed to attach and the axis fell back to /proc.
+func platformSourceLabel(m Model) string {
+	lane := collector.SourceProc
+	if m.anyEBPF() {
+		lane = "eBPF"
+	}
+	cpu := "no cpu source"
+	switch m.cpuSource {
+	case "eBPF":
+		cpu = "cpu from sched_switch"
+	case collector.SourceProc:
+		cpu = "cpu from /proc"
+	}
+	return lane + " · kernel " + kernelRelease() + " · " + cpu
 }
 
 // kernelRelease returns the running kernel version (uname -r), or "?" if the

@@ -237,6 +237,17 @@ type Model struct {
 	usingMockNet       bool
 	lastSimAt          time.Time
 
+	// demo: nothing real is attached, so every panel is simulated. With a real
+	// target nothing is: a subsystem with no source shows why (noSource). The
+	// simulation used to run per subsystem beside real collectors, and its
+	// timeline and fd events never stopped, so invented paths sat between real
+	// events in the stream and in the export (#149).
+	demo bool
+
+	// probes is the Set's probe set at startup, by name: why each subsystem
+	// that has no source has none. noSource reads its reasons from here.
+	probes map[string]collector.ProbeStatus
+
 	// Sources: indicate where the real data came from ("eBPF" | "/proc" | "" for mock).
 	// Shown in the help overlay (?) for debugging and visibility.
 	cpuSource       string
@@ -304,9 +315,9 @@ func NewModel(cfg Config) Model {
 		SyscallLatNs:  make(map[string]uint64),
 		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
 		render:        &renderState{},
+		Timeline:      make([]collector.TimelineEvent, 0, 120),
+		FDEvents:      make([]collector.FDEvent, 0, historyLen),
 	}
-
-	m.seedMockData()
 
 	// Source-priority selection + collector lifecycle live in collector.Set,
 	// shared with the headless gRPC server (#51) so the wiring isn't
@@ -359,6 +370,14 @@ func NewModel(cfg Config) Model {
 	m.usingMockSyscalls = m.collectors.MockSyscalls()
 	m.usingMockIOFiles = m.collectors.MockIOFiles()
 	m.usingMockNet = m.collectors.MockNet()
+	m.demo = len(m.collectors.Collectors()) == 0
+	m.probes = make(map[string]collector.ProbeStatus)
+	for _, st := range m.collectors.Probes() {
+		m.probes[st.Name] = st
+	}
+	if m.demo {
+		m.seedMockData()
+	}
 
 	// --export: open the JSONL file right away. If it fails, just warn
 	// (doesn't block launch — user can still use the TUI normally).
@@ -886,6 +905,9 @@ var simTimelineMessages = map[string][]string{
 
 var simCategories = []string{"syscall", "net", "mem", "cpu", "lock", "io", "fd"}
 
+// seedMockData fills every panel for the demo, so it does not start empty. It
+// runs only when nothing real is attached (Model.demo): with a real target a
+// subsystem that has no source shows why instead of invented data (#149).
 func (m *Model) seedMockData() {
 	r := m.rng
 
@@ -1011,6 +1033,13 @@ func (m *Model) seedMockData() {
 	}
 }
 
+// ioKnown says which IOStats fields beside throughput hold anything: fsyncs
+// and opens only in the demo, since no collector counts them, and iowait when
+// its collector runs (#149).
+func (m Model) ioKnown() ioKnown {
+	return ioKnown{Throughput: m.has(srcIOThroughput), Counters: m.demo, IOWait: m.has(srcIOWait)}
+}
+
 // refreshTopN recomputes which syscalls/files appear in the top — in
 // alphabetical order so that visual position doesn't change between refreshes.
 // Counts keep updating every tick; only the set+order is frozen.
@@ -1041,11 +1070,25 @@ func (m *Model) refreshTopN() {
 	m.topFilesPaths = paths
 }
 
-// tick advances the simulation by one step. Called by TickMsg when not paused.
-// In real eBPF mode, this function coexists with collector messages:
-// fields updated here are overwritten when a real message arrives.
+// tick runs every simInterval while not paused. It advances the demo
+// simulation, and only the demo: with a real target nothing is simulated, and
+// a subsystem with no source says so instead (#149). The stable top-N order is
+// refreshed in both.
 func (m *Model) tick() {
 	m.tickN++
+	if m.demo {
+		m.simulate()
+	}
+
+	// Top-N: reorder rarely to avoid visual reordering every tick
+	if time.Since(m.lastTopRefresh) >= topRefreshInterval {
+		m.refreshTopN()
+		m.lastTopRefresh = time.Now()
+	}
+}
+
+// simulate advances the demo by one step.
+func (m *Model) simulate() {
 	r := m.rng
 
 	// CPU — only simulates if the real collector isn't running.
@@ -1191,12 +1234,6 @@ func (m *Model) tick() {
 	}
 	if r.Float64() > 0.5 {
 		m.maybePushFDEvent()
-	}
-
-	// Top-N: reorder rarely to avoid visual reordering every tick
-	if time.Since(m.lastTopRefresh) >= topRefreshInterval {
-		m.refreshTopN()
-		m.lastTopRefresh = time.Now()
 	}
 }
 

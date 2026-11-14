@@ -11,7 +11,7 @@ import (
 )
 
 func TestBuildSnapshot_includesAllFields(t *testing.T) {
-	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m := demoModel(t)
 	m.Width = 120
 	m.Height = 40
 

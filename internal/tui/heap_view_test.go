@@ -80,7 +80,7 @@ func TestHeapSiteLabel(t *testing.T) {
 // mockup layout (no heap detail) when there is no heap data — preserving the
 // degraded-mode / macOS / Go-target appearance.
 func TestMemPanelClassicWithoutHeap(t *testing.T) {
-	m := NewModel(Config{PID: 1, FPS: 5, NoEBPF: true})
+	m := modelOnSet(t, procOnlySet())
 	m.Width, m.Height = 180, 50
 	m.ActiveTab = TabOverview
 	out := m.View()

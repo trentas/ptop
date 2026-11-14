@@ -15,8 +15,10 @@ import (
 
 // renderCPU draws a sparkline + current value on the right.
 // Uses a FIXED 0-100% scale — without this the sparkline would rescale every
-// tick and cause the "everything jumping" effect.
-func renderCPU(history []float64, sites cpuSiteSummary, w, h int) string {
+// tick and cause the "everything jumping" effect. known is false when the cpu
+// subsystem has no source and the panel is kept only for its hot functions:
+// the value then reads "—", not a 0% nobody measured (#149).
+func renderCPU(history []float64, sites cpuSiteSummary, known bool, w, h int) string {
 	if w < 12 {
 		return MutedStyle.Render("…")
 	}
@@ -33,6 +35,9 @@ func renderCPU(history []float64, sites cpuSiteSummary, w, h int) string {
 	}
 
 	val := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Bold(true).Render(fmt.Sprintf("%.0f%%", cur))
+	if !known {
+		val = DimStyle.Render("—")
+	}
 	lbl := MutedStyle.Render("cpu usage")
 
 	rightW := maxInt(lipgloss.Width(val), lipgloss.Width(lbl))
@@ -540,7 +545,9 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 // renderIOMini: read/write sparklines + compact stats.
 // maxRead/maxWrite come from the model with slow decay — without this the
 // sparkline rescales every tick and gives an impression of instability.
-func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWrite float64, w int) string {
+// known says which of io's fields hold anything (Model.ioKnown); the rest
+// show as unmeasured.
+func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWrite float64, known ioKnown, w int) string {
 	if w < 24 {
 		return MutedStyle.Render("…")
 	}
@@ -576,8 +583,8 @@ func renderIOMini(io collector.IOStats, readH, writeH []float64, maxRead, maxWri
 	stats := []string{
 		MutedStyle.Render("read ops ") + CyanStyle.Render(fmt.Sprintf("%d", io.ReadOps)),
 		MutedStyle.Render("write ops ") + OrangeStyle.Render(fmt.Sprintf("%d", io.WriteOps)),
-		MutedStyle.Render("fsyncs ") + colorByThreshold(io.Fsyncs, 20).Render(fmt.Sprintf("%d", io.Fsyncs)),
-		MutedStyle.Render("io-wait ") + colorByPctThreshold(io.IOWaitPct, 15).Render(fmt.Sprintf("%.1f%%", io.IOWaitPct)),
+		MutedStyle.Render("fsyncs ") + fmtIOValue(fmt.Sprintf("%d", io.Fsyncs), known.Counters, colorByThreshold(io.Fsyncs, 20)),
+		MutedStyle.Render("io-wait ") + fmtIOValue(fmt.Sprintf("%.1f%%", io.IOWaitPct), known.IOWait, colorByPctThreshold(io.IOWaitPct, 15)),
 	}
 	bottom := strings.Join(stats, panelSp2)
 
@@ -817,16 +824,27 @@ func kvLine(label, value string, color lipgloss.Color, w int) string {
 // classic RSS / Heap / Page-faults / Allocs rows (the mockup's MemPanel). When
 // the heap collector (#53) is active it adds a live-heap sparkline, the real
 // allocation rate, a suspected-leak summary, and the top allocating call sites.
-func renderMemMini(s collector.MemStats, heap collector.HeapStats, liveHist []float64, w, h int) string {
+//
+// memKnown is false when the memory subsystem has no source and the panel is
+// kept only for the heap detail: its rows then read "—" (#149).
+func renderMemMini(s collector.MemStats, heap collector.HeapStats, liveHist []float64, memKnown bool, w, h int) string {
 	if len(heap.TopCallSites) == 0 {
 		return strings.Join([]string{
-			kvLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, w),
-			kvLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, w),
-			kvLine("Page faults", fmt.Sprintf("%d", s.PageFaults), ColorAmber, w),
-			kvLine("Allocs/s", fmt.Sprintf("%d", s.AllocsPerS), ColorGreen, w),
+			memLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, memKnown, w),
+			memLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, memKnown, w),
+			memLine("Page faults", fmt.Sprintf("%d", s.PageFaults), ColorAmber, memKnown, w),
+			memLine("Allocs/s", fmt.Sprintf("%d", s.AllocsPerS), ColorGreen, memKnown, w),
 		}, "\n")
 	}
-	return renderMemHeap(s, heap, liveHist, w, h)
+	return renderMemHeap(s, heap, liveHist, memKnown, w, h)
+}
+
+// memLine is kvLine for a MemStats row, or "—" when nothing measured it.
+func memLine(label, value string, color lipgloss.Color, known bool, w int) string {
+	if !known {
+		return kvLine(label, "—", ColorDim, w)
+	}
+	return kvLine(label, value, color, w)
 }
 
 // heapLiveShown reports whether the live-set fields (live heap, per-site live
@@ -841,10 +859,10 @@ func heapLiveShown(heap collector.HeapStats) bool {
 	return heap.Lane != collector.HeapLaneGo
 }
 
-func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []float64, w, h int) string {
+func renderMemHeap(s collector.MemStats, heap collector.HeapStats, liveHist []float64, memKnown bool, w, h int) string {
 	lines := []string{
-		kvLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, w),
-		kvLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, w),
+		memLine("RSS", fmt.Sprintf("%.0f MB", float64(s.RSSBytes)/(1<<20)), ColorCyan, memKnown, w),
+		memLine("Heap", fmt.Sprintf("%.0f MB", float64(s.HeapBytes)/(1<<20)), ColorPurple, memKnown, w),
 	}
 
 	// The headline row is whichever quantity this lane actually measures: the
@@ -999,6 +1017,25 @@ func renderTimelineCompact(events []collector.TimelineEvent, w, h int) string {
 }
 
 // ─── visual helpers ──────────────────────────────────────────────────────────
+
+// ioKnown says which IOStats fields beside throughput hold anything. Fsyncs
+// and Opens are measured by no collector, so only the demo fills them; iowait
+// has a /proc source of its own that can be missing (macOS has none). An
+// unmeasured field renders "—", since a 0 there would read as "the target did
+// none" (#149).
+type ioKnown struct {
+	Throughput bool // IOStats.{Read,Write}BytesPerS, ReadOps, WriteOps
+	Counters   bool // IOStats.Fsyncs, IOStats.Opens
+	IOWait     bool // IOStats.IOWaitPct
+}
+
+// fmtIOValue renders value in style when known, else a dim "—".
+func fmtIOValue(value string, known bool, style lipgloss.Style) string {
+	if !known {
+		return DimStyle.Render("—")
+	}
+	return style.Render(value)
+}
 
 func colorByThreshold(value uint64, warn uint64) lipgloss.Style {
 	switch {

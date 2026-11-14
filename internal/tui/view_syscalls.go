@@ -24,6 +24,9 @@ func renderSyscallsView(m Model, w, h int) string {
 				w-2, h-3),
 			w, h)
 	}
+	if reason, none := m.noSource(srcSyscalls); none {
+		return noSourcePanel("Syscalls", reason, w, h)
+	}
 	leftW := w * 2 / 3
 	rightW := w - leftW
 
