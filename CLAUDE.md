@@ -140,11 +140,12 @@ ptop/
 │   ├── report/                    stream events → bounded CaptureReport (#156)
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
+│   │   ├── capture.go             --for: one window through the hub into a report; WatchPID (#156)
 │   │   ├── tls.go                 transport security: TLS/mTLS policy + hot reload (#95)
 │   │   ├── hub.go                 fan-in collectors → fan-out to sinks; probe set in the handshake (#112)
 │   │   ├── targetbuild.go         the target's Go build in the handshake, vcs.* settings only (#157)
 │   │   ├── host.go                the machine and the target cgroup's limits in the handshake (#153)
-│   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer
+│   │   ├── sink.go                Sink iface: gRPC subscriber + JSONL writer (and the report builder)
 │   │   ├── shed.go                which event a full sink queue gives up (#108)
 │   │   ├── registry.go            fixed target vs targets on demand, refcounted (#72)
 │   │   ├── stackid.go             wire stack-id namespace + combined resolver (#89)
@@ -1108,6 +1109,35 @@ are easy to get wrong:
 `report_test.go` plants each rule with known numbers. Each rule broken on its
 own fails its test.
 
+`--for <dur>` is the mode that prints one (`serve.Capture`, `runCapture` in
+`cmd/ptop`). The window opens once `StartFeed` has attached every probe, the
+report builder rides the hub as one more sink, and the report goes to stdout
+with `EmitDefaultValues`: **stdout carries the JSON and nothing else**, so a
+collector that writes to stdout corrupts it (`internal/bpf/memory.go` did).
+The defaults differ from the TUI's on purpose: heap is off unless `--probes`
+names it, and named, it runs under a 5% `--overhead-budget` unless one was
+given. `--tls` is refused. The collectors run with `ListCap` 64
+(`report.CollectorListCap`). The exit code says how the window went, so an agent
+can branch without parsing: 0 ran, 3 the target exited first (`WatchPID`; a
+zombie counts as gone on Linux), 4 nothing attached, 130 interrupted.
+
+- **Plant after every graded axis has taken its first reading.** Each axis
+  reads on its own clock (syscalls every second, io every 500ms), and that
+  reading is its baseline. The selftest's `report` case first planted after
+  the syscalls reading alone: the 50 planted writes landed in io's baseline,
+  and the file had no row.
+- **A rate collector takes its baseline in `Start`.** The `/proc` and libproc
+  lanes of cpu, io, iowait, memory and threads published 0 on their first
+  tick, having nothing to subtract yet. A report's distribution counts that
+  reading, so a process at 100% of a core read a minimum of 0 and a mean of
+  80. The eBPF CPU lane had already been fixed the same way.
+
+The selftest's `report` case drives `serve.Capture` against its own process:
+3,000 `getppid` before the window opens and 7,000 inside must read 7,000, 50
+writes of 4 KiB must be credited to their file to the byte, a disabled probe
+has no section, and a child that exits 3s into a 30s window ends it as
+`TARGET_EXITED`.
+
 ---
 
 ## TUI conventions
@@ -1274,6 +1304,8 @@ ptop --pid <PID> --cpu-sample-hz 250   CPU attribution: stack samples/s/CPU (def
 ptop --pid <PID> --disable heap   drop the one probe that costs the target real time
 ptop --pid <PID> --overhead-budget 5   detach heap when its estimate stays > 5% of the target's CPU for 3 windows (#154)
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
+ptop --pid <PID> --for 10s  one fixed window, then a JSON CaptureReport on stdout and exit (#156)
+ptop --pid <PID> --for 30s --probes cpu,syscalls,io --top 20   only those probes; up to 20 rows per list
 ptop --caps                 which capabilities this binary holds, and which collectors they run
 ptop --version              print version + commit + build date
 ```

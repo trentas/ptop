@@ -16,10 +16,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"google.golang.org/protobuf/encoding/protojson"
+
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/internal/report"
 	"github.com/trentas/ptop/internal/serve"
 	"github.com/trentas/ptop/internal/tui"
 	"github.com/trentas/ptop/pkg/collector"
+	pb "github.com/trentas/ptop/pkg/streampb"
 	"github.com/trentas/ptop/pkg/symbol"
 )
 
@@ -48,7 +52,15 @@ func main() {
 	pprofAddr := flag.String("pprof", "", "Dev: serve net/http/pprof on this addr (e.g. localhost:6060) for profiling ptop itself")
 	showCaps := flag.Bool("caps", false, "Print which capabilities this ptop holds, which collectors will therefore run, and exit")
 	showVer := flag.Bool("version", false, "Print version and exit")
+	forDur := flag.Duration("for", 0, "Capture for this long once every probe has attached, print a bounded JSON report on stdout and exit (1s to 5m, e.g. 10s). With --pid or --cgroup; no TUI, no server")
+	topN := flag.Int("top", report.DefaultTopN, "With --for: the most entries any list in the report carries (1 to 50)")
+	probesSpec := flag.String("probes", "", "With --for: the only subsystems to run, comma-separated. Without it --for runs every one but heap. Known: "+collector.KnownSubsystems())
 	flag.Parse()
+
+	// Which flags were given at all: a default and an explicit value can mean
+	// different things (--overhead-budget under --for).
+	given := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { given[f.Name] = true })
 
 	// 0 on the command line reads as "off" — off meaning no sampling, i.e.
 	// every allocation recorded. SetConfig cannot spell it that way (there its
@@ -85,6 +97,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	// --for (#156) is its own mode, with its own defaults. A wrong combination
+	// is a usage error, exit 2, so an agent tells it from a capture that ran.
+	capture := *forDur != 0
+	budget := *overheadBudget
+	if err := checkCaptureFlags(*forDur, *topN, *probesSpec, *disableSpec, *serveAddr, *withTUI,
+		*tls || *tlsBytes > 0, given); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
+	if capture {
+		if disable, err = captureDisable(*probesSpec, disable); err != nil {
+			fmt.Fprintf(os.Stderr, "error: --probes: %v\n", err)
+			os.Exit(2)
+		}
+		// Heap is off unless named. Named, its cost is bounded: above ~1M
+		// allocations a second it is the whole cost of the capture.
+		if !disable[collector.SubsystemHeap] && !given["overhead-budget"] {
+			budget = captureHeapBudget
+		}
+	}
+
 	// Off-ELF symbols (#119). Resolved here so a bad server URL is a startup
 	// error rather than a warning per stripped module, mid-capture.
 	symbolOpts, err := symbolOptions(*debuginfod, *debuginfodURLs, *symbolCache)
@@ -95,9 +128,10 @@ func main() {
 
 	// One target, named one of two ways (#94). Everything that cannot hold for a
 	// cgroup subtree is rejected here rather than half-working later.
-	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF, *withTUI); err != nil {
+	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF, *withTUI, capture); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
+		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --for 10s [--probes cpu,syscalls,io] [--top 10]")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve unix:///run/ptop.sock")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>")
 		fmt.Fprintln(os.Stderr, "       ptop --cgroup <path|container-id> --serve tcp://127.0.0.1:50051")
@@ -208,7 +242,7 @@ func main() {
 	base := collector.SetConfig{
 		NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap,
 		Disable: disable, HeapSampleBytes: heapSampleBytes, Symbols: symbolOpts,
-		CPUProfHz: *cpuProfHz, OverheadBudgetPct: *overheadBudget,
+		CPUProfHz: *cpuProfHz, OverheadBudgetPct: budget,
 	}
 
 	// Transport security of the event stream (#95) — distinct from --tls, which
@@ -226,21 +260,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A fixed window, then a report (#156).
+	if capture {
+		opts := serve.CaptureOptions{For: *forDur, TopN: *topN, ListCap: report.CollectorListCap, Build: buildIdentity()}
+		if *export {
+			opts.JSONLPath = tui.AbsPath(fmt.Sprintf("ptop-events-%s.jsonl", time.Now().Format("20060102-150405")))
+		}
+		runCapture(fixedTarget(*pid, *cgroupSpec), base, opts)
+		return
+	}
+
 	// Headless mode: serve the collector stream over gRPC instead of the TUI.
 	if *serveAddr != "" {
-		target := serve.TargetPID(*pid)
-		if *cgroupSpec != "" {
-			// Resolve once, up front: a bad spec or an ambiguous container id
-			// fails before any tracer loads, and the operator sees which cgroup
-			// an id actually matched.
-			path, id, err := bpf.ResolveCgroupSpec(*cgroupSpec)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "error: --cgroup %s: %v\n", *cgroupSpec, err)
-				os.Exit(1)
-			}
-			fmt.Fprintf(os.Stderr, "[ptop] targeting cgroup %s (id %d)\n", path, id)
-			target = serve.TargetCgroup(path, id)
-		}
+		target := fixedTarget(*pid, *cgroupSpec)
 
 		opts := serve.Options{TLS: serveTLS, Build: buildIdentity()}
 		if *export {
@@ -262,7 +294,7 @@ func main() {
 
 		var tuiCfg *tui.Config
 		if *withTUI {
-			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, CPUProfHz: *cpuProfHz, Symbols: symbolOpts, OverheadBudgetPct: *overheadBudget}
+			tuiCfg = &tui.Config{PID: *pid, FPS: *fps, NoEBPF: *noEBPF, TLS: tlsEnabled, TLSMaxBytes: tlsCap, Disable: disable, HeapSampleBytes: heapSampleBytes, CPUProfHz: *cpuProfHz, Symbols: symbolOpts, OverheadBudgetPct: budget}
 		}
 		runServe(*serveAddr, target, base, opts, tuiCfg)
 		return
@@ -279,7 +311,7 @@ func main() {
 		HeapSampleBytes:   heapSampleBytes,
 		CPUProfHz:         *cpuProfHz,
 		Symbols:           symbolOpts,
-		OverheadBudgetPct: *overheadBudget,
+		OverheadBudgetPct: budget,
 	})
 }
 
@@ -408,14 +440,19 @@ func runTUI(cfg tui.Config) {
 // drop-in alternative to --pid: the filter runs in the kernel, so it needs
 // eBPF, and it names a set of processes, which the TUI has nowhere to put — its
 // header, thread table and fd list are all one process's. Rejecting those
-// combinations here beats a TUI that renders an empty shell.
-func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI bool) error {
+// combinations here beats a TUI that renders an empty shell. capture is --for
+// (#156): it takes either kind of target, since a report has room for a subtree,
+// but it must name one.
+func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI, capture bool) error {
 	if cgroupSpec == "" {
 		if pid < 0 {
 			return fmt.Errorf("--pid %d is not a valid PID", pid)
 		}
 		if pid > 0 {
 			return nil
+		}
+		if capture {
+			return errors.New("--for needs a target: --pid or --cgroup")
 		}
 		// No target named at all. With --serve that is the on-demand mode
 		// (#72): subscribers name the pid, and each target's collectors live
@@ -433,6 +470,10 @@ func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI boo
 	switch {
 	case pid != 0:
 		return errors.New("--cgroup and --pid name different targets — pass one")
+	case capture && noEBPF:
+		return errors.New("--cgroup needs eBPF (the subtree filter runs in the kernel) — it cannot work with --no-ebpf")
+	case capture:
+		return nil
 	case serveAddr == "":
 		return errors.New("--cgroup requires --serve: a cgroup subtree is a set of processes, and the TUI shows one")
 	case withTUI:
@@ -539,4 +580,144 @@ func runServe(addr string, target serve.Target, base collector.SetConfig, opts s
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// fixedTarget is the target named on the command line. A cgroup is resolved
+// once, up front: a bad spec or an ambiguous container id fails before any
+// tracer loads, and the operator sees which cgroup an id actually matched.
+func fixedTarget(pid int, cgroupSpec string) serve.Target {
+	if cgroupSpec == "" {
+		return serve.TargetPID(pid)
+	}
+	path, id, err := bpf.ResolveCgroupSpec(cgroupSpec)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: --cgroup %s: %v\n", cgroupSpec, err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "[ptop] targeting cgroup %s (id %d)\n", path, id)
+	return serve.TargetCgroup(path, id)
+}
+
+// The bounds of a --for window (#156). Below a second most axes have not
+// published twice, and a total needs two readings. Above five minutes the
+// stream is the right tool, and an agent that forgot a unit has not asked for
+// an hour of probes on someone's host.
+const (
+	minCaptureWindow = time.Second
+	maxCaptureWindow = 5 * time.Minute
+)
+
+// captureHeapBudget is --overhead-budget under --for when heap was asked for
+// and no budget was: the capture detaches the probe rather than let it cost
+// the target more than this share of its CPU.
+const captureHeapBudget = 5.0
+
+// checkCaptureFlags validates --for and the flags that only mean something
+// with it. given names the flags set on the command line.
+func checkCaptureFlags(forDur time.Duration, top int, probes, disableSpec, serveAddr string, withTUI, tlsCapture bool, given map[string]bool) error {
+	if forDur == 0 {
+		for _, f := range []string{"top", "probes"} {
+			if given[f] {
+				return fmt.Errorf("--%s goes with --for", f)
+			}
+		}
+		return nil
+	}
+	switch {
+	case forDur < minCaptureWindow || forDur > maxCaptureWindow:
+		return fmt.Errorf("--for %v: a window runs from %v to %v", forDur, minCaptureWindow, maxCaptureWindow)
+	case top < 1 || top > report.MaxTopN:
+		return fmt.Errorf("--top %d: from 1 to %d", top, report.MaxTopN)
+	case serveAddr != "":
+		return errors.New("--for runs one capture and exits; it cannot also --serve")
+	case withTUI:
+		return errors.New("--for prints a report, not the TUI")
+	case tlsCapture:
+		return errors.New("--for refuses --tls and --tls-bytes: a report never carries the target's TLS traffic")
+	case probes != "" && disableSpec != "":
+		return errors.New("--probes and --disable both choose what runs; pass one")
+	}
+	return nil
+}
+
+// captureDisable is what a --for capture switches off. --probes names what
+// runs and nothing else does. Without it everything runs but heap, whose probe
+// fires on every allocation, plus whatever --disable named.
+func captureDisable(probes string, disable map[string]bool) (map[string]bool, error) {
+	if probes != "" {
+		return collector.ParseOnly(probes)
+	}
+	out := map[string]bool{collector.SubsystemHeap: true}
+	for name := range disable {
+		out[name] = true
+	}
+	return out, nil
+}
+
+// Exit codes of --for (#156). Every one of them but a usage error (2) and a
+// failure before the window opened (1) comes with a report on stdout.
+const (
+	exitMeasured     = 0   // the window ran its course; absent axes are in the probe set
+	exitTargetExited = 3   // the target exited first; the report covers what was seen
+	exitNoProbe      = 4   // nothing attached; the report's probe set says why
+	exitInterrupted  = 130 // SIGINT or SIGTERM, 128 + SIGINT as a shell reports it
+)
+
+// captureExitCode says how a window went, so an agent can branch without
+// parsing the report. A partial probe set is still a measurement: a host
+// without CAP_SYS_ADMIN would otherwise fail every capture.
+func captureExitCode(r *pb.CaptureReport) int {
+	active := false
+	for _, p := range r.GetTarget().GetProbes() {
+		if p.GetState() == pb.ProbeState_PROBE_STATE_ACTIVE {
+			active = true
+			break
+		}
+	}
+	switch {
+	case !active:
+		return exitNoProbe
+	case r.GetWindow().GetEnd() == pb.WindowEnd_WINDOW_END_TARGET_EXITED:
+		return exitTargetExited
+	case r.GetWindow().GetEnd() == pb.WindowEnd_WINDOW_END_INTERRUPTED:
+		return exitInterrupted
+	}
+	return exitMeasured
+}
+
+// reportJSON prints a report. EmitDefaultValues because a zero in a report is
+// a measurement: without it protojson drops every zero, and a section that
+// counted no signals reads as one that did not count.
+var reportJSON = protojson.MarshalOptions{Multiline: true, Indent: "  ", EmitDefaultValues: true}
+
+// runCapture is --for (#156): start the probes, run one window once they have
+// attached, print the report on stdout and exit with what the window says.
+// Nothing else writes to stdout.
+func runCapture(target serve.Target, base collector.SetConfig, opts serve.CaptureOptions) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg := base
+	cfg.PID, cfg.Cgroup = target.PID, target.CgroupPath
+	cfg.ListCap = opts.ListCap
+	feed := collector.StartFeed(ctx, cfg)
+	if !target.IsCgroup() {
+		opts.Exited = serve.WatchPID(ctx, target.PID)
+	}
+	r, err := serve.Capture(ctx, target, feed, stackResolverFor(feed.Set), opts)
+	feed.Stop()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+		os.Exit(1)
+	}
+	out, err := reportJSON.Marshal(r)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "fatal error: report: %v\n", err)
+		os.Exit(1)
+	}
+	if _, err := os.Stdout.Write(append(out, '\n')); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal error: writing the report: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(captureExitCode(r))
 }

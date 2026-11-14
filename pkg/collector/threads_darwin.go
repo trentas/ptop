@@ -40,7 +40,9 @@ func NewThreadsCollector() *ThreadsCollector {
 
 func (c *ThreadsCollector) Start(pid int) error {
 	c.pid = pid
-	if _, err := ListThreads(pid); err != nil {
+	// The first read is the baseline: without one every thread's first
+	// published CPU% is a structural zero (#156).
+	if _, err := c.collect(); err != nil {
 		return fmt.Errorf("Threads collector unavailable for pid %d: %w", pid, err)
 	}
 	go c.loop()

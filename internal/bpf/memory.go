@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -75,7 +76,7 @@ func OpenMemoryTracer(target Target) (*MemoryTracer, error) {
 		if l, err := link.Kprobe("handle_mm_fault", prog, nil); err == nil {
 			t.links = append(t.links, l)
 		} else {
-			fmt.Printf("warning: kprobe handle_mm_fault failed: %v (page faults via /proc fallback)\n", err)
+			fmt.Fprintf(os.Stderr, "warning: kprobe handle_mm_fault failed: %v (page faults via /proc fallback)\n", err)
 		}
 	}
 

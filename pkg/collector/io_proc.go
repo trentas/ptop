@@ -43,10 +43,13 @@ func NewIOThroughputCollector() *IOThroughputCollector {
 
 func (c *IOThroughputCollector) Start(pid int) error {
 	c.pid = pid
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d/io", pid)); err != nil {
-		// /proc/<pid>/io is only readable for processes of the same UID
-		// (or root). If we can't read it, fail immediately — model falls back to mock.
-		return fmt.Errorf("could not open /proc/%d/io: %w", pid, err)
+	// /proc/<pid>/io is only readable for processes of the same UID (or
+	// root), so the read itself is the check: stat succeeds where the read
+	// does not. The first read is also the baseline: without one the first
+	// published sample is a structural zero, which reads as an idle process
+	// (#156).
+	if _, err := c.sample(); err != nil {
+		return fmt.Errorf("could not read /proc/%d/io: %w", pid, err)
 	}
 	go c.loop()
 	return nil

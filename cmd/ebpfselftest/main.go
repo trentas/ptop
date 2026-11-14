@@ -95,6 +95,7 @@ func suite() []selfCase {
 		{"saturation", "a burner capped at 20% CPU is throttled and stalls; lifting the cap shows mid-capture (#151, #153)", checkSaturation},
 		{"net", "socket ownership and bytes, against a peer in another process (#135, #142)", checkNetwork},
 		{"blind", "a probe switched off says disabled, one that cannot attach says failed (#112)", checkBlind},
+		{"report", "a --for window counts the calls made in it and not before, credits writes to their file, and ends when its target exits (#156)", checkReport},
 	}
 }
 

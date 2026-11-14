@@ -39,6 +39,12 @@ const (
 	// MaxTopN bounds --top: past it a report stops fitting the context window
 	// it exists for.
 	MaxTopN = 50
+	// CollectorListCap is the SetConfig.ListCap a capture runs its collectors
+	// with. A report sums lists that each reading cuts, so a site cut from one
+	// reading is missing from that reading's share of the sum. At 8, the
+	// stream's cut, a busy target truncates most readings; past MaxTopN the
+	// report keeps room for every site that could reach its own list.
+	CollectorListCap = 64
 )
 
 // Config tunes a Builder.

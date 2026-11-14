@@ -1,4 +1,4 @@
-//go:build darwin
+//go:build linux || darwin
 
 package collector
 
@@ -8,9 +8,10 @@ import (
 	"time"
 )
 
-// TestCPUCollector_self verifies the darwin CPU collector publishes samples
-// against its own pid and that a CPU-bound goroutine pushes the value above
-// zero. This is an integration smoke test for proc_pidinfo + delta logic.
+// TestCPUCollector_self verifies the non-eBPF CPU collector (libproc on darwin,
+// /proc on linux) publishes samples against its own pid and that a CPU-bound
+// goroutine pushes every one of them above zero, the first included: a first
+// sample taken with no baseline is a structural zero (#156).
 func TestCPUCollector_self(t *testing.T) {
 	cpu := NewCPUCollector()
 	if err := cpu.Start(os.Getpid()); err != nil {
@@ -42,17 +43,12 @@ func TestCPUCollector_self(t *testing.T) {
 			if len(samples) == 0 {
 				t.Fatalf("got no samples after 3s")
 			}
-			// At least one sample after the first delta should be non-zero,
-			// because we have a CPU-burning goroutine.
-			var saw bool
-			for _, s := range samples[1:] {
-				if s.UsagePct > 1.0 { // > 1% — very conservative threshold
-					saw = true
-					break
+			// A goroutine burns CPU the whole time, so no sample may read
+			// idle. 1% is a very conservative threshold.
+			for i, s := range samples {
+				if s.UsagePct < 1.0 {
+					t.Fatalf("CPU-bound goroutine running but sample %d read %.2f%%: %+v", i, s.UsagePct, samples)
 				}
-			}
-			if !saw {
-				t.Fatalf("CPU-bound goroutine running but all samples were <1%%: %+v", samples)
 			}
 			t.Logf("collected %d samples: %+v", len(samples), samples)
 			return

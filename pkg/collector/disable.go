@@ -93,6 +93,28 @@ func ParseDisable(spec string) (map[string]bool, error) {
 	return out, nil
 }
 
+// ParseOnly is ParseDisable's complement (#156): spec names the subsystems to
+// run, and the set it returns disables every other one. An allowlist is the
+// safer shape for a caller that asks for what it needs, such as an agent
+// running a bounded capture: a subsystem added in a later release stays off
+// until it is named.
+func ParseOnly(spec string) (map[string]bool, error) {
+	keep, err := ParseDisable(spec)
+	if err != nil {
+		return nil, err
+	}
+	if len(keep) == 0 {
+		return nil, fmt.Errorf("names no subsystem; known: %s", KnownSubsystems())
+	}
+	out := make(map[string]bool, len(knownSubsystems))
+	for name := range knownSubsystems {
+		if !keep[name] {
+			out[name] = true
+		}
+	}
+	return out, nil
+}
+
 // KnownSubsystems lists every accepted name, sorted, for help text and errors.
 func KnownSubsystems() string {
 	names := make([]string, 0, len(knownSubsystems))
