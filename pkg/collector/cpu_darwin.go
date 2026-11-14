@@ -38,9 +38,11 @@ func NewCPUCollector() *CPUCollector {
 
 func (c *CPUCollector) Start(pid int) error {
 	c.pid = pid
-	// Sanity probe: a successful first call confirms (a) the pid exists and
-	// (b) the current euid is allowed to query it.
-	if _, err := ProcPidTaskInfo(pid); err != nil {
+	// The first read confirms the pid exists and that this euid may query it,
+	// and it is the baseline: without one the first published sample is a
+	// structural zero, which reads as an idle process (#156: a --for window
+	// over a process at 100% reported a minimum of 0).
+	if _, err := c.sample(); err != nil {
 		return fmt.Errorf("CPU collector unavailable for pid %d: %w", pid, err)
 	}
 	go c.loop()

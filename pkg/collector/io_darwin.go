@@ -40,7 +40,9 @@ func NewIOThroughputCollector() *IOThroughputCollector {
 
 func (c *IOThroughputCollector) Start(pid int) error {
 	c.pid = pid
-	if _, err := ProcPidRUsage(pid); err != nil {
+	// The first read is the baseline: without one the first published sample
+	// is a structural zero, which reads as an idle process (#156).
+	if _, err := c.sample(); err != nil {
 		return fmt.Errorf("IO throughput collector unavailable for pid %d: %w", pid, err)
 	}
 	go c.loop()

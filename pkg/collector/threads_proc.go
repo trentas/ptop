@@ -35,7 +35,9 @@ func NewThreadsCollector() *ThreadsCollector {
 
 func (c *ThreadsCollector) Start(pid int) error {
 	c.pid = pid
-	if _, err := os.Stat(fmt.Sprintf("/proc/%d/task", pid)); err != nil {
+	// The first read is the baseline: without one every thread's first
+	// published CPU% is a structural zero (#156).
+	if _, err := c.collect(); err != nil {
 		return fmt.Errorf("process %d not found: %w", pid, err)
 	}
 	go c.loop()

@@ -38,7 +38,9 @@ func NewMemCollector() *MemCollector {
 
 func (c *MemCollector) Start(pid int) error {
 	c.pid = pid
-	if _, err := ProcPidTaskInfo(pid); err != nil {
+	// The first read is the baseline: without one the first published fault
+	// rate is a structural zero (#156).
+	if _, err := c.sample(); err != nil {
 		return fmt.Errorf("Memory collector unavailable for pid %d: %w", pid, err)
 	}
 	go c.loop()
