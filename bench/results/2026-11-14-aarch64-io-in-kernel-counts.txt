@@ -1,0 +1,68 @@
+Host
+----
+arch          aarch64 (ARM), 2 cores (bare metal, daark)
+kernel        7.0.0 (Ubuntu 26.04)
+ptop          fix/181-io-aggregate-in-kernel (with cilium/ebpf v0.14.0) against
+              main (f2fce93, cilium/ebpf v0.13.0), eBPF build (-tags=ebpf)
+ptop flags    --serve unix:///tmp/p.sock --disable everything but io
+target        a Go loop, run 14s in a privileged container, two modes:
+              rw    read(/dev/zero) then write(/dev/null), 512 bytes each
+              open  open(O_CREAT|O_TRUNC), a 1-byte write, close, on /tmp
+command       probecost -window 10s, started 2s after ptop attached
+
+Baseline: 2026-11-14-aarch64-io-fd-identity-cost.txt (#162), where the io
+probe cost this target 4-5x its throughput.
+
+What #181 changes in the io probe:
+  - sys_exit of a read or write adds the call to its file's entry in a hash
+    map (io_stats, keyed by tgid, fd, inode) and to a per-CPU latency
+    histogram, instead of a ring-buffer record per call;
+  - the ring carries an open (as before), a key's first call, and a key's
+    final counts when the target closes its fd;
+  - sys_enter of close(2) by the target: an fd-table walk and a lookup, and
+    for an fd with I/O on it, a record and a delete.
+
+Each mode was run three times, alternating main and the branch. "alone" is
+the target's own rate with no probe attached. "io attached" is the program's
+runs/s over two, which is the target's rate during probecost's window: the
+workload's own average over 14s includes the seconds before ptop attached.
+
+rw
+--
+              alone        io attached   sys_enter ns/run   sys_exit ns/run
+main   1      2,484,714/s  ~400k/s       107                835
+branch 1      2,490,714/s  ~1,043k/s     114                83
+main   2      2,497,071/s  ~413k/s       108                802
+branch 2      2,507,714/s  ~1,043k/s     113                83
+main   3      2,498,786/s  ~404k/s       105                834
+branch 3      2,506,071/s  ~1,055k/s     112                83
+
+sys_exit: 802-835 ns a run on main, 83 on the branch, every round. That was
+the ring record and the wakeup of its reader.
+sys_enter: unchanged within noise (105-108 against 112-114).
+With io attached the target keeps ~1.05M of its 2.5M operations a second,
+against ~0.4M on main: 2.4x slower than alone, where main was 6x slower.
+
+What is left is ~200ns a traced read or write, about half in each program:
+the in-flight entry written at enter and deleted at exit, the fd-table walk
+(#162), and the map update. On this loop a syscall takes ~200ns alone, so the
+probe still doubles it. A target that does any work between its calls pays a
+smaller share.
+
+open
+----
+              alone        io attached   sys_enter ns/run   sys_exit ns/run
+main   1      10,764/s     11,450/s      96                 872
+branch 1      11,521/s     11,529/s      120                929
+main   2      11,400/s     11,679/s      100                980
+branch 2      11,471/s     11,657/s      122                974
+main   3      11,443/s     11,707/s      98                 984
+branch 3      11,571/s     11,721/s      119                959
+
+An open costs ~85us here (the container's /tmp is overlayfs), so the probe
+is lost in it: the target's rate does not move between builds, or between
+alone and attached. sys_enter is ~20 ns higher on the branch, averaged over
+every syscall on the host: that is close(2) now being traced, about 150 ns
+for each close the target makes. sys_exit is unchanged within noise: the
+open record dominates it, and a cycle still puts three records on the ring
+(open, first call, close) where main put two (open, the write).

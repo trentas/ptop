@@ -98,7 +98,7 @@ ptop/
 │   │   │   ├── syscalls.bpf.c     raw_syscalls/sys_{enter,exit}
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
-│   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159); file inode + opens (#162)
+│   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159); file inode + opens (#162); counts kept in the kernel (#181)
 │   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135)
 │   │   │   ├── threads.bpf.c      sched_switch → on-CPU / asleep / run-queue per thread (#150)
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
@@ -200,7 +200,9 @@ ptop/
 │       ├── tls_ebpf.go            libssl uprobe → TLS payload (#55, opt-in --tls)
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
-│       ├── io_ebpf.go             top files + per-op latency
+│       ├── io_ebpf.go             io probe loop: ring records, then the maps, every window (#181)
+│       ├── io_agg_linux.go        the kernel's per-file counts → rows; a key's lives told apart by gen (#181)
+│       ├── io_snapshot.go         IOEBPFSnapshot + the lost row's name (build-tag-free)
 │       ├── io_names_linux.go      a file named as it was when the call ran: (fd, inode) + its open (#162)
 │       ├── network_ebpf.go        connections + RTT + bytes
 │       ├── syscalls_ebpf.go       per-syscall counts + latency
@@ -800,14 +802,14 @@ credited to the old one. The selftest met it: a file whose number a zero-length
 write had cached read 0 writes for 20 planted. Its io case held every file open
 to step around it.
 
-- **Each event carries the file's inode number**, read at `sys_enter` through
-  the task's fd table (`fdfile.bpf.h`, shared with the syscalls axis's fd
-  class, #176). The io probe now needs BTF, like syscalls and network.
-- **Each successful open is a record on the same ring** as the reads and
-  writes: `openat`, `open` and `openat2`, with the new fd, its inode, the dirfd
-  and the path as passed. A ring is consumed in reservation order, and an
-  open's exit comes before any call on the fd it returned, so the name is
-  always known before the first write.
+- **Each call is keyed by the file's inode number**, read at `sys_enter`
+  through the task's fd table (`fdfile.bpf.h`, shared with the syscalls axis's
+  fd class, #176). The io probe now needs BTF, like syscalls and network.
+- **Each successful open is a record on the io ring**: `openat`, `open` and
+  `openat2`, with the new fd, its inode, the dirfd and the path as passed. A
+  ring is consumed in reservation order, and an open's exit comes before any
+  call on the fd it returned, so the name is known before the record of the
+  file's first call (#181).
 - **Names are keyed by (fd, inode)** (`fileNames`). An open names its file. It
   uses the fd's link when it still holds that inode, since that is the canonical
   path, and otherwise the path as passed, made absolute. A file the probe saw no
@@ -817,8 +819,8 @@ to step around it.
   be a wrong answer.
 - **Cgroup mode still names nothing.** The key would need the process too.
 - **The cost is the walk.** It adds 16–33ns per traced read or write in
-  `sys_enter`, out of ~700ns the io probe already spends per event. An open
-  record is lost in the open's own cost
+  `sys_enter`, out of ~700ns the io probe then spent per event (#181 cut that
+  to ~200). An open record is lost in the open's own cost
   (`bench/results/2026-11-14-aarch64-io-fd-identity-cost.txt`).
 
 The selftest's io case:
@@ -840,6 +842,57 @@ that process is also the target. The io case therefore runs a GC and waits
 200ms before it plants anything. Without that wait, the first planted read
 waited up to 30ms for the writer, where it should take 10ms, and missed its
 latency bucket. A real target is another process and never waits on ptop's GC.
+
+### The io probe counts in the kernel (#181)
+
+The io probe sent one ring record per read and write, and the collector summed
+them; nothing downstream used a single call. On a syscall-bound target that
+cost 4-5x its throughput: `sys_exit` took ~800ns a call, nearly all of it the
+record and the wakeup of its reader.
+
+- **The counts stay in the kernel.** `sys_exit` adds the call to `io_stats`, a
+  hash keyed by (tgid, fd, inode), and to a per-CPU histogram in `io_totals`
+  with the five buckets the wire carries. The collector reads both every window
+  and adds what each key gained to its file's row (`ioAgg`).
+- **The ring carries what has to be learned when it happens:**
+  - the open that names a file (#162);
+  - a key's first call, named then, while its fd is most likely still open. A
+    socket or a pipe has no open the probe sees;
+  - a key's final counts when the target closes its fd (`close` is traced at
+    `sys_enter`, while the fd still holds the file). The kernel deletes the key
+    there, so the map holds the files open with I/O, not every file the target
+    ever touched.
+- **A key lives several lives.** A file closed and reopened on the same fd
+  number gets the same (fd, inode) back. The entry's `gen`, when the kernel
+  created it, tells the lives apart, so one is never diffed against another.
+  Within a life each counter only grows, and a high-water mark per counter
+  absorbs a read that caught one a call ahead of another.
+- **A key closed some other way** (`dup2` over its fd, `close_range`, an exit
+  in cgroup mode) stays until the collector retires it, 30s idle, adding what
+  it held first.
+- **Nothing is dropped silently.** `io_stats` is a plain hash, not an LRU: an
+  eviction would lose a key's counts without a trace. Full, it refuses the new
+  key, and the call still counts in the histogram and in a row named
+  `collector.IOLostPath`.
+- **The map is read before the ring is drained**, so the drain delivers the
+  open naming any key in the read. The drain has a 50ms budget. Until one
+  catches up, a key the ring has not announced waits for the next read: named
+  early, from its fd's link, it read `fd=N` for a file already closed.
+
+Measured on daark (`bench/results/2026-11-14-aarch64-io-in-kernel-counts.txt`):
+`sys_exit` went from 802–835ns a run to 83. A read/write loop keeps ~1.05M of
+its 2.5M operations a second, against ~0.4M before. What is left is ~200ns a
+traced call: the in-flight entry, the fd-table walk, the map update. Tracing
+`close` costs ~150ns a close, and an open-heavy target does not move.
+
+The selftest's io case churns 20,480 files, more than `io_stats`' 16,384 keys
+(`bpf.IOStatsMax`, checked against the object at load), each written once and
+closed at once, and grades that every write reached its file and that no call
+went to the lost row. A close that keeps the key fails it (the map fills, 4,448
+writes lost). So does one that deletes the key without the record (every closed
+file's writes lost). The orderings a planted workload cannot force (a close
+record after a map read of the same life, a second life of a key, a torn read,
+a key read before its records) are pinned by `io_agg_linux_test.go`.
 
 ### A total charged when an interval ends reads a long one as zero (#150)
 
