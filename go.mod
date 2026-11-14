@@ -5,7 +5,7 @@ go 1.26.10
 require (
 	github.com/charmbracelet/bubbletea v0.27.0
 	github.com/charmbracelet/lipgloss v0.12.1
-	github.com/cilium/ebpf v0.13.0
+	github.com/cilium/ebpf v0.14.0
 	golang.org/x/sys v0.49.0
 	google.golang.org/grpc v1.84.0
 	google.golang.org/protobuf v1.36.11
