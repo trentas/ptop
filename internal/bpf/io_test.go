@@ -7,45 +7,62 @@ import (
 	"testing"
 )
 
-// decodeIOEvent reads the layout io.bpf.c writes: struct io_event, and for an
-// open struct io_open_event, the header followed by the path (#162).
-func TestDecodeIOEvent(t *testing.T) {
+// decodeIORecord reads the layout io.bpf.c writes: struct io_record, then for
+// an open the path (#162) and for a close the key's io_stat (#181).
+func TestDecodeIORecord(t *testing.T) {
 	le := binary.LittleEndian
-	hdr := func(op uint32, dfd int32) []byte {
-		b := make([]byte, ioEventSize)
-		le.PutUint64(b[0:], 1)   // ts
-		le.PutUint64(b[8:], 2)   // lat
-		le.PutUint64(b[16:], 3)  // bytes
-		le.PutUint64(b[24:], 77) // ino
-		le.PutUint32(b[32:], 5)  // fd
-		le.PutUint32(b[36:], op)
-		le.PutUint32(b[40:], 9) // tgid
-		le.PutUint32(b[44:], uint32(dfd))
+	hdr := func(kind uint32, dfd int32) []byte {
+		b := make([]byte, ioRecordSize)
+		le.PutUint32(b[0:], kind)
+		le.PutUint32(b[4:], 9) // tgid
+		le.PutUint32(b[8:], 5) // fd
+		le.PutUint32(b[12:], uint32(dfd))
+		le.PutUint64(b[16:], 77) // ino
+		le.PutUint64(b[24:], 42) // gen
 		return b
 	}
 
-	ev, err := decodeIOEvent(hdr(IOOpWrite, 0))
+	r, err := decodeIORecord(hdr(IORecSeen, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.TsNs != 1 || ev.LatNs != 2 || ev.Bytes != 3 || ev.Ino != 77 || ev.FD != 5 || ev.Op != IOOpWrite || ev.TGID != 9 || ev.Path != "" {
-		t.Errorf("write decoded as %+v", ev)
+	if r.Kind != IORecSeen || r.TGID != 9 || r.FD != 5 || r.Ino != 77 || r.Gen != 42 || r.Path != "" {
+		t.Errorf("seen decoded as %+v", r)
+	}
+	if r.Key() != (IOKey{TGID: 9, FD: 5, Ino: 77}) {
+		t.Errorf("key %+v", r.Key())
 	}
 
-	open := append(hdr(IOOpOpen, -100), make([]byte, ioPathMax)...)
-	copy(open[ioEventSize:], "logs/app.log")
-	ev, err = decodeIOEvent(open)
+	open := append(hdr(IORecOpen, -100), make([]byte, ioPathMax)...)
+	copy(open[ioRecordSize:], "logs/app.log")
+	r, err = decodeIORecord(open)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ev.Op != IOOpOpen || ev.Dfd != -100 || ev.Path != "logs/app.log" || ev.Ino != 77 {
-		t.Errorf("open decoded as %+v", ev)
+	if r.Kind != IORecOpen || r.Dfd != -100 || r.Path != "logs/app.log" || r.Ino != 77 {
+		t.Errorf("open decoded as %+v", r)
 	}
 
-	if _, err := decodeIOEvent(hdr(IOOpOpen, -100)); err == nil {
-		t.Error("an open without its path decoded")
+	closed := append(hdr(IORecClose, 0), make([]byte, ioStatSize)...)
+	for i, v := range []uint64{42, 3, 4, 700, 9000} {
+		le.PutUint64(closed[ioRecordSize+8*i:], v)
 	}
-	if _, err := decodeIOEvent(make([]byte, ioEventSize-1)); err == nil {
-		t.Error("a short record decoded")
+	r, err = decodeIORecord(closed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Stat != (IOStat{Gen: 42, Reads: 3, Writes: 4, Bytes: 700, LatNs: 9000}) {
+		t.Errorf("close decoded as %+v", r.Stat)
+	}
+
+	for name, raw := range map[string][]byte{
+		"an open without its path":    hdr(IORecOpen, -100),
+		"a close without its counts":  hdr(IORecClose, 0),
+		"a short header":              make([]byte, ioRecordSize-1),
+		"a record of an unknown kind": hdr(7, 0),
+	} {
+		if _, err := decodeIORecord(raw); err == nil {
+			t.Errorf("%s decoded", name)
+		}
 	}
 }

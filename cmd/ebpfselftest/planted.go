@@ -701,7 +701,7 @@ func checkIO(g *grader, pid int) {
 	}
 	pipePath := fmt.Sprintf("pipe:[%d]", st.Ino) // what /proc/<pid>/fd links it as
 
-	var pinErr, reuseErr error
+	var pinErr, reuseErr, churnErr error
 	reusedFD := -1
 	var reusedNames []string
 	c := collector.NewIOEBPFCollector()
@@ -768,6 +768,11 @@ func checkIO(g *grader, pid int) {
 		// Two files on one fd number in turn, whatever the CPU count: the
 		// second must not be credited to the first.
 		reusedFD, reusedNames, reuseErr = plantReusedFD(dir)
+
+		// More files than the probe's per-file map holds, each written once and
+		// closed at once (#181). A close hands the key's counts over and frees
+		// its slot, so none of these may go unattributed.
+		churnErr = plantChurn(dir, churnFiles)
 	})
 	if err != nil {
 		g.broken("io", "attach", err)
@@ -779,6 +784,10 @@ func checkIO(g *grader, pid int) {
 	}
 	if reuseErr != nil {
 		g.broken("io", "two files on one fd number", reuseErr)
+		return
+	}
+	if churnErr != nil {
+		g.broken("io", fmt.Sprintf("%d files written once and closed", churnFiles), churnErr)
 		return
 	}
 
@@ -843,6 +852,38 @@ func checkIO(g *grader, pid int) {
 		}
 	}
 	g.check("io", "writes credited to a bare fd number (#162)", unnamed == 0, "0", fmt.Sprint(unnamed))
+
+	churned := uint64(0)
+	for i := 0; i < churnFiles; i++ {
+		churned += writes[churnPath(dir, i)]
+	}
+	g.check("io", fmt.Sprintf("writes to %d files closed at once, more than the map's %d keys (#181)", churnFiles, bpf.IOStatsMax),
+		churned == churnFiles, fmt.Sprint(churnFiles), fmt.Sprint(churned))
+	g.check("io", "calls the map had no room for (#181)", writes[collector.IOLostPath] == 0, "0", fmt.Sprint(writes[collector.IOLostPath]))
+}
+
+// churnFiles is more files than io_stats has keys: were a closed file's key
+// not freed, the map would fill and the rest would go unattributed (#181).
+const churnFiles = bpf.IOStatsMax + 4096
+
+func churnPath(dir string, i int) string { return fmt.Sprintf("%s/c%d", dir, i) }
+
+// plantChurn writes once to each of n files, closing each at once. The files
+// stay until the case ends, so every write is to an inode, and so a key, of
+// its own; the write is zero-length so that they take no disk.
+func plantChurn(dir string, n int) error {
+	for i := 0; i < n; i++ {
+		fd, err := unix.Open(churnPath(dir, i), unix.O_WRONLY|unix.O_CREAT|unix.O_CLOEXEC, 0o600)
+		if err != nil {
+			return err
+		}
+		_, werr := unix.Write(fd, nil)
+		_ = unix.Close(fd)
+		if werr != nil {
+			return werr
+		}
+	}
+	return nil
 }
 
 // reusedFiles are written in turn on one fd number, each with its own count so

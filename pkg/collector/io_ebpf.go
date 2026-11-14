@@ -3,59 +3,43 @@
 package collector
 
 import (
+	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
-	"strings"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/trentas/ptop/internal/bpf"
 )
 
-// IOEBPFCollector consumes the event ring buffer of the eBPF I/O tracer
-// and aggregates by PATH in 500ms windows. Output is the IOStats.TopFiles +
-// LatencyBuckets, updated and published over the channel.
+// IOEBPFCollector publishes the eBPF io probe's per-file counts and latency
+// histogram every 500ms (IOStats.TopFiles + LatencyBuckets), and its fs events
+// as they happen (#57).
 //
-// A file is named as it was when the call ran, from the open that installed
-// its fd or from the fd's link checked against the event's inode (fileNames,
-// #162). One it cannot name is "fd=N".
+// The probe counts reads and writes in the kernel (#181); ioAgg says how they
+// become rows. A file is named as it was when the call ran, from the open that
+// installed its fd or from the fd's link checked against the call's inode
+// (fileNames, #162). One it cannot name is "fd=N".
 type IOEBPFCollector struct {
-	tracer *bpf.IOTracer
-	ch     chan interface{}
-	stop   chan struct{}
-	pid    int
-	names  *fileNames // read loop only
-
-	mu      sync.Mutex
-	files   map[string]*ioFileAgg // path → counters
-	buckets []LatencyBucket       // pre-built baseline buckets
+	tracer   *bpf.IOTracer
+	ch       chan interface{}
+	wg       sync.WaitGroup
+	stopOnce sync.Once
 }
 
-type ioFileAgg struct {
-	reads    uint64
-	writes   uint64
-	bytes    uint64
-	latSumNs uint64
-	latCount uint64
-	latMaxNs uint64
-	fileType string
-}
+const (
+	ioWindow = 500 * time.Millisecond
+	// ioDrainBudget bounds the ring drain at a window's end, so a burst of
+	// opens cannot hold a snapshot back.
+	ioDrainBudget = 50 * time.Millisecond
+)
 
 func NewIOEBPFCollector() *IOEBPFCollector {
 	return &IOEBPFCollector{
-		// Buffered for the 500ms snapshot ticker plus bursty per-event fs
-		// events (#57); all senders drop on overflow.
-		ch:    make(chan interface{}, 64),
-		stop:  make(chan struct{}),
-		files: make(map[string]*ioFileAgg),
-		buckets: []LatencyBucket{
-			{Label: "<0.1ms"},
-			{Label: "0.1-1ms"},
-			{Label: "1-5ms"},
-			{Label: "5-20ms"},
-			{Label: ">20ms"},
-		},
+		// Buffered for the 500ms snapshot plus bursty per-event fs events
+		// (#57); all senders drop on overflow.
+		ch: make(chan interface{}, 64),
 	}
 }
 
@@ -77,55 +61,102 @@ func (c *IOEBPFCollector) start(t bpf.Target, pid int) error {
 		return fmt.Errorf("io eBPF: %w", err)
 	}
 	c.tracer = tracer
-	c.pid = pid
-	c.names = newFileNames(pid)
-	go c.readLoop()    // consumes io_events ringbuf, populates c.files
-	go c.publishLoop() // every 500ms publishes a snapshot of the aggregates
-	// Drain fs-semantics events (#57). tracer is passed explicitly (not read
-	// from the field) so Stop()'s `c.tracer = nil` can't race this goroutine;
-	// Close() shuts the fs ring-buffer reader, unblocking NextFSEvent with io.EOF.
+	c.wg.Add(2)
+	go c.loop(tracer, newIOAgg(pid))
 	go c.fsReadLoop(tracer)
 	return nil
 }
 
+// Stop interrupts both loops, waits for them, and only then closes the tracer:
+// the loop reads the maps between ring reads. Idempotent, and safe when Start
+// failed.
 func (c *IOEBPFCollector) Stop() {
-	close(c.stop)
-	if c.tracer != nil {
+	c.stopOnce.Do(func() {
+		if c.tracer == nil {
+			return
+		}
+		c.tracer.Interrupt()
+		c.wg.Wait()
 		_ = c.tracer.Close()
-		c.tracer = nil
-	}
+	})
 }
 
 func (c *IOEBPFCollector) Subscribe() <-chan interface{} {
 	return c.ch
 }
 
-// readLoop reads events from the ring buffer indefinitely, updating
-// aggregates in place. Ringbuf.Read blocks until an event arrives — when
-// the tracer closes, it returns io.EOF and the goroutine exits.
-func (c *IOEBPFCollector) readLoop() {
+// loop reads the ring until each window ends, then reads the maps and
+// publishes a snapshot. It exits when the tracer is interrupted.
+func (c *IOEBPFCollector) loop(t *bpf.IOTracer, a *ioAgg) {
+	defer c.wg.Done()
+	next := time.Now().Add(ioWindow)
+	t.SetDeadline(next)
 	for {
-		ev, err := c.tracer.Next()
-		if err != nil {
-			if err == io.EOF {
-				return
-			}
-			// transient error; try again
+		r, err := t.Next()
+		switch {
+		case err == nil:
+			a.record(r, time.Now())
+		case errors.Is(err, io.EOF):
+			return
+		}
+		// A deadline, a record, or a short one: the window may be over either
+		// way, and a stream that never pauses must not hold it open.
+		if time.Now().Before(next) {
 			continue
 		}
-		c.processEvent(ev)
+		if !c.window(t, a) {
+			return
+		}
+		next = next.Add(ioWindow)
+		if now := time.Now(); !next.After(now) {
+			next = now.Add(ioWindow)
+		}
+		t.SetDeadline(next)
 	}
+}
+
+// window reads the maps, drains the ring, folds, and publishes. The map is read
+// BEFORE the drain: every key in that read was created after the open naming
+// it was recorded, so the drain delivers the name before the key is folded.
+// Returns false when the tracer was interrupted.
+func (c *IOEBPFCollector) window(t *bpf.IOTracer, a *ioAgg) bool {
+	stats, serr := t.Stats()
+	totals, terr := t.Totals()
+
+	now := time.Now()
+	t.SetDeadline(now)
+	caughtUp := false
+	for !caughtUp && time.Since(now) < ioDrainBudget {
+		r, err := t.Next()
+		switch {
+		case err == nil:
+			a.record(r, time.Now())
+		case errors.Is(err, io.EOF):
+			return false
+		case errors.Is(err, os.ErrDeadlineExceeded):
+			caughtUp = true
+		}
+	}
+
+	now = time.Now()
+	if serr == nil {
+		for _, k := range a.read(stats, now, caughtUp) {
+			if v, ok, err := t.RetireStat(k); err == nil && ok {
+				a.retired(k, v, now)
+			}
+		}
+	}
+	publish(c.ch, a.snapshot(totals, terr == nil))
+	return true
 }
 
 // fsReadLoop drains the fs-semantics ring buffer (#57), decoding each record
 // into an FSEvent and publishing it on the shared channel. It exits on io.EOF
-// (the tracer was closed). A garbled record is logged-by-skip — the stream
-// continues. Sends are non-blocking: under backpressure fs events are dropped,
-// consistent with every other collector.
+// (the tracer was interrupted). A garbled record is logged-by-skip — the
+// stream continues. Sends are non-blocking: under backpressure fs events are
+// dropped, consistent with every other collector.
 func (c *IOEBPFCollector) fsReadLoop(tracer *bpf.IOTracer) {
-	if tracer == nil {
-		return
-	}
+	defer c.wg.Done()
 	for {
 		rec, err := tracer.NextFSEvent()
 		if err != nil {
@@ -136,158 +167,5 @@ func (c *IOEBPFCollector) fsReadLoop(tracer *bpf.IOTracer) {
 		}
 		fe := decodeFSEvent(time.Now(), rec.Op, rec.Ret, rec.Path[:], rec.NewPath[:])
 		publish(c.ch, fe)
-	}
-}
-
-func (c *IOEBPFCollector) processEvent(ev bpf.IOEvent) {
-	now := time.Now()
-	if ev.Op == bpf.IOOpOpen {
-		c.names.opened(ev.FD, ev.Ino, ev.Dfd, ev.Path, now)
-		return
-	}
-	path := c.names.name(ev.FD, ev.Ino, now)
-	if path == "" {
-		path = fmt.Sprintf("fd=%d", ev.FD)
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	agg, ok := c.files[path]
-	if !ok {
-		agg = &ioFileAgg{fileType: classifyPath(path)}
-		c.files[path] = agg
-	}
-	if ev.Op == bpf.IOOpRead {
-		agg.reads++
-	} else {
-		agg.writes++
-	}
-	agg.bytes += ev.Bytes
-	agg.latSumNs += ev.LatNs
-	agg.latCount++
-	if ev.LatNs > agg.latMaxNs {
-		agg.latMaxNs = ev.LatNs
-	}
-
-	// Latency histogram (in ms)
-	latMs := float64(ev.LatNs) / 1e6
-	bIdx := bucketIndexMs(latMs)
-	if bIdx >= 0 && bIdx < len(c.buckets) {
-		if ev.Op == bpf.IOOpRead {
-			c.buckets[bIdx].Read++
-		} else {
-			c.buckets[bIdx].Write++
-		}
-	}
-}
-
-// publishLoop snapshots the aggregates every 500ms and publishes a partial
-// IOStats. Histogram resets every publish — buckets reflect the current
-// window, not cumulative (more useful for the UI). TopFiles remain
-// cumulative (consistent with /proc/<pid>/io which is cumulative).
-func (c *IOEBPFCollector) publishLoop() {
-	t := time.NewTicker(500 * time.Millisecond)
-	defer t.Stop()
-	for {
-		select {
-		case <-c.stop:
-			return
-		case <-t.C:
-			snap := c.snapshot()
-			publish(c.ch, snap)
-		}
-	}
-}
-
-func (c *IOEBPFCollector) snapshot() IOEBPFSnapshot {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	files := make([]IOFileStats, 0, len(c.files))
-	for path, agg := range c.files {
-		latAvgMs := 0.0
-		if agg.latCount > 0 {
-			latAvgMs = float64(agg.latSumNs) / float64(agg.latCount) / 1e6
-		}
-		files = append(files, IOFileStats{
-			Path:      path,
-			Type:      agg.fileType,
-			Reads:     agg.reads,
-			Writes:    agg.writes,
-			Bytes:     agg.bytes,
-			LatencyMs: latAvgMs,
-			Fsyncs:    0, // no fsync tracking yet
-		})
-	}
-
-	// Copy buckets and reset the cumulative
-	bucketsCopy := append([]LatencyBucket(nil), c.buckets...)
-	for i := range c.buckets {
-		c.buckets[i].Read = 0
-		c.buckets[i].Write = 0
-	}
-
-	return IOEBPFSnapshot{
-		TopFiles: files,
-		Buckets:  bucketsCopy,
-	}
-}
-
-// IOEBPFSnapshot is the published payload. Model updates IOStats.TopFiles
-// and IOStats.LatencyBuckets from this.
-type IOEBPFSnapshot struct {
-	TopFiles []IOFileStats
-	Buckets  []LatencyBucket
-}
-
-// classifyPath: type heuristic to color the type in F5.
-// Stays compatible with the mockup: db / log / cfg / tmp / proc / file / sock.
-func classifyPath(p string) string {
-	switch {
-	case strings.HasPrefix(p, "socket:"):
-		return "sock"
-	case strings.HasPrefix(p, "pipe:"):
-		return "pipe"
-	case strings.HasPrefix(p, "anon_inode:"):
-		return "anon"
-	case strings.Contains(p, "/proc/"):
-		return "proc"
-	case strings.Contains(p, "/tmp/"):
-		return "tmp"
-	case strings.HasSuffix(p, ".log") || strings.Contains(p, "/log/"):
-		return "log"
-	case strings.HasSuffix(p, ".db") || strings.HasSuffix(p, ".sqlite") ||
-		strings.Contains(p, "/db/") || strings.HasSuffix(p, ".db-shm") ||
-		strings.HasSuffix(p, ".db-wal"):
-		return "db"
-	case strings.HasSuffix(p, ".json") || strings.HasSuffix(p, ".yaml") ||
-		strings.HasSuffix(p, ".toml") || strings.HasSuffix(p, ".conf") ||
-		strings.HasSuffix(p, ".ini") || strings.HasSuffix(p, ".cfg") ||
-		strings.Contains(p, "/etc/"):
-		return "cfg"
-	default:
-		// Resolve absolute if path is relative (rare case, defensive)
-		if !filepath.IsAbs(p) {
-			return "file"
-		}
-		return "file"
-	}
-}
-
-// bucketIndexMs maps latency in ms to the right histogram bucket.
-// Buckets: <0.1, 0.1-1, 1-5, 5-20, >20.
-func bucketIndexMs(ms float64) int {
-	switch {
-	case ms < 0.1:
-		return 0
-	case ms < 1:
-		return 1
-	case ms < 5:
-		return 2
-	case ms < 20:
-		return 3
-	default:
-		return 4
 	}
 }

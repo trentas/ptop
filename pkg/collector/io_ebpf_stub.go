@@ -5,10 +5,6 @@ package collector
 import "errors"
 
 type IOEBPFCollector struct{}
-type IOEBPFSnapshot struct {
-	TopFiles []IOFileStats
-	Buckets  []LatencyBucket
-}
 
 func NewIOEBPFCollector() *IOEBPFCollector { return &IOEBPFCollector{} }
 func (*IOEBPFCollector) Start(int) error {
@@ -20,5 +16,5 @@ func (*IOEBPFCollector) StartCgroup(string) error {
 	return errors.New("eBPF io collector not available in this build")
 }
 
-func (*IOEBPFCollector) Stop()                          {}
-func (*IOEBPFCollector) Subscribe() <-chan interface{}  { return nil }
+func (*IOEBPFCollector) Stop()                         {}
+func (*IOEBPFCollector) Subscribe() <-chan interface{} { return nil }
