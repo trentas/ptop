@@ -82,24 +82,53 @@ func (m Model) probeReason(probe string, ps panelSource) string {
 	if !ok {
 		return "no collector started for this target"
 	}
-	switch st.State {
-	case collector.ProbeDisabled:
-		return "disabled: " + st.Detail
-	case collector.ProbeFailed:
-		return "failed to attach: " + st.Detail
-	case collector.ProbeUnsupported:
-		return st.Detail
-	case collector.ProbeActive:
-		// The probe runs, but not the lane this panel needs: io is active on
-		// /proc (throughput, iowait) while the per-file view is eBPF-only.
-		if ps == srcIOFiles {
-			if m.cfg.NoEBPF {
-				return "per-file I/O needs eBPF: disabled by --no-ebpf"
-			}
-			return "per-file I/O needs eBPF, and its probe did not attach (see ptop --caps)"
+	if reason, off := inactiveReason(st); off {
+		return reason
+	}
+	// The probe runs, but not the lane this panel needs: io is active on /proc
+	// (throughput, iowait) while the per-file view is eBPF-only.
+	if ps == srcIOFiles {
+		if m.cfg.NoEBPF {
+			return "per-file I/O needs eBPF: disabled by --no-ebpf"
 		}
+		return "per-file I/O needs eBPF, and its probe did not attach (see ptop --caps)"
 	}
 	return "no collector started for this target"
+}
+
+// inactiveReason is why a probe that is not running is not: the flag that
+// switched it off, the attach error, or what the target or platform lacks.
+// An active probe has none.
+func inactiveReason(st collector.ProbeStatus) (string, bool) {
+	switch st.State {
+	case collector.ProbeDisabled:
+		return "disabled: " + st.Detail, true
+	case collector.ProbeFailed:
+		return "failed to attach: " + st.Detail, true
+	case collector.ProbeUnsupported:
+		return st.Detail, true
+	}
+	return "", false
+}
+
+// probeOff is inactiveReason for a subsystem by name, false when the probe set
+// holds no record of it.
+func (m Model) probeOff(probe string) (string, bool) {
+	st, ok := m.probes[probe]
+	if !ok {
+		return "", false
+	}
+	return inactiveReason(st)
+}
+
+// anyEBPF reports whether any probe is producing data through eBPF.
+func (m Model) anyEBPF() bool {
+	for _, st := range m.probes {
+		if st.State == collector.ProbeActive && st.Source == "eBPF" {
+			return true
+		}
+	}
+	return false
 }
 
 // renderNoSource is the body of a panel whose subsystem has no source: a

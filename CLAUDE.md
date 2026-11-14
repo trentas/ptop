@@ -341,11 +341,17 @@ The `?` help overlay surfaces the active source per subsystem (`real via eBPF`,
 
 **Simulated data exists only in the demo**, when nothing at all is attached
 (`Model.demo`, an empty `Set`); `--pid` is required, so in practice that is the
-tests and the dump fixtures. Beside a real target nothing is seeded or ticked.
+tests (the dump fixtures attach to pid 1). Beside a real target nothing is
+seeded or ticked.
 A panel whose subsystem has no source renders `renderNoSource` with the reason
 the probe set recorded (`disabled: --no-ebpf`, `failed to attach: …`, or the
 platform), via `Model.noSource` in `internal/tui/nosource.go`. A field no
-collector measures (`IOStats.Fsyncs`, `Opens`) renders `—`, never `0`.
+collector measures (`IOStats.Fsyncs`, `Opens`) renders `—`, never `0`. The
+overlay and the footer read the same record: an overlay row for a probe that is
+never simulated (heap, cpu-sites, signals, lifecycle, security, tls) carries the
+probe's reason before any fixed "needs eBPF", and the footer names the lane that
+attached and where the CPU axis came from (`platformSourceLabel`), never what
+the build could do.
 
 It used to be a third source per subsystem, flagged only in the `?` overlay
 (#149). A `--no-ebpf` run showed invented connections and `/data/db` files

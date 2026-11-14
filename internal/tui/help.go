@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // sourceProcOrEmpty returns the OS-appropriate non-eBPF source label
@@ -44,9 +46,9 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 	statusNA := lipgloss.NewStyle().Foreground(ColorRed).Background(ColorPanel).Render("✕ unavailable")
 	sourceStyle := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Italic(true)
 
-	// statusRowNA renders a subsystem that is structurally unavailable on
-	// this OS (e.g. syscalls on macOS Tier 1). Distinct from "mock" because
-	// no user toggle can flip it to real — it's a platform limitation.
+	// statusRowNA renders a subsystem with no source, and why: the platform
+	// has none (syscalls on macOS Tier 1), a flag switched it off, or its
+	// probe failed to attach.
 	statusRowNA := func(name, reason string) string {
 		row := keyStyle.Render(padRight(name, 14)) + descStyle.Render(" ") + statusNA
 		if reason != "" {
@@ -87,6 +89,21 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 		return statusRowSrc(name, ps, source)
 	}
 
+	// statusRowProbe renders a subsystem that is never simulated: real with
+	// its source, else unavailable with the reason its probe recorded (the
+	// flag, the attach error), and what it needs only when the probe set has
+	// no record of it. A fixed "needs eBPF" beside a probe that failed on a
+	// missing capability sent the operator to the wrong fix.
+	statusRowProbe := func(name, probe, source, needs string) string {
+		if source != "" {
+			return statusRow(name, false, source)
+		}
+		if reason, off := m.probeOff(probe); off {
+			return statusRowNA(name, reason)
+		}
+		return statusRowNA(name, needs)
+	}
+
 	lines := []string{
 		sectionTitle.Render("Navigation"),
 		row("F1-F7", "Switch tab"),
@@ -115,40 +132,24 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			srcSyscalls, m.syscallsSource),
 		statusRowSrc("cpu", srcCPU, m.cpuSource),
 		// CPU attribution (#125) is eBPF-only and never simulated: "real via
-		// eBPF" when the sampler attached, else genuinely unavailable (macOS,
-		// --no-ebpf, or attach failure) — never "mock". Listed even though no
-		// panel shows it yet: an overlay that omits a running probe is the same
-		// lie as one that misnames its source.
-		func() string {
-			if m.cpuProfSource != "" {
-				return statusRow("cpu-sites", false, m.cpuProfSource)
-			}
-			return statusRowNA("cpu-sites", "needs eBPF (perf_event stack sampler)")
-		}(),
+		// eBPF" when the sampler attached, else unavailable with why (macOS,
+		// --no-ebpf, or the attach error) — never "mock".
+		statusRowProbe("cpu-sites", collector.SubsystemCPUProf, m.cpuProfSource,
+			"needs eBPF (perf_event stack sampler)"),
 		statusRowMaybeNA("io-files", ioFilesUnavailable, "no public per-file VFS hook on macOS (see #22)",
 			srcIOFiles, m.ioFilesSource),
 		statusRowSrc("network", srcNetwork, m.netSource),
 		statusRowSrc("memory", srcMemory, m.memSource),
-		// Heap (malloc/free) is eBPF-only and never simulated: it's "real via
-		// eBPF" when the libc uprobes attached, else genuinely unavailable
-		// (macOS, --no-ebpf, or a static / non-libc target) — never "mock".
-		func() string {
-			if m.heapSource != "" {
-				return statusRow("heap", false, m.heapSource)
-			}
-			return statusRowNA("heap", "needs eBPF + a libc-linked target")
-		}(),
+		// Heap is eBPF-only and never simulated: "real via eBPF" when the libc
+		// or Go allocator uprobes attached, else unavailable with why (macOS,
+		// --no-ebpf, the attach error, or a target with neither allocator).
+		statusRowProbe("heap", collector.SubsystemHeap, m.heapSource,
+			"needs eBPF + a libc-linked or Go target"),
 		statusRowMaybeNA("locks", locksUnavailable, "no public __ulock_wait hook on macOS (see #22)",
 			srcLocks, m.locksSource),
-		// Signals (#58) are eBPF-only and never simulated: "real via eBPF" when
-		// the signal_generate tracepoint attached, else genuinely unavailable
-		// (macOS, --no-ebpf, or attach failure) — never "mock".
-		func() string {
-			if m.signalsSource != "" {
-				return statusRow("signals", false, m.signalsSource)
-			}
-			return statusRowNA("signals", "needs eBPF (signal_generate tracepoint)")
-		}(),
+		// Signals (#58) are eBPF-only and never simulated.
+		statusRowProbe("signals", collector.SubsystemSignals, m.signalsSource,
+			"needs eBPF (signal_generate tracepoint)"),
 		// TLS payload (#55) is opt-in (--tls) and stream/export-only. "off" when
 		// not requested; "real via eBPF (libssl)" when attached; "unavailable"
 		// when requested but no libssl is mapped (Go/static target).
@@ -157,7 +158,8 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 				return statusRow("tls", false, m.tlsSource+" (libssl)")
 			}
 			if m.cfg.TLS {
-				return statusRowNA("tls", "no libssl mapped (Go/static target)")
+				return statusRowProbe("tls", collector.SubsystemTLS, "",
+					"no libssl mapped (Go/static target)")
 			}
 			return keyStyle.Render(padRight("tls", 14)) + descStyle.Render(" ") +
 				lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Render("○ off") +
@@ -176,24 +178,13 @@ func renderHelpOverlayWithStatus(m Model, w, h int) string {
 			}
 			return statusRowNA("context", "namespace/cgroup is Linux-only")
 		}(),
-		// Exec lineage (#60) is eBPF-only and never simulated: "real via eBPF"
-		// when the sched fork/exec/exit tracepoints attached, else genuinely
-		// unavailable (macOS, --no-ebpf, or attach failure) — never "mock".
-		func() string {
-			if m.lifecycleSource != "" {
-				return statusRow("lifecycle", false, m.lifecycleSource)
-			}
-			return statusRowNA("lifecycle", "needs eBPF (sched fork/exec/exit)")
-		}(),
-		// Security (#59) is eBPF-only and never simulated: "real via eBPF" when
-		// the mmap/mprotect tracepoints attached (LSM is best-effort on top),
-		// else unavailable (macOS, --no-ebpf, or attach failure) — never "mock".
-		func() string {
-			if m.securitySource != "" {
-				return statusRow("security", false, m.securitySource)
-			}
-			return statusRowNA("security", "needs eBPF (PROT_EXEC mmap/mprotect, SELinux AVC)")
-		}(),
+		// Exec lineage (#60) is eBPF-only and never simulated.
+		statusRowProbe("lifecycle", collector.SubsystemLifecycle, m.lifecycleSource,
+			"needs eBPF (sched fork/exec/exit)"),
+		// Security (#59) is eBPF-only and never simulated; LSM is best-effort
+		// on top of the mmap/mprotect tracepoints.
+		statusRowProbe("security", collector.SubsystemSecurity, m.securitySource,
+			"needs eBPF (PROT_EXEC mmap/mprotect, SELinux AVC)"),
 		// The view is one consumer of the collector bus (#71), never the only
 		// one. A non-zero drop count is the honest signal that this view fell
 		// behind and is missing values — the same thing a stream subscriber is

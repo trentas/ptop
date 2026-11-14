@@ -63,7 +63,7 @@ func renderStatusBar(m Model) string {
 				Background(barBg).
 				Render("● REC"))
 		}
-		rightParts = append(rightParts, lblStyle.Render(statusBarSourceLabel()))
+		rightParts = append(rightParts, lblStyle.Render(m.sourceLabel()))
 	}
 	right := strings.Join(rightParts, lblStyle.Render("  "))
 
@@ -134,4 +134,14 @@ func truncateLeft(s string, w int) string {
 		return "…"
 	}
 	return "…" + string(r[len(r)-(w-1):])
+}
+
+// sourceLabel is the footer's account of where the numbers come from. The demo
+// says it is one; anything else names the sources that actually attached
+// (platformSourceLabel).
+func (m Model) sourceLabel() string {
+	if m.demo {
+		return "demo · simulated data"
+	}
+	return platformSourceLabel(m)
 }

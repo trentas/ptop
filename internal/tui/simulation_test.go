@@ -257,3 +257,48 @@ func lineWith(s, substr string) string {
 	}
 	return ""
 }
+
+// The overlay's rows for the probes that are never simulated say why a probe
+// is off, from the probe set, and fall back to what it needs only when the set
+// has no record. A fixed "needs eBPF" beside a probe that failed on a missing
+// capability pointed at the wrong fix.
+func TestOverlayRowsCarryTheProbeReason(t *testing.T) {
+	m := modelOnSet(t, procOnlySet())
+	m.cfg.TLS = true
+	m.probes = map[string]collector.ProbeStatus{
+		collector.SubsystemHeap:      {Name: collector.SubsystemHeap, State: collector.ProbeFailed, Detail: "opening mem: EACCES"},
+		collector.SubsystemCPUProf:   {Name: collector.SubsystemCPUProf, State: collector.ProbeFailed, Detail: "perf_event_open: EPERM"},
+		collector.SubsystemSignals:   {Name: collector.SubsystemSignals, State: collector.ProbeDisabled, Detail: "--no-ebpf"},
+		collector.SubsystemLifecycle: {Name: collector.SubsystemLifecycle, State: collector.ProbeDisabled, Detail: "--disable lifecycle"},
+		collector.SubsystemSecurity:  {Name: collector.SubsystemSecurity, State: collector.ProbeUnsupported, Detail: "no eBPF here"},
+		collector.SubsystemTLS:       {Name: collector.SubsystemTLS, State: collector.ProbeFailed, Detail: "no libssl in maps"},
+	}
+	want := map[string]string{
+		"heap":      "failed to attach: opening mem: EACCES",
+		"cpu-sites": "failed to attach: perf_event_open: EPERM",
+		"signals":   "disabled: --no-ebpf",
+		"lifecycle": "disabled: --disable lifecycle",
+		"security":  "unavailable — no eBPF here",
+		"tls":       "failed to attach: no libssl in maps",
+	}
+	help := renderHelpOverlayWithStatus(m, 200, 200)
+	for row, reason := range want {
+		if line := lineWith(help, padRight(row, 14)); !strings.Contains(line, reason) {
+			t.Errorf("overlay %s row = %q, want %q", row, strings.TrimSpace(line), reason)
+		}
+	}
+
+	// No record: what the subsystem needs, as before.
+	m.probes = nil
+	help = renderHelpOverlayWithStatus(m, 200, 200)
+	if line := lineWith(help, padRight("heap", 14)); !strings.Contains(line, "needs eBPF") {
+		t.Errorf("overlay heap row with no probe record = %q, want what it needs", strings.TrimSpace(line))
+	}
+}
+
+// The demo's footer says it is one, not which kernel it read from.
+func TestDemoFooterSaysDemo(t *testing.T) {
+	if bar := renderStatusBar(demoModel(t)); !strings.Contains(bar, "demo · simulated data") {
+		t.Errorf("demo footer = %q", strings.TrimSpace(bar))
+	}
+}
