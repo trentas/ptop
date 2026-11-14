@@ -38,12 +38,13 @@ type CPUProfEBPFCollector struct {
 	stackCache map[int32][]symbol.Frame // stack_id → full leaf-first frames
 	lastAt     time.Time                // publishLoop-only: window baseline
 	lastFired  uint64                   // publishLoop-only: delivered samples
+	listCap    int                      // sites per reading; set before Start
 }
 
 const (
 	// cpuProfTopSites matches heapTopCallSites: the list is a top-N and the
 	// omitted totals are what make its truncation readable.
-	cpuProfTopSites = 8
+	cpuProfTopSites = DefaultListCap
 
 	// cpuProfPublishInterval matches the CPU magnitude axis's cadence, so a
 	// consumer lines the two up without resampling. At the default rate a busy
@@ -64,6 +65,15 @@ func NewCPUProfEBPFCollector(hz int, syms *symbol.Debuginfod) *CPUProfEBPFCollec
 		stop:       make(chan struct{}),
 		siteCache:  make(map[int32]rawCPUSite),
 		stackCache: make(map[int32][]symbol.Frame),
+		listCap:    cpuProfTopSites,
+	}
+}
+
+// SetListCap sets how many sites a profile carries (SetConfig.ListCap). 0
+// keeps the default. Call it before Start.
+func (c *CPUProfEBPFCollector) SetListCap(n int) {
+	if n > 0 {
+		c.listCap = n
 	}
 }
 
@@ -166,7 +176,7 @@ func (c *CPUProfEBPFCollector) snapshot() (CPUProfile, error) {
 		raw = append(raw, r)
 	}
 	sites, unresolved := foldCPUSites(raw)
-	top, omitted := topCPUSites(sites, cpuProfTopSites)
+	top, omitted := topCPUSites(sites, c.listCap)
 
 	return CPUProfile{
 		Timestamp:         now,

@@ -1,0 +1,510 @@
+syntax = "proto3";
+
+package ptop.v1;
+
+import "event.proto";
+import "service.proto";
+
+option go_package = "github.com/trentas/ptop/pkg/streampb;streampb";
+
+// CaptureReport is the digest of one fixed window over one target (#156):
+// what `ptop --for <duration>` prints. It sits between the TUI and the raw
+// stream. Every list is cut to window.top_n, and every cut says what it left
+// out, so the whole report fits in an agent's context window and no absence
+// has to be guessed.
+//
+// It reports measurements and interprets none. Four rules hold in every
+// section:
+//
+//   - A section is absent when its axis produced nothing in the window, and
+//     target.probes says why. A section that counts events (signals,
+//     lifecycle, security, the fs events in io, the errors in network) is
+//     present whenever its probe is active, so a zero there is a measurement.
+//   - A reading-by-reading axis (CPU%, a thread's shares, RSS) is a
+//     Distribution over every reading published during the window.
+//   - A total is the difference between the axis's first reading in the
+//     window and its last: the first reading is the baseline. It therefore
+//     covers span_ms, which is shorter than the window by up to one reading
+//     interval, and a rate is the total over span_ms. With readings < 2 there
+//     is no interval and the totals are zero by construction, not measured.
+//   - A list ranks by time where the kernel measured time (syscalls, io,
+//     locks), by volume elsewhere, and carries the totals of what it left
+//     out. A per-site figure is exact when truncated_readings is 0: no reading
+//     the collector published had already been cut before the report summed it.
+message CaptureReport {
+  // The same handshake a stream subscriber receives first: the scope, the
+  // probe set (#112), which ptop measured (#145), what the target is built
+  // from (#157), the machine and the cgroup limits (#153). The probe set is
+  // the state at the start of the window; probe_changes is what moved since.
+  TargetInfo target = 1;
+  CaptureWindow window = 2;
+  // Every probe that changed state during the window, in order (#154): the
+  // heap probe detached by --overhead-budget, for one. A section whose probe
+  // stopped covers the readings before the change.
+  repeated ProbeTransition probe_changes = 3;
+  // The target's execution context, from the last reading in the window (#60).
+  ProcContext context = 4;
+  HostReport host = 5;
+  CostReport cost = 6;
+  CpuReport cpu = 7;
+  CpuProfileReport cpu_profile = 8;
+  ThreadsReport threads = 9;
+  MemoryReport memory = 10;
+  HeapReport heap = 11;
+  SyscallsReport syscalls = 12;
+  IoReport io = 13;
+  NetworkReport network = 14;
+  LocksReport locks = 15;
+  SignalsReport signals = 16;
+  LifecycleReport lifecycle = 17;
+  SecurityReport security = 18;
+  FdReport fds = 19;
+}
+
+// WindowEnd is how a capture window ended.
+enum WindowEnd {
+  WINDOW_END_UNSPECIFIED = 0;
+  // It ran the duration that was asked for.
+  WINDOW_END_COMPLETE = 1;
+  // The target exited first. The report covers what was observed until then,
+  // and duration_ms says how long that was.
+  WINDOW_END_TARGET_EXITED = 2;
+  // ptop was interrupted (SIGINT, SIGTERM) before the duration ran out.
+  WINDOW_END_INTERRUPTED = 3;
+}
+
+// CaptureWindow is when the capture ran and how it ended.
+message CaptureWindow {
+  // When every probe had attached: loading the eBPF programs takes a second
+  // or two, and that time is not part of the window.
+  int64 start_unix_nano = 1;
+  int64 end_unix_nano = 2;
+  // What was asked for, and what ran: shorter when the window did not
+  // complete.
+  uint64 requested_ms = 3;
+  uint64 duration_ms = 4;
+  WindowEnd end = 5;
+  // The most entries any list in the report carries.
+  uint32 top_n = 6;
+}
+
+// ProbeTransition is one probe's change of state, and when it happened.
+message ProbeTransition {
+  int64 ts_unix_nano = 1;
+  ProbeInfo probe = 2;
+}
+
+// Distribution summarizes the readings an axis published during the window.
+// Percentiles are nearest-rank over the n readings, so with few readings p95
+// is the maximum. first and last are the readings in time order: their
+// difference is the drift across the window (RSS growing, say).
+message Distribution {
+  uint32 n = 1;
+  double min = 2;
+  double mean = 3;
+  double p50 = 4;
+  double p95 = 5;
+  double max = 6;
+  double first = 7;
+  double last = 8;
+}
+
+// LatencyHistogram is a cumulative log2 histogram (RunqLatency, GoPauses)
+// over the span: the difference between the first reading and the last.
+message LatencyHistogram {
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  uint64 count = 3;
+  uint64 sum_ns = 4;
+  // 32 buckets: bucket i counts [2^i, 2^(i+1)) µs, bucket 0 also those under
+  // 1 µs, and the last everything longer. The source message's convention.
+  repeated uint64 buckets = 5;
+}
+
+// ─── Context ────────────────────────────────────────────────────────────────
+
+// HostReport is what the host and the target cgroup did during the window
+// (#153, #151).
+message HostReport {
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  // Host-wide steal per reading. Absent when no reading carried it.
+  Distribution steal_pct = 3;
+  // The target cgroup's throttling over the span. Absent when cpu.stat could
+  // not be read: unknown, never zero.
+  CpuThrottling throttling = 4;
+  // Stall time over the span, per resource. A resource is absent when its PSI
+  // file could not be read.
+  PressureReport pressure = 5;
+  // The limits at the last reading. A resize mid-window shows as a difference
+  // from target.limits.
+  CgroupLimits limits = 6;
+}
+
+// PressureReport is the target cgroup's PSI stall time over the span.
+message PressureReport {
+  StallTime cpu = 1;
+  StallTime memory = 2;
+  StallTime io = 3;
+}
+
+// StallTime is one resource's stalled time over the span, in microseconds.
+message StallTime {
+  // Some task in the cgroup stalled on the resource.
+  uint64 some_usec = 1;
+  // Every non-idle task stalled at once. Absent where the kernel has no such
+  // line.
+  optional uint64 full_usec = 2;
+}
+
+// CostReport is what the capture cost (#154).
+message CostReport {
+  // ptop's own CPU per reading, % of one core: the cost to the host.
+  Distribution ptop_cpu_pct = 1;
+  // The probes whose cost lands on the target's own threads.
+  repeated ProbeCostReport probes = 2;
+}
+
+// ProbeCostReport is one uprobe's estimated cost over the window.
+message ProbeCostReport {
+  string probe = 1;
+  // % of one core per reading, charged to the target's threads.
+  Distribution estimate_pct = 2;
+  // The estimate as a share of the target's CPU per reading. Absent when no
+  // reading could weigh it (under 50ms of target CPU).
+  Distribution target_share_pct = 3;
+  // Hits over the span: every reading after the first.
+  uint64 entries = 4;
+  uint64 returns = 5;
+  string calibration = 6;
+}
+
+// ─── CPU ────────────────────────────────────────────────────────────────────
+
+// CpuReport is how much CPU the target used: exact, scheduler-accounted time.
+message CpuReport {
+  // % of one core per reading (one a second), so 250 is two and a half cores.
+  Distribution usage_pct = 1;
+}
+
+// CpuProfileReport is where the CPU time went (#125): the per-window profiles
+// of the span, summed. Every reading after the first is summed, and the first
+// is left out because its window began before the report did.
+message CpuProfileReport {
+  uint32 readings = 1;
+  // The sampled windows summed, end to end.
+  uint64 span_ms = 2;
+  // samples and kernel_mode_samples are summed over the span, share_pct is of
+  // total_samples, stack_id is from the window where the function took the
+  // most samples.
+  repeated CpuSite sites = 3;
+  // Every sample, the unresolved ones included: the denominator of share_pct.
+  uint64 total_samples = 4;
+  uint64 unresolved_samples = 5;
+  uint64 kernel_mode_samples = 6;
+  // Distinct functions the span's readings listed, and the samples of those
+  // not in sites (total - unresolved - the listed sites').
+  uint32 total_sites = 7;
+  uint64 omitted_samples = 8;
+  // Readings whose own list the collector had already cut. While 0, every
+  // count in sites is exact and total_sites is a census.
+  uint32 truncated_readings = 9;
+  // What the kernel delivered per CPU over the span, and what was asked for.
+  double sample_rate_hz = 10;
+  double requested_rate_hz = 11;
+  StackScope stack_scope = 12;
+}
+
+// ─── Threads ────────────────────────────────────────────────────────────────
+
+// ThreadsReport is how the target's threads spent the window (#150, #151).
+message ThreadsReport {
+  uint32 readings = 1;
+  // Threads per reading.
+  Distribution count = 2;
+  // Ranked by on-CPU time over the window.
+  repeated ThreadSummary threads = 3;
+  // Distinct threads seen, and the mean CPU of those not listed, together, in
+  // % of one core over the window.
+  uint32 total_threads = 4;
+  double omitted_cpu_pct = 5;
+  // The target's waits for a CPU, by length, over the span. eBPF-only.
+  LatencyHistogram runq_latency = 6;
+  // A Go target's stop-the-world pauses over the span (#175).
+  LatencyHistogram go_pauses = 7;
+}
+
+// ThreadSummary is one thread over the readings it appeared in.
+message ThreadSummary {
+  int32 tid = 1;
+  string name = 2;
+  // How many of the window's readings listed the thread. The shares below are
+  // means over those readings, so a thread that lived for part of the window
+  // reads as busy as it was while it lived.
+  uint32 readings = 3;
+  double cpu_pct = 4;
+  double off_cpu_pct = 5;
+  double runq_wait_pct = 6;
+  // Summed over its readings. eBPF-only.
+  uint64 ctx_switches = 7;
+  // At its last reading.
+  string state = 8;
+  string waiting = 9;
+}
+
+// ─── Memory ─────────────────────────────────────────────────────────────────
+
+// MemoryReport is the process's memory, from MemStats.
+message MemoryReport {
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  Distribution rss_bytes = 3;
+  Distribution heap_bytes = 4;
+  // Page faults over the span.
+  uint64 page_faults = 5;
+}
+
+// HeapReport is the allocations over the span (#53, #108).
+message HeapReport {
+  // As HeapSnapshot carries them: "go" or "libc", whether live bytes are
+  // measured at all, and the Go lane's sampling rate (0: every allocation).
+  string lane = 1;
+  bool live_measured = 2;
+  uint64 sample_bytes = 3;
+  uint32 readings = 4;
+  uint64 span_ms = 5;
+  // Every allocation over the span, listed or not: each reading's rate times
+  // the interval it was measured over, summed. Exact on both lanes.
+  uint64 alloc_count = 6;
+  uint64 alloc_bytes = 7;
+  // Per reading. Absent unless live_measured.
+  Distribution live_heap_bytes = 8;
+  // What a site means depends on the lane, because the lanes keep different
+  // things in the kernel:
+  //
+  //   - "go": what each site allocated over the span, ranked by bytes. With
+  //     sample_bytes > 0 the split between sites is an estimate proportional
+  //     to bytes; the totals above stay exact.
+  //   - "libc": the live allocations at the last reading, ranked by live
+  //     bytes. The kernel keeps the live set per site, not what each site
+  //     allocated over time, so alloc_bytes is 0 there, as on the stream.
+  repeated HeapCallSite sites = 9;
+  uint32 total_call_sites = 10;
+  uint64 omitted_alloc_count = 11;
+  uint64 omitted_alloc_bytes = 12;
+  // Go lane: readings whose own list the collector had already cut. While 0,
+  // every per-site figure is exact. Always 0 on the libc lane, whose list is
+  // one reading's, with that reading's own omitted totals.
+  uint32 truncated_readings = 13;
+  // libc lane: the live bytes of the sites not listed.
+  uint64 omitted_live_bytes = 14;
+}
+
+// ─── Syscalls ───────────────────────────────────────────────────────────────
+
+// SyscallsReport is every syscall the target returned from over the span.
+message SyscallsReport {
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  uint64 count = 3;
+  // Summed over calls and across threads, so it can exceed span_ms. Absent
+  // when the source did not time the calls.
+  optional uint64 latency_ns = 4;
+  // Ranked by latency_ns, or by count when no latency was measured. Each
+  // stat's count, latency_ns and fd_classes are over the span.
+  repeated SyscallStat syscalls = 5;
+  uint32 total_syscalls = 6;
+  uint64 omitted_count = 7;
+  optional uint64 omitted_latency_ns = 8;
+}
+
+// ─── I/O ────────────────────────────────────────────────────────────────────
+
+// IoReport is the target's file I/O (#162, #181).
+message IoReport {
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  // Ranked by latency_ns over the span.
+  repeated IoFile files = 3;
+  uint32 total_files = 4;
+  uint64 omitted_reads = 5;
+  uint64 omitted_writes = 6;
+  uint64 omitted_bytes = 7;
+  uint64 omitted_latency_ns = 8;
+  // Reads and writes by latency over the span: counts, not shares.
+  repeated LatencyBucket latency_buckets = 9;
+  // Per reading, from /proc: present whichever lane counted the files.
+  Distribution read_bytes_per_s = 10;
+  Distribution write_bytes_per_s = 11;
+  Distribution io_wait_pct = 12;
+  // Denials, deletes and renames over the window (#57).
+  FsEventsReport fs = 13;
+}
+
+// IoFile is one file's reads and writes over the span.
+message IoFile {
+  string path = 1;
+  string type = 2;
+  uint64 reads = 3;
+  uint64 writes = 4;
+  uint64 bytes = 5;
+  // Summed over the calls. The stream carries a file's mean latency, so this
+  // is the mean times the calls, to within rounding.
+  uint64 latency_ns = 6;
+}
+
+// FsEventsReport counts the filesystem events over the window.
+message FsEventsReport {
+  uint64 total = 1;
+  uint64 denied = 2;
+  uint64 deleted = 3;
+  uint64 renamed = 4;
+  // Ranked by count.
+  repeated FsEventCount events = 5;
+  uint64 omitted = 6;
+}
+
+// FsEventCount is how often one event happened.
+message FsEventCount {
+  string op = 1;
+  string path = 2;
+  string new_path = 3;
+  string err = 4;
+  uint64 count = 5;
+}
+
+// ─── Network ────────────────────────────────────────────────────────────────
+
+// NetworkReport is the target's network volume, connections and errors.
+message NetworkReport {
+  // Of the throughput readings: tx_bytes, rx_bytes and dropped_connections
+  // are over their span, every connection included, closed ones too (#128).
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  uint64 tx_bytes = 3;
+  uint64 rx_bytes = 4;
+  uint64 dropped_connections = 5;
+  // Ranked by bytes moved over the window. tx_bytes and rx_bytes are what
+  // each moved after the window's first connection reading (all of it, for a
+  // connection that reading did not list); state is at its last reading. A
+  // connection opened and closed between two readings is in the totals above
+  // and in no row.
+  repeated NetConn conns = 6;
+  uint32 total_conns = 7;
+  uint64 omitted_tx_bytes = 8;
+  uint64 omitted_rx_bytes = 9;
+  // Network errors over the window (#56), by kind and peer, ranked by count.
+  // Absent when nothing counted them: only the eBPF lane sees errors.
+  optional uint64 errors = 10;
+  repeated NetErrorCount error_counts = 11;
+  uint64 omitted_errors = 12;
+}
+
+// NetErrorCount is how often one kind of error happened with one peer.
+message NetErrorCount {
+  string kind = 1;
+  string remote = 2;
+  uint64 count = 3;
+}
+
+// ─── Locks ──────────────────────────────────────────────────────────────────
+
+// LocksReport is the contended futexes over the span (#89).
+message LocksReport {
+  uint32 readings = 1;
+  uint64 span_ms = 2;
+  uint64 waits = 3;
+  uint64 wait_ns = 4;
+  // Ranked by wait_ns over the span.
+  repeated LockSummary locks = 5;
+  uint32 total_locks = 6;
+  uint64 omitted_waits = 7;
+  uint64 omitted_wait_ns = 8;
+  uint32 truncated_readings = 9;
+}
+
+// LockSummary is one futex word over the span.
+message LockSummary {
+  // The address inside the live process; compare across runs by call_site.
+  uint64 uaddr = 1;
+  uint64 waits = 2;
+  uint64 wakes = 3;
+  // Time spent waiting. The stream carries the mean wait, so this is the
+  // mean times the waits, to within rounding.
+  uint64 wait_ns = 4;
+  // The dominant contention site at the last reading, as LockEntry has it.
+  StackFrame call_site = 5;
+  uint64 stack_id = 6;
+}
+
+// ─── Events ─────────────────────────────────────────────────────────────────
+
+// SignalsReport counts the signals delivered to the target (#58).
+message SignalsReport {
+  uint64 total = 1;
+  // By signal and sender, ranked by count.
+  repeated SignalCount signals = 2;
+  uint64 omitted = 3;
+}
+
+// SignalCount is how often one sender sent one signal.
+message SignalCount {
+  string signal = 1;
+  string sender_comm = 2;
+  uint64 count = 3;
+}
+
+// LifecycleReport counts the processes the target spawned (#60).
+message LifecycleReport {
+  uint64 forks = 1;
+  uint64 execs = 2;
+  uint64 exits = 3;
+  // The executed paths, ranked by count.
+  repeated ExecCount exec_files = 4;
+  uint64 omitted_execs = 5;
+}
+
+// ExecCount is how often one path was executed.
+message ExecCount {
+  string filename = 1;
+  uint64 count = 2;
+}
+
+// SecurityReport counts the security events (#59).
+message SecurityReport {
+  uint64 exec_maps = 1;
+  uint64 write_exec = 2;
+  uint64 anon = 3;
+  uint64 lsm_decisions = 4;
+  // Grouped by what happened and where, ranked by count.
+  repeated SecurityCount events = 5;
+  uint64 omitted = 6;
+}
+
+// SecurityCount is how often one security event happened.
+message SecurityCount {
+  string kind = 1;
+  string op = 2;
+  StackFrame call_site = 3;
+  string detail = 4;
+  bool write_exec = 5;
+  bool anon = 6;
+  uint64 count = 7;
+}
+
+// FdReport is the target's open file descriptors.
+message FdReport {
+  uint32 readings = 1;
+  // Open fds per reading.
+  Distribution open = 2;
+  // By type, at the last reading, ranked by count.
+  repeated FdTypeCount types = 3;
+  // fd changes over the window (opens, closes, dups).
+  uint64 events = 4;
+}
+
+// FdTypeCount is how many fds of one type were open.
+message FdTypeCount {
+  string type = 1;
+  uint32 count = 2;
+}

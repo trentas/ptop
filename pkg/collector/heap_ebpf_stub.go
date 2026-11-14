@@ -28,3 +28,6 @@ func (*HeapEBPFCollector) Subscribe() <-chan interface{} { return nil }
 // is nothing to resolve.
 func (*HeapEBPFCollector) ResolveStack(uint64) ([]symbol.Frame, bool) { return nil, false }
 func (*HeapEBPFCollector) ProcessBuildID() string                     { return "" }
+
+// SetListCap: nothing to cap without eBPF.
+func (*HeapEBPFCollector) SetListCap(int) {}

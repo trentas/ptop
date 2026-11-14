@@ -24,3 +24,6 @@ func (*CPUProfEBPFCollector) Subscribe() <-chan interface{} { return nil }
 // there is nothing to resolve.
 func (*CPUProfEBPFCollector) ResolveStack(uint64) ([]symbol.Frame, bool) { return nil, false }
 func (*CPUProfEBPFCollector) ProcessBuildID() string                     { return "" }
+
+// SetListCap: nothing to cap without eBPF.
+func (*CPUProfEBPFCollector) SetListCap(int) {}
