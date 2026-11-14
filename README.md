@@ -153,6 +153,10 @@ sudo ./bin/ptop --pid <PID> --serve unix:///run/ptop.sock   # on by default
 sudo ./bin/ptop --pid <PID> --cpu-sample-hz 250             # finer, costs more
 sudo ./bin/ptop --pid <PID> --disable cpuprof               # off
 
+# One fixed window, then a bounded JSON report on stdout — for agents and scripts
+sudo ./bin/ptop --pid <PID> --for 10s > report.json        # every probe but heap
+sudo ./bin/ptop --pid <PID> --for 30s --probes cpu,cpuprof,syscalls --top 20
+
 # Which collectors will run with the privileges you actually have (no PID needed)
 ./bin/ptop --caps
 
@@ -160,6 +164,22 @@ sudo ./bin/ptop --pid <PID> --disable cpuprof               # off
 sudo ./bin/ptop --pid <PID> --symbol-cache /srv/symbols   # a bundle on disk, no network
 sudo ./bin/ptop --pid <PID> --debuginfod                  # servers from $DEBUGINFOD_URLS
 ```
+
+> **Capture report** (`--for`, #156): ptop attaches its probes, opens a window
+> of the length asked for (1s to 5m), and prints one `CaptureReport`
+> (`proto/report.proto`) as JSON on stdout. Nothing else goes to stdout. It is
+> what an agent reads instead of writing its own bpftrace: per-axis totals over
+> the window, distributions of what is read reading by reading, and top-N lists
+> (`--top`, default 10, at most 50) that carry the totals of what they cut. The
+> rules a reader needs are on the message itself; the one that trips people:
+> **a total covers its section's `span_ms`**, from the axis's first reading in
+> the window to its last, not the whole window. Heap is off unless `--probes`
+> names it, and named, it runs under a 5% `--overhead-budget` unless you set
+> one. `--tls` is refused. `--export` beside it also writes the window's raw
+> events. Exit codes: `0` the window ran (some probes may not have attached:
+> `target.probes` says which), `3` the target exited first (the report covers
+> what was seen), `4` nothing attached, `130` interrupted, `1`/`2` an error
+> before the window opened or a usage error.
 
 > **CPU attribution** (`--cpu-sample-hz`, #125): the CPU axis reports two
 > different things and keeps them apart. `cpu` is *how much* — nanoseconds the

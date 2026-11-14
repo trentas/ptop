@@ -31,6 +31,28 @@ func TestParseDisable(t *testing.T) {
 	}
 }
 
+// --probes names what runs, so everything it does not name is off (#156),
+// including subsystems a later release adds.
+func TestParseOnlyDisablesTheRest(t *testing.T) {
+	got, err := ParseOnly(" CPU ,syscalls")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[SubsystemCPU] || got[SubsystemSyscalls] {
+		t.Errorf("ParseOnly disabled a named subsystem: %v", got)
+	}
+	for name := range knownSubsystems {
+		if name != SubsystemCPU && name != SubsystemSyscalls && !got[name] {
+			t.Errorf("%s is not named, so it must be disabled", name)
+		}
+	}
+	for _, bad := range []string{"", " , ", "cpu,heapp"} {
+		if _, err := ParseOnly(bad); err == nil {
+			t.Errorf("ParseOnly(%q) accepted a list that names nothing valid", bad)
+		}
+	}
+}
+
 // A typo must be an error. Accepting it would leave the subsystem running
 // while the operator believes it is off — and in the benchmark, would measure
 // one configuration and label it another.

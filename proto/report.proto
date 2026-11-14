@@ -25,8 +25,11 @@ option go_package = "github.com/trentas/ptop/pkg/streampb;streampb";
 //   - A total is the difference between the axis's first reading in the
 //     window and its last: the first reading is the baseline. It therefore
 //     covers span_ms, which is shorter than the window by up to one reading
-//     interval, and a rate is the total over span_ms. With readings < 2 there
-//     is no interval and the totals are zero by construction, not measured.
+//     interval at each end, and a rate is the total over span_ms. What the
+//     target did in the window before an axis's first reading is in that
+//     baseline, not in the total. Each axis reads on its own clock, so the
+//     spans of two sections need not coincide. With readings < 2 there is no
+//     interval and the totals are zero by construction, not measured.
 //   - A list ranks by time where the kernel measured time (syscalls, io,
 //     locks), by volume elsewhere, and carries the totals of what it left
 //     out. A per-site figure is exact when truncated_readings is 0: no reading
