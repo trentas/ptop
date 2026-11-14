@@ -27,6 +27,12 @@ If something here drifts from reality, the code wins. Update this file.
 > CGo is gated to `//go:build darwin` for libproc/Mach. The Linux binary
 > stays `CGO_ENABLED=0` and statically linked; do not pull cgo into any
 > file that compiles on linux.
+> Keep cilium/ebpf at v0.14.0 or later. Before it, the ring reader read a
+> record's header with a plain load, and on arm64 a later load can complete
+> before an earlier plain one: the reader could return a record next to data
+> the program had not finished writing (cilium/ebpf#1375). Every ring ptop
+> reads was exposed. The io case's churn of 20,480 opens (#181) found it: an
+> open's path cut to `/tmp/pto` plus an older record's timestamp, or empty.
 
 ---
 
