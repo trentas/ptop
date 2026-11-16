@@ -131,6 +131,7 @@ type Set struct {
 	CPUEBPF           *CPUEBPFCollector
 	CPUProfEBPF       *CPUProfEBPFCollector
 	GoPauseEBPF       *GoPauseEBPFCollector
+	JVMPauseEBPF      *JVMPauseEBPFCollector
 	ThreadsProc       *ThreadsCollector
 	ThreadsEBPF       *ThreadsEBPFCollector
 	MemProc           *MemCollector
@@ -336,6 +337,10 @@ func NewSet(cfg SetConfig) *Set {
 					s.probes.unsupported(name, "the target is not a Go program")
 					return
 				}
+				if errors.Is(err, bpf.ErrNotJVM) {
+					s.probes.unsupported(name, "the target is not a JVM (no libjvm.so mapped)")
+					return
+				}
 				warnEBPFFailure(name, err)
 				s.probes.failed(name, err, bpf.Available)
 				return
@@ -379,6 +384,14 @@ func NewSet(cfg SetConfig) *Set {
 		c11 := NewGoPauseEBPFCollector()
 		startEBPF(SubsystemGoPause, c11, func() {
 			s.GoPauseEBPF = c11
+		})
+
+		// Its twin on a HotSpot JVM (#189): safepoints through uprobes on
+		// SafepointSynchronize::begin/end, collections through HotSpot's own
+		// gc__begin/gc__end probes. Unsupported on any other runtime.
+		c12 := NewJVMPauseEBPFCollector()
+		startEBPF(SubsystemJVMPause, c12, func() {
+			s.JVMPauseEBPF = c12
 		})
 
 		c4 := NewFutexEBPFCollector(syms)
@@ -706,6 +719,7 @@ func (s *Set) Collectors() []Collector {
 	add(s.HeapEBPF, s.HeapEBPF != nil)
 	add(s.CPUProfEBPF, s.CPUProfEBPF != nil)
 	add(s.GoPauseEBPF, s.GoPauseEBPF != nil)
+	add(s.JVMPauseEBPF, s.JVMPauseEBPF != nil)
 	add(s.IOWait, s.IOWait != nil)
 	add(s.IOThroughput, s.IOThroughput != nil)
 	add(s.SyscallsEBPF, s.SyscallsEBPF != nil)

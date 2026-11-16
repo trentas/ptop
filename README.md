@@ -363,6 +363,12 @@ eBPF programs in `internal/bpf/programs/`:
   stack sampled by bytes allocated
 - `gopause.bpf.c` — entry uprobes on the Go runtime's stop and restart of the world →
   every stop-the-world pause, exact, as a histogram (Go targets only)
+- `jvmpause.bpf.c` — its twin on a HotSpot JVM (#189): entry uprobes on
+  `SafepointSynchronize::begin`/`end` in `libjvm.so` → every safepoint, GC or
+  not; and HotSpot's own `hotspot:gc__begin`/`gc__end` USDT probes → which of
+  them were collections. Two histograms. A `libjvm.so` stripped of `.symtab`, or
+  built without DTrace probes, loses one lane, and the probe set says which
+  (JVM targets only)
 
 Any subsystem can be switched off with `--disable <name,...>` — see
 [what it costs](#what-it-costs-the-process-it-watches) for why you might. Naming

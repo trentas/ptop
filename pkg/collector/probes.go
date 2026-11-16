@@ -157,7 +157,7 @@ func (l *probeLog) statuses() []ProbeStatus {
 var ebpfOnlySubsystems = []string{
 	SubsystemCPUProf, SubsystemSyscalls, SubsystemNetwork, SubsystemFutex,
 	SubsystemHeap, SubsystemSignals, SubsystemLifecycle, SubsystemSecurity,
-	SubsystemTLS,
+	SubsystemTLS, SubsystemGoPause, SubsystemJVMPause,
 }
 
 // cgroupUnsupported names the subsystems a cgroup subtree structurally cannot
@@ -177,7 +177,9 @@ var cgroupUnsupported = map[string]string{
 	// against one process's memory map, so across a subtree the same address
 	// names a different function in every process and folding them would
 	// produce a confident lie rather than a gap (#125).
-	SubsystemCPUProf: "cgroup scope: sample sites are folded per function against one process's memory map",
+	SubsystemCPUProf:  "cgroup scope: sample sites are folded per function against one process's memory map",
+	SubsystemGoPause:  "cgroup scope: the pause uprobes attach into one process's Go runtime",
+	SubsystemJVMPause: "cgroup scope: the pause uprobes attach into one process's libjvm.so",
 }
 
 // cgroupSubsystems are the ones startCgroup can run — the subtree-capable set,

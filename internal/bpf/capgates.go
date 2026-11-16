@@ -195,6 +195,7 @@ var ebpfCollectors = []struct {
 	{"signals", attachTracepoint, false},
 	{"heap", attachUprobe, false},
 	{"gopause", attachUprobe, false},
+	{"jvmpause", attachUprobe, false},
 	{"tls", attachUprobe, false},
 }
 

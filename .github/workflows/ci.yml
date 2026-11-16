@@ -92,6 +92,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends clang libbpf-dev
 
+      # The jvmpause case's target is a real HotSpot JVM (#189). Temurin's
+      # libjvm.so carries both lanes: SafepointSynchronize in .symtab, and the
+      # hotspot:gc__* USDT probes. A JDK without them fails the case.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
       - name: the runner is the architecture it is testing
         run: |
           test "$(go env GOARCH)" = "${{ matrix.goarch }}" || {
@@ -110,8 +118,9 @@ jobs:
       - name: make ebpf-selftest
         run: make ebpf-selftest
 
+      # sudo resets the environment, and with it setup-java's JAVA_HOME.
       - name: run as root
-        run: sudo ./bin/ebpf-selftest
+        run: sudo env JAVA_HOME="$JAVA_HOME" ./bin/ebpf-selftest
 
   proto:
     name: buf lint · format · generate · breaking

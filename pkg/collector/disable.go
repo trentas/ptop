@@ -53,6 +53,10 @@ const (
 	// subsystem because it is its own pair of uprobes, and unsupported on a
 	// target that is not a Go program.
 	SubsystemGoPause = "gopause"
+	// SubsystemJVMPause is a HotSpot JVM's safepoints and GC pauses (#189), the
+	// twin of SubsystemGoPause: its own uprobes, unsupported on a target that
+	// is not a JVM.
+	SubsystemJVMPause = "jvmpause"
 )
 
 // knownSubsystems is the full set, used to reject a typo rather than let it
@@ -63,7 +67,7 @@ var knownSubsystems = map[string]bool{
 	SubsystemHeap: true, SubsystemSyscalls: true, SubsystemIO: true,
 	SubsystemNetwork: true, SubsystemFutex: true, SubsystemSignals: true,
 	SubsystemLifecycle: true, SubsystemSecurity: true, SubsystemTLS: true,
-	SubsystemFD: true, SubsystemGoPause: true,
+	SubsystemFD: true, SubsystemGoPause: true, SubsystemJVMPause: true,
 }
 
 // ParseDisable turns a comma-separated subsystem list into the set

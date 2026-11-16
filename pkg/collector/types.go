@@ -435,6 +435,34 @@ type GoPauses struct {
 	Buckets   []uint64
 }
 
+// PauseHistogram is a cumulative count of pauses by length, the shape GoPauses
+// carries inline: Buckets[i] counts the pauses of [2^i, 2^(i+1)) µs,
+// Buckets[0] also those under 1 µs, the last everything longer. SumNs over a
+// window's wall time is the share of it the target spent stopped.
+type PauseHistogram struct {
+	Count   uint64
+	SumNs   uint64
+	Buckets []uint64
+}
+
+// JVMPauses is every stop-the-world a HotSpot JVM finished since the tracer
+// attached (#189), cumulative, in two lanes. A lane that did not attach is nil,
+// never a zero histogram: the probe set's caveat says why.
+//
+//   - Safepoints: every safepoint, GC or not, from the entry of
+//     SafepointSynchronize::begin() (reaching the safepoint included) to the
+//     entry of ::end(). The twin of GoPauses.
+//   - GC: every collection, between HotSpot's own hotspot:gc__begin and
+//     gc__end probes. Each lies inside a safepoint, so it says which of them
+//     were collections.
+//
+// HotSpot targets only; eBPF-only.
+type JVMPauses struct {
+	Timestamp  time.Time
+	Safepoints *PauseHistogram
+	GC         *PauseHistogram
+}
+
 // ─── Locks (futex) ───────────────────────────────────────────────────────────
 
 // LockEntry describes a contended futex: cumulative WAITs and WAKEs observed

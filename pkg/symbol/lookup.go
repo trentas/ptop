@@ -60,10 +60,5 @@ func (m *Module) FuncStart(name string) (vaddr, size uint64, ok bool) {
 // content is not backed by the file at all (.bss — filesz < memsz), where a
 // file offset would be meaningless.
 func (m *Module) FileOffset(vaddr uint64) (uint64, bool) {
-	for _, l := range m.loads {
-		if vaddr >= l.vaddr && vaddr < l.vaddr+l.filesz {
-			return vaddr - l.vaddr + l.off, true
-		}
-	}
-	return 0, false
+	return fileOffset(m.loads, vaddr)
 }

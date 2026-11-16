@@ -112,8 +112,9 @@ message Distribution {
   double last = 8;
 }
 
-// LatencyHistogram is a cumulative log2 histogram (RunqLatency, GoPauses)
-// over the span: the difference between the first reading and the last.
+// LatencyHistogram is a cumulative log2 histogram (RunqLatency, GoPauses,
+// JvmPauses) over the span: the difference between the first reading and the
+// last.
 message LatencyHistogram {
   uint32 readings = 1;
   uint64 span_ms = 2;
@@ -235,6 +236,12 @@ message ThreadsReport {
   LatencyHistogram runq_latency = 6;
   // A Go target's stop-the-world pauses over the span (#175).
   LatencyHistogram go_pauses = 7;
+  // A HotSpot JVM's safepoints over the span (#189): every stop-the-world, GC
+  // or not. Absent when the lane did not run.
+  LatencyHistogram jvm_safepoints = 8;
+  // The collections among them (#189), between HotSpot's gc__begin and
+  // gc__end. Absent when the lane did not run.
+  LatencyHistogram jvm_gc_pauses = 9;
 }
 
 // ThreadSummary is one thread over the readings it appeared in.

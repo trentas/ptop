@@ -108,6 +108,27 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				r := e.GetRunqLatency()
 				return len(r.GetBuckets()) == 3 && r.GetBuckets()[1] == 3 && r.GetCount() == 4 && r.GetSumNs() == 9000
 			}},
+		{"go_pauses", collector.GoPauses{Timestamp: time.Unix(5, 0), Count: 2, SumNs: 60000, Buckets: []uint64{0, 0, 0, 0, 2}},
+			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
+				g := e.GetGoPauses()
+				return g.GetCount() == 2 && g.GetSumNs() == 60000 && len(g.GetBuckets()) == 5
+			}},
+		{"jvm_pauses, both lanes", collector.JVMPauses{Timestamp: time.Unix(5, 0),
+			Safepoints: &collector.PauseHistogram{Count: 7, SumNs: 7000, Buckets: []uint64{0, 7}},
+			GC:         &collector.PauseHistogram{Count: 2, SumNs: 5000, Buckets: []uint64{0, 0, 2}}},
+			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
+				j := e.GetJvmPauses()
+				return j.GetSafepoints().GetCount() == 7 && j.GetSafepoints().GetSumNs() == 7000 &&
+					len(j.GetSafepoints().GetBuckets()) == 2 && j.GetGc().GetCount() == 2 && j.GetGc().GetBuckets()[2] == 2
+			}},
+		// A lane that did not attach is absent on the wire, never a zero
+		// histogram that reads as "no collection" (#189).
+		{"jvm_pauses, safepoints only", collector.JVMPauses{Timestamp: time.Unix(5, 0),
+			Safepoints: &collector.PauseHistogram{Count: 1, SumNs: 10, Buckets: []uint64{1}}},
+			pb.Category_CATEGORY_THREAD, func(e *pb.Event) bool {
+				j := e.GetJvmPauses()
+				return j.GetSafepoints().GetCount() == 1 && j.Gc == nil
+			}},
 		{"host", collector.HostSample{StealPct: 7.5, StealKnown: true, Timestamp: time.Unix(4, 0),
 			Limits: collector.CgroupLimits{Cgroup: "/a.slice", CPUMax: "50000 100000", MemoryMax: "max"}},
 			pb.Category_CATEGORY_PROCESS, func(e *pb.Event) bool {
