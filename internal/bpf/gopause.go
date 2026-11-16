@@ -21,19 +21,6 @@ const (
 	goStartTheWorldSymbol = "runtime.startTheWorldWithSema"
 )
 
-// GoPauseBuckets is the histogram width: bucket i counts the pauses of
-// [2^i, 2^(i+1)) µs, bucket 0 also those under 1 µs, the last everything
-// longer. Mirrors GOPAUSE_BUCKETS in programs/gopause.bpf.c.
-const GoPauseBuckets = 32
-
-// GoPauseTotals is the cumulative pause aggregate since the tracer attached.
-// Mirrors struct gopause_totals.
-type GoPauseTotals struct {
-	Count   uint64
-	SumNs   uint64
-	Buckets [GoPauseBuckets]uint64
-}
-
 // GoPauseTracer times a Go target's stop-the-world pauses (#175). See
 // programs/gopause.bpf.c for why two entry uprobes and no uretprobe.
 type GoPauseTracer struct {
@@ -151,8 +138,8 @@ func goPauseFileOffsets(path string) (stop, start uint64, err error) {
 }
 
 // Totals reads the cumulative aggregate.
-func (t *GoPauseTracer) Totals() (GoPauseTotals, error) {
-	var v GoPauseTotals
+func (t *GoPauseTracer) Totals() (PauseTotals, error) {
+	var v PauseTotals
 	if t == nil || t.totals == nil {
 		return v, errors.New("tracer not initialized")
 	}

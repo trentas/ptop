@@ -17,6 +17,7 @@ var goallocBPFObj []byte
 var gopauseBPFObj []byte
 var heapBPFObj []byte
 var ioBPFObj []byte
+var jvmpauseBPFObj []byte
 var memoryBPFObj []byte
 var networkBPFObj []byte
 var procBPFObj []byte

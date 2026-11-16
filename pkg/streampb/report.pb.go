@@ -548,8 +548,9 @@ func (x *Distribution) GetLast() float64 {
 	return 0
 }
 
-// LatencyHistogram is a cumulative log2 histogram (RunqLatency, GoPauses)
-// over the span: the difference between the first reading and the last.
+// LatencyHistogram is a cumulative log2 histogram (RunqLatency, GoPauses,
+// JvmPauses) over the span: the difference between the first reading and the
+// last.
 type LatencyHistogram struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Readings uint32                 `protobuf:"varint,1,opt,name=readings,proto3" json:"readings,omitempty"`
@@ -1188,7 +1189,13 @@ type ThreadsReport struct {
 	// The target's waits for a CPU, by length, over the span. eBPF-only.
 	RunqLatency *LatencyHistogram `protobuf:"bytes,6,opt,name=runq_latency,json=runqLatency,proto3" json:"runq_latency,omitempty"`
 	// A Go target's stop-the-world pauses over the span (#175).
-	GoPauses      *LatencyHistogram `protobuf:"bytes,7,opt,name=go_pauses,json=goPauses,proto3" json:"go_pauses,omitempty"`
+	GoPauses *LatencyHistogram `protobuf:"bytes,7,opt,name=go_pauses,json=goPauses,proto3" json:"go_pauses,omitempty"`
+	// A HotSpot JVM's safepoints over the span (#189): every stop-the-world, GC
+	// or not. Absent when the lane did not run.
+	JvmSafepoints *LatencyHistogram `protobuf:"bytes,8,opt,name=jvm_safepoints,json=jvmSafepoints,proto3" json:"jvm_safepoints,omitempty"`
+	// The collections among them (#189), between HotSpot's gc__begin and
+	// gc__end. Absent when the lane did not run.
+	JvmGcPauses   *LatencyHistogram `protobuf:"bytes,9,opt,name=jvm_gc_pauses,json=jvmGcPauses,proto3" json:"jvm_gc_pauses,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1268,6 +1275,20 @@ func (x *ThreadsReport) GetRunqLatency() *LatencyHistogram {
 func (x *ThreadsReport) GetGoPauses() *LatencyHistogram {
 	if x != nil {
 		return x.GoPauses
+	}
+	return nil
+}
+
+func (x *ThreadsReport) GetJvmSafepoints() *LatencyHistogram {
+	if x != nil {
+		return x.JvmSafepoints
+	}
+	return nil
+}
+
+func (x *ThreadsReport) GetJvmGcPauses() *LatencyHistogram {
+	if x != nil {
+		return x.JvmGcPauses
 	}
 	return nil
 }
@@ -3193,7 +3214,7 @@ const file_report_proto_rawDesc = "" +
 	" \x01(\x01R\fsampleRateHz\x12*\n" +
 	"\x11requested_rate_hz\x18\v \x01(\x01R\x0frequestedRateHz\x124\n" +
 	"\vstack_scope\x18\f \x01(\x0e2\x13.ptop.v1.StackScopeR\n" +
-	"stackScope\"\xcd\x02\n" +
+	"stackScope\"\xce\x03\n" +
 	"\rThreadsReport\x12\x1a\n" +
 	"\breadings\x18\x01 \x01(\rR\breadings\x12+\n" +
 	"\x05count\x18\x02 \x01(\v2\x15.ptop.v1.DistributionR\x05count\x120\n" +
@@ -3201,7 +3222,9 @@ const file_report_proto_rawDesc = "" +
 	"\rtotal_threads\x18\x04 \x01(\rR\ftotalThreads\x12&\n" +
 	"\x0fomitted_cpu_pct\x18\x05 \x01(\x01R\romittedCpuPct\x12<\n" +
 	"\frunq_latency\x18\x06 \x01(\v2\x19.ptop.v1.LatencyHistogramR\vrunqLatency\x126\n" +
-	"\tgo_pauses\x18\a \x01(\v2\x19.ptop.v1.LatencyHistogramR\bgoPauses\"\x81\x02\n" +
+	"\tgo_pauses\x18\a \x01(\v2\x19.ptop.v1.LatencyHistogramR\bgoPauses\x12@\n" +
+	"\x0ejvm_safepoints\x18\b \x01(\v2\x19.ptop.v1.LatencyHistogramR\rjvmSafepoints\x12=\n" +
+	"\rjvm_gc_pauses\x18\t \x01(\v2\x19.ptop.v1.LatencyHistogramR\vjvmGcPauses\"\x81\x02\n" +
 	"\rThreadSummary\x12\x10\n" +
 	"\x03tid\x18\x01 \x01(\x05R\x03tid\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
@@ -3479,33 +3502,35 @@ var file_report_proto_depIdxs = []int32{
 	14, // 36: ptop.v1.ThreadsReport.threads:type_name -> ptop.v1.ThreadSummary
 	5,  // 37: ptop.v1.ThreadsReport.runq_latency:type_name -> ptop.v1.LatencyHistogram
 	5,  // 38: ptop.v1.ThreadsReport.go_pauses:type_name -> ptop.v1.LatencyHistogram
-	4,  // 39: ptop.v1.MemoryReport.rss_bytes:type_name -> ptop.v1.Distribution
-	4,  // 40: ptop.v1.MemoryReport.heap_bytes:type_name -> ptop.v1.Distribution
-	4,  // 41: ptop.v1.HeapReport.live_heap_bytes:type_name -> ptop.v1.Distribution
-	41, // 42: ptop.v1.HeapReport.sites:type_name -> ptop.v1.HeapCallSite
-	42, // 43: ptop.v1.SyscallsReport.syscalls:type_name -> ptop.v1.SyscallStat
-	19, // 44: ptop.v1.IoReport.files:type_name -> ptop.v1.IoFile
-	43, // 45: ptop.v1.IoReport.latency_buckets:type_name -> ptop.v1.LatencyBucket
-	4,  // 46: ptop.v1.IoReport.read_bytes_per_s:type_name -> ptop.v1.Distribution
-	4,  // 47: ptop.v1.IoReport.write_bytes_per_s:type_name -> ptop.v1.Distribution
-	4,  // 48: ptop.v1.IoReport.io_wait_pct:type_name -> ptop.v1.Distribution
-	20, // 49: ptop.v1.IoReport.fs:type_name -> ptop.v1.FsEventsReport
-	21, // 50: ptop.v1.FsEventsReport.events:type_name -> ptop.v1.FsEventCount
-	44, // 51: ptop.v1.NetworkReport.conns:type_name -> ptop.v1.NetConn
-	23, // 52: ptop.v1.NetworkReport.error_counts:type_name -> ptop.v1.NetErrorCount
-	25, // 53: ptop.v1.LocksReport.locks:type_name -> ptop.v1.LockSummary
-	45, // 54: ptop.v1.LockSummary.call_site:type_name -> ptop.v1.StackFrame
-	27, // 55: ptop.v1.SignalsReport.signals:type_name -> ptop.v1.SignalCount
-	29, // 56: ptop.v1.LifecycleReport.exec_files:type_name -> ptop.v1.ExecCount
-	31, // 57: ptop.v1.SecurityReport.events:type_name -> ptop.v1.SecurityCount
-	45, // 58: ptop.v1.SecurityCount.call_site:type_name -> ptop.v1.StackFrame
-	4,  // 59: ptop.v1.FdReport.open:type_name -> ptop.v1.Distribution
-	33, // 60: ptop.v1.FdReport.types:type_name -> ptop.v1.FdTypeCount
-	61, // [61:61] is the sub-list for method output_type
-	61, // [61:61] is the sub-list for method input_type
-	61, // [61:61] is the sub-list for extension type_name
-	61, // [61:61] is the sub-list for extension extendee
-	0,  // [0:61] is the sub-list for field type_name
+	5,  // 39: ptop.v1.ThreadsReport.jvm_safepoints:type_name -> ptop.v1.LatencyHistogram
+	5,  // 40: ptop.v1.ThreadsReport.jvm_gc_pauses:type_name -> ptop.v1.LatencyHistogram
+	4,  // 41: ptop.v1.MemoryReport.rss_bytes:type_name -> ptop.v1.Distribution
+	4,  // 42: ptop.v1.MemoryReport.heap_bytes:type_name -> ptop.v1.Distribution
+	4,  // 43: ptop.v1.HeapReport.live_heap_bytes:type_name -> ptop.v1.Distribution
+	41, // 44: ptop.v1.HeapReport.sites:type_name -> ptop.v1.HeapCallSite
+	42, // 45: ptop.v1.SyscallsReport.syscalls:type_name -> ptop.v1.SyscallStat
+	19, // 46: ptop.v1.IoReport.files:type_name -> ptop.v1.IoFile
+	43, // 47: ptop.v1.IoReport.latency_buckets:type_name -> ptop.v1.LatencyBucket
+	4,  // 48: ptop.v1.IoReport.read_bytes_per_s:type_name -> ptop.v1.Distribution
+	4,  // 49: ptop.v1.IoReport.write_bytes_per_s:type_name -> ptop.v1.Distribution
+	4,  // 50: ptop.v1.IoReport.io_wait_pct:type_name -> ptop.v1.Distribution
+	20, // 51: ptop.v1.IoReport.fs:type_name -> ptop.v1.FsEventsReport
+	21, // 52: ptop.v1.FsEventsReport.events:type_name -> ptop.v1.FsEventCount
+	44, // 53: ptop.v1.NetworkReport.conns:type_name -> ptop.v1.NetConn
+	23, // 54: ptop.v1.NetworkReport.error_counts:type_name -> ptop.v1.NetErrorCount
+	25, // 55: ptop.v1.LocksReport.locks:type_name -> ptop.v1.LockSummary
+	45, // 56: ptop.v1.LockSummary.call_site:type_name -> ptop.v1.StackFrame
+	27, // 57: ptop.v1.SignalsReport.signals:type_name -> ptop.v1.SignalCount
+	29, // 58: ptop.v1.LifecycleReport.exec_files:type_name -> ptop.v1.ExecCount
+	31, // 59: ptop.v1.SecurityReport.events:type_name -> ptop.v1.SecurityCount
+	45, // 60: ptop.v1.SecurityCount.call_site:type_name -> ptop.v1.StackFrame
+	4,  // 61: ptop.v1.FdReport.open:type_name -> ptop.v1.Distribution
+	33, // 62: ptop.v1.FdReport.types:type_name -> ptop.v1.FdTypeCount
+	63, // [63:63] is the sub-list for method output_type
+	63, // [63:63] is the sub-list for method input_type
+	63, // [63:63] is the sub-list for extension type_name
+	63, // [63:63] is the sub-list for extension extendee
+	0,  // [0:63] is the sub-list for field type_name
 }
 
 func init() { file_report_proto_init() }

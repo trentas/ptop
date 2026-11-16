@@ -107,6 +107,7 @@ message Event {
     // axis, in order with its events.
     ProbeInfo probe_change = 36;
     GoPauses go_pauses = 37; // #175 — a Go target's stop-the-world pauses, by length
+    JvmPauses jvm_pauses = 38; // #189 — a HotSpot JVM's safepoints and GC pauses, by length
   }
 }
 
@@ -538,6 +539,40 @@ message ThreadSnapshot {
 // snapshot loses nothing. Go targets only: on any other the probe is
 // unsupported in the handshake, never an empty axis. eBPF-only.
 message GoPauses {
+  // 32 buckets: bucket i counts the pauses of [2^i, 2^(i+1)) µs, bucket 0 also
+  // those under 1 µs, and the last everything longer.
+  repeated uint64 buckets = 1;
+  uint64 count = 2;
+  uint64 sum_ns = 3;
+}
+
+// JvmPauses is every stop-the-world a HotSpot JVM finished since the tracer
+// attached (#189), the twin of GoPauses, in two lanes. Category THREAD.
+// Cumulative, so a consumer takes the difference between two snapshots for a
+// window, and a dropped snapshot loses nothing. HotSpot targets only: on any
+// other the probe is unsupported in the handshake, never an empty axis. A lane
+// that could not attach is ABSENT, never a zero histogram, and the probe's
+// caveat in the handshake says why. eBPF-only.
+message JvmPauses {
+  // Every safepoint, GC or not (a collection's pause, a deoptimization, a
+  // thread dump, class redefinition), timed from the entry of
+  // SafepointSynchronize::begin() to the entry of ::end() by two uprobes in
+  // libjvm.so: reaching the safepoint and the VM operation run at it. The
+  // closer twin of GoPauses. Absent when libjvm.so carries no .symtab to find
+  // them in.
+  PauseHistogram safepoints = 1;
+  // Every collection, timed between HotSpot's own hotspot:gc__begin and
+  // hotspot:gc__end probes (USDT). Each lies inside a safepoint, so over a
+  // window count <= safepoints.count and sum_ns <= safepoints.sum_ns: this lane
+  // says which of the safepoints were collections. Absent when the JVM was
+  // built without its DTrace probes.
+  PauseHistogram gc = 2;
+}
+
+// PauseHistogram is a cumulative count of pauses by length, the shape GoPauses
+// carries inline. sum_ns over a window's wall time is the share of it the
+// target spent stopped.
+message PauseHistogram {
   // 32 buckets: bucket i counts the pauses of [2^i, 2^(i+1)) µs, bucket 0 also
   // those under 1 µs, and the last everything longer.
   repeated uint64 buckets = 1;

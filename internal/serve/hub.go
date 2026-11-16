@@ -126,6 +126,8 @@ var probeCategories = map[string]pb.Category{
 	collector.SubsystemLifecycle: pb.Category_CATEGORY_PROCESS,
 	collector.SubsystemSecurity:  pb.Category_CATEGORY_SECURITY,
 	collector.SubsystemFD:        pb.Category_CATEGORY_FD,
+	collector.SubsystemGoPause:   pb.Category_CATEGORY_THREAD,
+	collector.SubsystemJVMPause:  pb.Category_CATEGORY_THREAD,
 }
 
 func probeCategory(name string) pb.Category {

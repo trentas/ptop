@@ -255,6 +255,14 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 			Buckets: x.Buckets, Count: x.Count, SumNs: x.SumNs,
 		}}
 
+	case collector.JVMPauses:
+		ev.TsUnixNano = tsNano(x.Timestamp)
+		ev.Category = pb.Category_CATEGORY_THREAD
+		ev.Payload = &pb.Event_JvmPauses{JvmPauses: &pb.JvmPauses{
+			Safepoints: toPauseHistogram(x.Safepoints),
+			Gc:         toPauseHistogram(x.GC),
+		}}
+
 	case collector.CaptureCost:
 		// CATEGORY_PROCESS, like HostSample: what the numbers were measured
 		// under, the observer's own cost included (#154).
@@ -464,3 +472,12 @@ func tsNano(t time.Time) int64 {
 }
 
 func nowNano() int64 { return time.Now().UnixNano() }
+
+// toPauseHistogram maps one lane of a runtime's pauses; a lane that did not
+// attach stays absent on the wire (#189).
+func toPauseHistogram(h *collector.PauseHistogram) *pb.PauseHistogram {
+	if h == nil {
+		return nil
+	}
+	return &pb.PauseHistogram{Buckets: h.Buckets, Count: h.Count, SumNs: h.SumNs}
+}

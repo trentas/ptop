@@ -81,6 +81,8 @@ type Builder struct {
 	threads threadsAgg
 	runq    histAgg
 	pauses  histAgg
+	jvmSP   histAgg // a JVM's safepoints (#189)
+	jvmGC   histAgg // and its collections
 	mem     memAgg
 	heap    heapAgg
 	sys     sysAgg
@@ -138,6 +140,15 @@ func (b *Builder) Emit(ev *pb.Event) {
 		b.runq.add(ts, p.RunqLatency.GetCount(), p.RunqLatency.GetSumNs(), p.RunqLatency.GetBuckets())
 	case *pb.Event_GoPauses:
 		b.pauses.add(ts, p.GoPauses.GetCount(), p.GoPauses.GetSumNs(), p.GoPauses.GetBuckets())
+	case *pb.Event_JvmPauses:
+		// A lane that did not attach is absent from every reading, so its
+		// section stays absent rather than reading as no pause.
+		if h := p.JvmPauses.GetSafepoints(); h != nil {
+			b.jvmSP.add(ts, h.GetCount(), h.GetSumNs(), h.GetBuckets())
+		}
+		if h := p.JvmPauses.GetGc(); h != nil {
+			b.jvmGC.add(ts, h.GetCount(), h.GetSumNs(), h.GetBuckets())
+		}
 	case *pb.Event_Memory:
 		b.mem.add(ts, p.Memory)
 	case *pb.Event_Heap:
@@ -681,15 +692,18 @@ func (a *threadsAgg) add(s *pb.ThreadSnapshot) {
 func (b *Builder) threadsReport(n int) *pb.ThreadsReport {
 	a := &b.threads
 	runq, pauses := b.runq.report(), b.pauses.report()
-	if a.readings == 0 && runq == nil && pauses == nil {
+	jvmSP, jvmGC := b.jvmSP.report(), b.jvmGC.report()
+	if a.readings == 0 && runq == nil && pauses == nil && jvmSP == nil && jvmGC == nil {
 		return nil
 	}
 	r := &pb.ThreadsReport{
-		Readings:     a.readings,
-		Count:        a.count.dist(),
-		TotalThreads: uint32(len(a.rows)),
-		RunqLatency:  runq,
-		GoPauses:     pauses,
+		Readings:      a.readings,
+		Count:         a.count.dist(),
+		TotalThreads:  uint32(len(a.rows)),
+		RunqLatency:   runq,
+		GoPauses:      pauses,
+		JvmSafepoints: jvmSP,
+		JvmGcPauses:   jvmGC,
 	}
 	rows := make([]*threadRow, 0, len(a.rows))
 	for _, t := range a.rows {

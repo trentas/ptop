@@ -106,6 +106,7 @@ ptop/
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
 │   │   │   ├── goalloc.bpf.c      runtime.mallocgc uprobe → Go alloc sites, byte-sampled (#108)
 │   │   │   ├── gopause.bpf.c      entry uprobes on the Go runtime's stop/restart the world → exact STW pauses (#175)
+│   │   │   ├── jvmpause.bpf.c     HotSpot safepoint uprobes + gc__begin/gc__end USDT → JVM pauses, two lanes (#189)
 │   │   │   ├── futex.bpf.c        futex wait/wake → lock graph + acquire site; signal_deliver settles a re-run (#164)
 │   │   │   ├── signal.bpf.c       signal_generate → signals with origin (#58)
 │   │   │   ├── tls.bpf.c          libssl SSL_write/read uprobes → plaintext (#55)
@@ -117,6 +118,9 @@ ptop/
 │   │   ├── cpulist.go             /sys CPU-list parser (build-tag-free, #108)
 │   │   ├── goalloc.go             runtime.mallocgc uprobe loader + sampling rate
 │   │   ├── goalloc_spec.go        GoAllocDefaultSampleBytes (build-tag-free)
+│   │   ├── gopause.go             runtime stop/start-the-world uprobe loader (#175)
+│   │   ├── jvmpause.go            libjvm.so: safepoint symbols + every gc__begin/gc__end site; a lane attaches whole (#189)
+│   │   ├── pause_spec.go          PauseTotals + ErrNotJVM (build-tag-free)
 │   │   ├── caps.go                capability + measured-read detection (#117)
 │   │   ├── capgates.go            which cap gates which collector; --caps report
 │   │   ├── uprobe_caps.go         uprobe attach errors that name the capability
@@ -202,6 +206,8 @@ ptop/
 │       ├── heap_agg.go            call-site ranking + app-frame picking (build-tag-free)
 │       ├── futex_agg.go           lock folding + contention-site picking (#89/#107)
 │       ├── tls_ebpf.go            libssl uprobe → TLS payload (#55, opt-in --tls)
+│       ├── gopause_ebpf.go        GoPauses every second (#175)
+│       ├── jvmpause_ebpf.go       JVMPauses every second; a lane that did not attach is nil (#189)
 │       ├── iowait_proc.go         /proc/<pid>/stat field 42
 │       ├── io_proc.go             /proc/<pid>/io throughput
 │       ├── io_ebpf.go             io probe loop: ring records, then the maps, every window (#181)
@@ -233,6 +239,7 @@ ptop/
 │       ├── dwarf.go               C/C++ file:line from .debug_line
 │       ├── debuginfod.go          off-image symbols by build-id: local bundle + debuginfod (#119)
 │       ├── lookup.go              name → address (uprobe attach), gosym fallback
+│       ├── usdt.go                .note.stapsdt → USDT probe sites + semaphores, as file offsets (#189)
 │       ├── gopath.go              build-machine source path → import path (#107)
 │       ├── perfmap.go             JIT /tmp/perf-<pid>.map frames
 │       ├── proc_linux.go          live-pid Symbolizer via /proc/<pid>/maps
@@ -724,7 +731,8 @@ keyed by tgid (one stop at a time per process; the restart can run on another
 thread). It is exact. The runtime-agnostic idea — every thread descheduling at
 once — would be a heuristic with no ground truth, would read an idle process the
 same way, and in Go misses the thread that stopped the world and keeps running.
-JVM and .NET can get that detector later, measured against this one.
+The JVM got exact boundaries of its own instead (#189, below); .NET can get
+that detector later, measured against these.
 
 - **Entry uprobes only**, like the Go heap lane: a uretprobe on Go code breaks
   the GC's stack walk (#154).
@@ -736,6 +744,47 @@ JVM and .NET can get that detector later, measured against this one.
 - **The selftest plants the answer:** with the automatic GC off, `runtime.GC()`
   stops the world exactly twice a cycle (sweep termination, mark termination),
   and 20 cycles read 40 pauses. A target that is not Go (pid 1) must refuse.
+
+### A JVM pause is timed at HotSpot's own boundaries (#189)
+
+`jvmpause` is `gopause`'s twin on a HotSpot JVM: a JVM target used to read
+`gopause: the target is not a Go program` and have no pause axis at all, and
+witness's JVM calibration found that a 9× GC rate barely reached the rest of
+the signature. Two lanes, both in `libjvm.so`, both timed by ENTRY uprobes:
+
+- **Safepoints:** `SafepointSynchronize::begin()` to `::end()` (mangled names in
+  `.symtab`; they are local, so `.dynsym` does not have them). A safepoint is
+  the JVM's stop-the-world, GC or not, and `begin()` includes reaching it, so
+  this is the closer twin of Go's STW.
+- **Collections:** HotSpot's own USDT probes `hotspot:gc__begin`/`gc__end`
+  (`SvcGCMarker`, which every collector puts inside its pauses). A probe has
+  several sites, 4 each in Temurin 21, and **every site must be attached**:
+  attached at the first site only, G1's full collection reads 0 for 20.
+  `pkg/symbol/usdt.go` reads them, honours a semaphore through the uprobe's
+  `RefCtrOffset` (Temurin's have none), and fails rather than skip a site it
+  cannot place.
+- **Keyed by thread, with a depth.** Begin and end run on one thread (the VM
+  thread; a scoped marker). A begin inside an open one only deepens it, so the
+  outer pair is the pause. Nested markers were not seen under G1. The depth is
+  a guard.
+- **A lane attaches whole or not at all,** and one missing is a caveat on an
+  ACTIVE probe (`GC pauses only: …`, `safepoints only: …`) with that lane ABSENT
+  on the wire, never a zero histogram. Neither lane is `failed` naming both.
+  No `libjvm.so` mapped is `unsupported` (`bpf.ErrNotJVM`, declared in both
+  builds like `ErrNotGo`). Measured by stripping a Temurin `libjvm.so` each way.
+- **The cost is four traps per pause.** Nothing fires per allocation or per
+  call, so there is nothing to sample.
+
+The selftest's `jvmpause` case runs a real JVM (`testdata/JvmPlant.java`, in
+source-file mode, so CI installs a Temurin JDK and passes `JAVA_HOME` through
+`sudo`). No JDK fails the case, as no C compiler fails `heap`. The program
+plants 20 `System.gc()` under G1 and reports the JVM's own census over the
+same span: HotSpot's safepoint count and time (`sun.rt.*`, read through
+`HotspotRuntimeMBean`) and the GC MXBeans' collections. Collections must
+match exactly. Safepoints may exceed the JVM's count by 2, for the idle gaps
+around its span. Their time must be within 2ms + 5% of the JVM's, and the
+collections within the program's own clock around each `System.gc()`. On
+OrbStack 7.2: 20/20, 20/20, 191.7 ms against the JVM's 192.
 
 ### A stack taken at a function's first instruction is one frame short (#155)
 

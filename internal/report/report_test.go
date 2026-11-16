@@ -41,6 +41,10 @@ func ev(sec float64, payload any) *pb.Event {
 		e.Payload = &pb.Event_Threads{Threads: p}
 	case *pb.RunqLatency:
 		e.Payload = &pb.Event_RunqLatency{RunqLatency: p}
+	case *pb.GoPauses:
+		e.Payload = &pb.Event_GoPauses{GoPauses: p}
+	case *pb.JvmPauses:
+		e.Payload = &pb.Event_JvmPauses{JvmPauses: p}
 	case *pb.SignalEvent:
 		e.Payload = &pb.Event_Signal{Signal: p}
 	case *pb.FSEvent:
@@ -368,6 +372,40 @@ func TestThreadsRankByOnCpuTime(t *testing.T) {
 	rq := r.GetRunqLatency()
 	if rq.GetCount() != 5 || rq.GetSumNs() != 300 || len(rq.GetBuckets()) != 2 || rq.GetBuckets()[0] != 2 || rq.GetBuckets()[1] != 3 {
 		t.Errorf("runq = %v, want 5 waits, 300ns, buckets 2 and 3", rq)
+	}
+}
+
+// A JVM's two lanes are each the difference between the first reading and the
+// last, like GoPauses; a lane that never attached is absent from every reading
+// and stays absent from the report, rather than reading as no collection
+// (#189).
+func TestJvmPausesAreTheDifferenceAndAMissingLaneStaysAbsent(t *testing.T) {
+	hist := func(count, sum uint64, b ...uint64) *pb.PauseHistogram {
+		return &pb.PauseHistogram{Count: count, SumNs: sum, Buckets: b}
+	}
+	r := build(t, Config{}, probes(),
+		ev(1, &pb.JvmPauses{Safepoints: hist(40, 9000, 30, 10), Gc: hist(3, 6000, 0, 3)}),
+		ev(2, &pb.JvmPauses{Safepoints: hist(52, 30000, 38, 14), Gc: hist(7, 25000, 0, 7)}),
+		ev(1, &pb.GoPauses{Count: 4, SumNs: 100, Buckets: []uint64{4}}),
+		ev(2, &pb.GoPauses{Count: 4, SumNs: 100, Buckets: []uint64{4}}),
+	).GetThreads()
+	sp, gc := r.GetJvmSafepoints(), r.GetJvmGcPauses()
+	if sp.GetCount() != 12 || sp.GetSumNs() != 21000 || sp.GetBuckets()[0] != 8 || sp.GetBuckets()[1] != 4 || sp.GetReadings() != 2 {
+		t.Errorf("safepoints = %v, want 12 pauses, 21000ns, buckets 8 and 4, 2 readings", sp)
+	}
+	if gc.GetCount() != 4 || gc.GetSumNs() != 19000 || gc.GetBuckets()[1] != 4 {
+		t.Errorf("gc = %v, want 4 pauses, 19000ns", gc)
+	}
+	if gp := r.GetGoPauses(); gp.GetCount() != 0 || gp.GetReadings() != 2 {
+		t.Errorf("go pauses = %v, want a measured zero over 2 readings", gp)
+	}
+
+	r = build(t, Config{}, probes(),
+		ev(1, &pb.JvmPauses{Safepoints: hist(1, 10, 1)}),
+		ev(2, &pb.JvmPauses{Safepoints: hist(2, 20, 2)}),
+	).GetThreads()
+	if r.GetJvmSafepoints().GetCount() != 1 || r.JvmGcPauses != nil {
+		t.Errorf("safepoints %v, gc %v: want one pause and no gc section", r.GetJvmSafepoints(), r.JvmGcPauses)
 	}
 }
 

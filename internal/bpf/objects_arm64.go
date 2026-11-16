@@ -41,6 +41,9 @@ var heapBPFObj []byte
 //go:embed programs/obj/arm64/io.bpf.o
 var ioBPFObj []byte
 
+//go:embed programs/obj/arm64/jvmpause.bpf.o
+var jvmpauseBPFObj []byte
+
 //go:embed programs/obj/arm64/memory.bpf.o
 var memoryBPFObj []byte
 
