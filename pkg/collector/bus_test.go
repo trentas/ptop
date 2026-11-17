@@ -116,8 +116,16 @@ func TestSubscriptionCloseIsSafeAndIdempotent(t *testing.T) {
 	sub.Close() // idempotent
 	close(stop)
 
-	if _, open := <-sub.C(); open {
-		t.Error("channel still delivering after Close")
+	// Values that arrived before Close may still sit in the buffer (4 slots),
+	// and a closed channel hands those out first. A slow runner fills it
+	// before Close runs. After them the channel must read closed.
+	for n := 0; ; n++ {
+		if _, open := <-sub.C(); !open {
+			break
+		}
+		if n == 4 {
+			t.Fatal("channel still delivering after Close: more values than its buffer holds")
+		}
 	}
 	if n := bus.HandlerCount(); n != 0 {
 		t.Errorf("HandlerCount = %d after Close, want 0", n)
