@@ -180,7 +180,7 @@ func OpenGoAllocTracer(pid int, sampleBytes uint64) (*GoAllocTracer, error) {
 		t.Close()
 		return nil, err
 	}
-	if err := writeTargetFilter(targetMap, tf); err != nil {
+	if err := writeTargetFilter(coll, targetMap, tf); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("set goalloc_target_pid: %w", err)
 	}

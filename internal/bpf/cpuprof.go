@@ -93,7 +93,7 @@ func OpenCPUProfiler(target Target, hz int) (*CPUProfiler, error) {
 		p.Close()
 		return nil, err
 	}
-	if err := writeTargetFilter(targetMap, tf); err != nil {
+	if err := writeTargetFilter(coll, targetMap, tf); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("set cpuprof_target_pid: %w", err)
 	}

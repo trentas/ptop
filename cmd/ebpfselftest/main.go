@@ -77,6 +77,7 @@ func main() {
 func suite() []selfCase {
 	return []selfCase{
 		{"filter", "the pid and cgroup filters match this process (#94)", checkFilters},
+		{"cgroupns", "the cgroup filter counts a known number of calls from inside a cgroup namespace (#193)", checkCgroupNS},
 		{"cpu", "on-CPU time agrees with the kernel's own accounting, quiet and busy (#108)", checkCPUAccuracy},
 		{"cpusite", "CPU samples name the function that burned them (#125)", checkCPUAttribution},
 		{"cpuprof", "the published profile splits a planted 60/30/10 burn within its binomial interval (#125)", checkCPUProfile},

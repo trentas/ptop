@@ -92,7 +92,7 @@ ptop/
 │   │   ├── objects_other.go       nil vars for any other GOARCH
 │   │   ├── programs/obj/<goarch>/ compiled .bpf.o, per target arch (gitignored)
 │   │   ├── programs/              .bpf.c sources, compiled by `make gen`
-│   │   │   ├── target.bpf.h       shared pid-namespace target filter
+│   │   │   ├── target.bpf.h       shared target filter: pid namespace, or cgroup subtree (#94, #193)
 │   │   │   ├── restart.bpf.h      a call the kernel re-runs after a signal is one call (#160)
 │   │   │   ├── probecost.bpf.h    heap probes count their hits and time their own body (#154)
 │   │   │   ├── fdfile.bpf.h       the file behind an fd, through the task's fd table (#162, #176)
@@ -1328,13 +1328,26 @@ wrong when ptop runs inside a nested namespace (WSL2, Docker, LXC). Never
 filter with the bare `bpf_get_current_pid_tgid()` again.
 
 **Cgroup mode** (#94) targets a whole subtree with
-`bpf_get_current_ancestor_cgroup_id(level)`: every task inside the target
-answers with the target's own cgroup id, forks included, so no pid needs to be
-known in advance. The Go side resolves a path or container id to
-`(cgroup_id, level)` — the id being the cgroup directory's inode, which is what
-the helpers report on kernfs — and refuses level 0, the cgroup root, since that
-would trace the whole host. Cgroup v2 only: the helpers report the default
-hierarchy's id.
+`bpf_current_task_under_cgroup()`: the kernel answers whether the current task
+is inside the target cgroup's subtree, forks included, so no pid needs to be
+known in advance. The target cgroup sits in `ptop_target_cgroup`, a one-slot
+`CGROUP_ARRAY` that `target.bpf.h` declares in every program. The Go side
+resolves a path or container id to the cgroup's directory, opens it, and checks
+the inode is still the one it resolved before the fd goes in the map
+(`writeTargetCgroup`). It refuses the root of the hierarchy it sees, since on a
+host that would trace every process. Cgroup v2 only: the helper checks the
+default hierarchy.
+
+**No depth may cross a cgroup namespace (#193).** The filter used to be
+`bpf_get_current_ancestor_cgroup_id(level) == id`, with the level counted below
+the cgroup2 mount. Inside a cgroup namespace, a container, the mount's root is
+the namespace's root, and the helper counts from the host's. The level came out
+short, the helper named an ancestor, and every axis read zero with every probe
+`active`. OrbStack nests even `--cgroupns=host`, so `--cgroup` read 0 there
+against millions by `--pid`. Nothing visible from inside the namespace gives
+its root's depth (`/proc/self/cgroup` and mountinfo are both relative to it).
+The cgroup array hands the kernel the cgroup itself, so there is no depth to
+get wrong. The level survives only to refuse the root.
 
 Two caveats worth knowing before extending this:
 
@@ -1347,10 +1360,14 @@ Two caveats worth knowing before extending this:
   fills `out` from `bpf_get_current_pid_tgid()` in that mode.
 
 Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest -run
-filter`: it runs one workload and checks the pid filter and the cgroup filter
-against it. The cgroup half reports SKIP where there is no subtree to target — a
-cgroup v1 host, or a cgroup namespace that shows `/` as its own root. The rest
-of the suite is described under "The selftest grades, CI runs it" below.
+filter,cgroupns`. `filter` runs one workload and checks the pid filter and the
+cgroup filter against it. Its cgroup half reports SKIP where there is no
+subtree to target — a cgroup v1 host, or a cgroup namespace that shows `/` as
+its own root. `cgroupns` builds the nesting CI's runners lack: a child born in
+a fresh cgroup (`CLONE_INTO_CGROUP`) with a cgroup and a mount namespace of its
+own, which mounts cgroup2, moves one cgroup down, and must count its own 2,000
+`getppid` calls through `--cgroup /inner`. The old filter read 0 there. The
+rest of the suite is described under "The selftest grades, CI runs it" below.
 
 ## Build tags
 

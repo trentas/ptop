@@ -47,6 +47,8 @@ func runPeer(spec string) {
 			}
 			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
 		}
+	case spec == "cgroupns":
+		runCgroupNSChild() // the cgroupns case's child (#193)
 	case spec == "burn":
 		// One thread on a CPU until killed: the saturation case's workload,
 		// in a process of its own so it can be put in a cgroup of its own.

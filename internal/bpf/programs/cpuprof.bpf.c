@@ -167,7 +167,7 @@ static __always_inline struct cpuprof_count *cpuprof_slot(__s32 sid)
 // (PERF_TYPE_SOFTWARE / PERF_COUNT_SW_CPU_CLOCK, freq mode). `current` is the
 // task the sample interrupted, so pid_is_target() answers for it directly — in
 // PID mode through the target's pid namespace, in CGROUP mode through the
-// ancestor cgroup id. Software clock rather than hardware cycles so it works
+// target cgroup. Software clock rather than hardware cycles so it works
 // in a VM or a container with no PMU exposed.
 //
 // ctx is the interrupted register state: in kernel mode when the sample landed

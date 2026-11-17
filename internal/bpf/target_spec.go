@@ -93,9 +93,9 @@ func unescapeMountPath(p string) string {
 	return p
 }
 
-// cgroupLevel returns the depth of target below root, which is what
-// bpf_get_current_ancestor_cgroup_id() needs to identify a subtree. The root
-// itself is level 0.
+// cgroupLevel returns the depth of target below root, the cgroup2 mount. The
+// root itself is level 0. Inside a cgroup namespace the mount's root is the
+// namespace's, so this is not the depth the kernel counts from (#193).
 func cgroupLevel(root, target string) (uint32, error) {
 	r, t := path.Clean(root), path.Clean(target)
 	if t == r {

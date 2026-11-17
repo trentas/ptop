@@ -50,7 +50,7 @@ func OpenThreadsTracer(target Target) (*ThreadsTracer, error) {
 		t.Close()
 		return nil, err
 	}
-	if err := writeTargetFilter(targetMap, tf); err != nil {
+	if err := writeTargetFilter(coll, targetMap, tf); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("set threads_target_pid: %w", err)
 	}

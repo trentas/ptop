@@ -4,6 +4,7 @@ package bpf
 
 import (
 	"os"
+	"path"
 	"strings"
 	"testing"
 	"unsafe"
@@ -15,8 +16,8 @@ import (
 // struct verbatim.
 func TestTargetFilterLayout(t *testing.T) {
 	var tf targetFilter
-	if got := unsafe.Sizeof(tf); got != 40 {
-		t.Fatalf("sizeof(targetFilter) = %d, want 40", got)
+	if got := unsafe.Sizeof(tf); got != 24 {
+		t.Fatalf("sizeof(targetFilter) = %d, want 24", got)
 	}
 	offsets := []struct {
 		name string
@@ -26,8 +27,6 @@ func TestTargetFilterLayout(t *testing.T) {
 		{"Mode", unsafe.Offsetof(tf.Mode), 4},
 		{"Dev", unsafe.Offsetof(tf.Dev), 8},
 		{"Ino", unsafe.Offsetof(tf.Ino), 16},
-		{"CgroupID", unsafe.Offsetof(tf.CgroupID), 24},
-		{"CgroupLevel", unsafe.Offsetof(tf.CgroupLevel), 32},
 	}
 	for _, o := range offsets {
 		if o.got != o.want {
@@ -101,8 +100,8 @@ func TestResolveTargetSelfCgroup(t *testing.T) {
 	if tf.CgroupID == 0 {
 		t.Error("CgroupID = 0, want the cgroup directory inode")
 	}
-	if tf.CgroupLevel == 0 {
-		t.Error("CgroupLevel = 0, which is the cgroup root — the resolver should have refused it")
+	if tf.CgroupDir != path.Join(root, spec) {
+		t.Errorf("CgroupDir = %q, want %q", tf.CgroupDir, path.Join(root, spec))
 	}
 	if tf.Pid != 0 || tf.Dev != 0 || tf.Ino != 0 {
 		t.Errorf("pid-mode fields set in a cgroup target: %+v", tf)
