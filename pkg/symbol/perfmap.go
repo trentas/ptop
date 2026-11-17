@@ -22,9 +22,15 @@ import (
 //
 //	<start-hex> <size-hex> <name>
 //
-// Node writes it under --perf-basic-prof; the JVM under perf-map-agent. It is
-// the mechanism perf(1) itself uses, which is why it is worth supporting
-// rather than inventing something.
+// Node writes it under --perf-basic-prof. HotSpot writes it on
+// `jcmd <pid> Compiler.perfmap` (JDK 17+) and under -XX:+DumpPerfMapAtExit,
+// and older JVMs through perf-map-agent. It is the mechanism perf(1) itself
+// uses, which is why it is worth supporting rather than inventing something.
+//
+// The hex fields come with or without a 0x prefix, depending on the writer:
+// V8 writes bare hex, HotSpot writes the prefix. Accepting only bare hex
+// dropped every line of a JVM's map, so every JIT'd Java frame stayed
+// unresolved while Node resolved fine (#188).
 //
 // ─── The tier marker is the part that matters ───────────────────────────────
 //
@@ -108,11 +114,11 @@ func splitPerfMapLine(line string) (start, size uint64, name string, ok bool) {
 	}
 	j += i + 1
 
-	start, err := strconv.ParseUint(line[:i], 16, 64)
+	start, err := parsePerfMapHex(line[:i])
 	if err != nil {
 		return 0, 0, "", false
 	}
-	size, err = strconv.ParseUint(line[i+1:j], 16, 64)
+	size, err = parsePerfMapHex(line[i+1 : j])
 	if err != nil {
 		return 0, 0, "", false
 	}
@@ -121,6 +127,18 @@ func splitPerfMapLine(line string) (start, size uint64, name string, ok bool) {
 		return 0, 0, "", false
 	}
 	return start, size, name, true
+}
+
+// parsePerfMapHex parses one numeric field of a perf map line, which is hex
+// with or without a 0x prefix. The prefix is per writer, not per file format:
+// V8 writes bare hex and HotSpot writes 0x-prefixed (#188), and perf(1)
+// accepts both. A bare "0x" is still malformed: ParseUint rejects the empty
+// string left behind.
+func parsePerfMapHex(s string) (uint64, error) {
+	if len(s) > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+		s = s[2:]
+	}
+	return strconv.ParseUint(s, 16, 64)
 }
 
 // parsePerfMapName splits a perf map symbol into a normalized function name
