@@ -111,12 +111,57 @@ func TestSplitPerfMapLine(t *testing.T) {
 		t.Errorf("= %#x, %#x, %q, %v", start, size, name, ok)
 	}
 
+	// HotSpot prefixes both fields with 0x (#188); perf(1) accepts either form.
+	start, size, name, ok = splitPerfMapLine("0x0000e2d1200d8040 0x00000000000008e8 void OrderSvc.handle(int)")
+	if !ok || start != 0xe2d1200d8040 || size != 0x8e8 || name != "void OrderSvc.handle(int)" {
+		t.Errorf("HotSpot line = %#x, %#x, %q, %v", start, size, name, ok)
+	}
+	start, size, _, ok = splitPerfMapLine("0X1000 0X20 upper")
+	if !ok || start != 0x1000 || size != 0x20 {
+		t.Errorf("0X line = %#x, %#x, %v", start, size, ok)
+	}
+
 	// A perf map is written by a live process with no locking, so the tail can
 	// be torn mid-write. A bad line must be skipped, never fail the parse.
-	for _, bad := range []string{"", "onlyonefield", "notahex 10 name", "1000 nothex name", "1000 20", "1000 20   "} {
+	for _, bad := range []string{
+		"", "onlyonefield", "notahex 10 name", "1000 nothex name", "1000 20", "1000 20   ",
+		// A prefix torn from its digits is not a zero.
+		"0x 10 name", "0x1000 0x name", "0x1000 0x",
+		// One prefix only, and only at the front.
+		"0x0x1000 10 name", "10x00 10 name",
+	} {
 		if _, _, _, ok := splitPerfMapLine(bad); ok {
 			t.Errorf("accepted malformed line %q", bad)
 		}
+	}
+}
+
+// A map as HotSpot writes it (#188): every line 0x-prefixed, the name a
+// method's signature with spaces in it. Before the fix the map parsed empty and
+// every JIT'd Java frame stayed unresolved. The two method lines are verbatim
+// from Temurin 21.0.13's `jcmd <pid> Compiler.perfmap`.
+func TestPerfMapHotSpot(t *testing.T) {
+	in := "0x0000e2d1200d8040 0x00000000000008e8 void OrderSvc.handle(int)\n" +
+		"0x0000e2d1200de640 0x0000000000000238 byte[] OrderSvc.churnAlloc(int)\n"
+	pm := parsePerfMap(strings.NewReader(in), int64(len(in)))
+	if len(pm.syms) != 2 {
+		t.Fatalf("len = %d, want 2", len(pm.syms))
+	}
+	for _, c := range []struct {
+		addr uint64
+		fn   string
+	}{
+		{0xe2d1200d8040, "void OrderSvc.handle(int)"},
+		{0xe2d1200d8040 + 0x8e7, "void OrderSvc.handle(int)"},
+		{0xe2d1200de640 + 0x100, "byte[] OrderSvc.churnAlloc(int)"},
+	} {
+		s, ok := pm.lookup(c.addr)
+		if !ok || s.fn != c.fn || s.file != "" || s.line != 0 {
+			t.Errorf("lookup(%#x) = %q %q:%d %v, want %q", c.addr, s.fn, s.file, s.line, ok, c.fn)
+		}
+	}
+	if _, ok := pm.lookup(0xe2d1200d8040 + 0x8e8); ok {
+		t.Error("one past the end of a region resolved")
 	}
 }
 
