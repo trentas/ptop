@@ -76,7 +76,7 @@ func OpenSecurityTracer(target Target) (*SecurityTracer, error) {
 		t.Close()
 		return nil, err
 	}
-	if err := writeTargetFilter(tfMap, tf); err != nil {
+	if err := writeTargetFilter(coll, tfMap, tf); err != nil {
 		t.Close()
 		return nil, fmt.Errorf("set sec_target_pid: %w", err)
 	}
