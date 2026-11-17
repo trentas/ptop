@@ -157,6 +157,10 @@ sudo ./bin/ptop --pid <PID> --disable cpuprof               # off
 sudo ./bin/ptop --pid <PID> --for 10s > report.json        # every probe but heap
 sudo ./bin/ptop --pid <PID> --for 30s --probes cpu,cpuprof,syscalls --top 20
 
+# The same capture as an MCP tool, over stdio, for an agent host (a scope is required)
+./bin/ptop --mcp --mcp-allow-uid 1000                         # processes running only as uid 1000
+./bin/ptop --mcp --mcp-allow-cgroup /system.slice/app.service # that unit's processes, or the unit itself
+
 # Which collectors will run with the privileges you actually have (no PID needed)
 ./bin/ptop --caps
 
@@ -180,6 +184,44 @@ sudo ./bin/ptop --pid <PID> --debuginfod                  # servers from $DEBUGI
 > `target.probes` says which), `3` the target exited first (the report covers
 > what was seen), `4` nothing attached, `130` interrupted, `1`/`2` an error
 > before the window opened or a usage error.
+
+> **MCP tool** (`--mcp`, #187): `ptop --mcp` serves that capture to an agent
+> over the Model Context Protocol, on stdin and stdout, as two tools:
+>
+> - **`capture`** (`pid` or `cgroup`, `seconds`, optional `probes` and `top`)
+>   runs one window and returns the same `CaptureReport`. The JSON comes as text
+>   and again as `structuredContent`. It keeps every default of `--for`, and the
+>   input schema states the bounds. A window in which no probe attached is a tool
+>   error that still carries the report, whose probe set says why.
+> - **`caps`** returns the `ptop --caps` inventory and which targets this server
+>   may capture, so an agent can learn why an axis will be missing before it
+>   spends a window on it.
+>
+> The host launches ptop, so ptop must hold its capabilities on its own:
+> `setcap` them on the binary (see [Permissions](#permissions)), since there is
+> no one to type a `sudo` password. With them, ptop can attach to any process on
+> the host, and a report carries file paths and remote addresses as they are.
+> So **`--mcp` refuses to start without a scope**:
+>
+> - `--mcp-allow-uid <uids|users>` allows a process whose uids (real, effective,
+>   saved and filesystem) are all on the list. A setuid program started by an
+>   allowed user is refused.
+> - `--mcp-allow-cgroup <paths|container-ids>` allows the processes in those
+>   subtrees, and the subtrees themselves as `cgroup` targets.
+> - `--mcp-allow-any` allows every process on the host, and has to be asked for.
+>
+> One capture runs at a time, and a second call gets `busy` at once. With a
+> progress token, the client hears from the capture every second. A cancelled
+> call releases its probes and returns nothing, as MCP's cancellation rule
+> requires. Operator flags such as `--disable`, `--no-ebpf`, the symbol sources
+> and `--overhead-budget` apply to every capture. A subsystem `--disable` names
+> cannot be asked for.
+>
+> ```json
+> { "mcpServers": { "ptop": {
+>     "command": "/usr/local/bin/ptop",
+>     "args": ["--mcp", "--mcp-allow-uid", "1000"] } } }
+> ```
 
 > **CPU attribution** (`--cpu-sample-hz`, #125): the CPU axis reports two
 > different things and keeps them apart. `cpu` is *how much* — nanoseconds the

@@ -5,6 +5,7 @@ package bpf
 import (
 	"fmt"
 	"os"
+	"path"
 
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
@@ -113,4 +114,26 @@ func resolveCgroup(spec string) (string, uint64, uint32, error) {
 func writeTargetFilter(m *ebpf.Map, tf targetFilter) error {
 	var key uint32 = 0
 	return m.Update(&key, &tf, ebpf.UpdateAny)
+}
+
+// CgroupOfPID returns the cgroup v2 path pid is in, absolute and in the form
+// ResolveCgroupSpec returns, so the two compare as paths (#187).
+func CgroupOfPID(pid int) (string, error) {
+	mi, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", fmt.Errorf("read mountinfo: %w", err)
+	}
+	root, err := cgroup2Root(string(mi))
+	if err != nil {
+		return "", err
+	}
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return "", err
+	}
+	rel, err := cgroupV2Rel(string(b))
+	if err != nil {
+		return "", fmt.Errorf("pid %d: %w", pid, err)
+	}
+	return path.Join(root, rel), nil
 }

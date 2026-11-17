@@ -217,3 +217,25 @@ func TestWatchPIDLeavesALiveProcessAlone(t *testing.T) {
 	case <-time.After(3 * watchInterval):
 	}
 }
+
+func TestCaptureDisableLeavesHeapOffUnlessNamed(t *testing.T) {
+	// Without --probes: everything but heap, and what --disable named.
+	got, err := CaptureDisable("", map[string]bool{collector.SubsystemIO: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got[collector.SubsystemHeap] || !got[collector.SubsystemIO] || len(got) != 2 {
+		t.Errorf("CaptureDisable(\"\", io) = %v, want exactly heap and io off", got)
+	}
+	// With --probes: exactly what it names, heap included when named.
+	got, err = CaptureDisable("cpu,heap", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[collector.SubsystemHeap] || got[collector.SubsystemCPU] || !got[collector.SubsystemIO] {
+		t.Errorf("CaptureDisable(cpu,heap) = %v, want cpu and heap on, io off", got)
+	}
+	if _, err := CaptureDisable("cpu,nonsense", nil); err == nil {
+		t.Error("CaptureDisable(cpu,nonsense) accepted an unknown subsystem")
+	}
+}
