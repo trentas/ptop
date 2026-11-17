@@ -14,6 +14,50 @@ import (
 	pb "github.com/trentas/ptop/pkg/streampb"
 )
 
+// The defaults of a capture, shared by `ptop --for` (#156) and the MCP capture
+// tool (#187) so that the two cannot drift apart.
+const (
+	// MinCaptureWindow and MaxCaptureWindow bound a window. Below a second
+	// most axes have not published twice, and a total needs two readings.
+	// Above five minutes the stream is the right tool, and an agent that
+	// forgot a unit has not asked for an hour of probes on someone's host.
+	MinCaptureWindow = time.Second
+	MaxCaptureWindow = 5 * time.Minute
+
+	// CaptureHeapBudgetPct is the overhead budget a capture runs the heap
+	// probe under when heap was asked for and no budget was: the capture
+	// detaches the probe rather than let it cost the target more than this
+	// share of its CPU.
+	CaptureHeapBudgetPct = 5.0
+)
+
+// CaptureDisable is what a capture switches off. probes (comma-separated)
+// names what runs, and nothing else does. Without it everything runs but heap,
+// whose probe fires on every allocation, plus whatever disable named.
+func CaptureDisable(probes string, disable map[string]bool) (map[string]bool, error) {
+	if probes != "" {
+		return collector.ParseOnly(probes)
+	}
+	out := map[string]bool{collector.SubsystemHeap: true}
+	for name := range disable {
+		out[name] = true
+	}
+	return out, nil
+}
+
+// ProbesActive reports whether any probe was active as the window opened.
+// Without one the report is a probe set and nothing else. A partial set is
+// still a measurement: a host without CAP_SYS_ADMIN would otherwise fail every
+// capture.
+func ProbesActive(r *pb.CaptureReport) bool {
+	for _, p := range r.GetTarget().GetProbes() {
+		if p.GetState() == pb.ProbeState_PROBE_STATE_ACTIVE {
+			return true
+		}
+	}
+	return false
+}
+
 // CaptureOptions tunes a Capture (#156).
 type CaptureOptions struct {
 	// For is how long the window runs once every probe has attached.

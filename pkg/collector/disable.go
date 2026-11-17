@@ -121,12 +121,18 @@ func ParseOnly(spec string) (map[string]bool, error) {
 
 // KnownSubsystems lists every accepted name, sorted, for help text and errors.
 func KnownSubsystems() string {
+	return strings.Join(SubsystemNames(), ", ")
+}
+
+// SubsystemNames lists every subsystem name --disable and --probes accept,
+// sorted.
+func SubsystemNames() []string {
 	names := make([]string, 0, len(knownSubsystems))
 	for n := range knownSubsystems {
 		names = append(names, n)
 	}
 	sort.Strings(names)
-	return strings.Join(names, ", ")
+	return names
 }
 
 // off reports whether a subsystem was disabled.

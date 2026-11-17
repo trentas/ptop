@@ -233,3 +233,30 @@ func TestTargetSpec(t *testing.T) {
 		t.Error("the zero Target validated")
 	}
 }
+
+func TestCgroupV2Rel(t *testing.T) {
+	cases := []struct {
+		in, want string
+		wantErr  bool
+	}{
+		// Unified only.
+		{"0::/system.slice/app.service\n", "/system.slice/app.service", false},
+		// Hybrid: v1 controllers first, then the unified line.
+		{"12:memory:/user.slice\n1:name=systemd:/user.slice\n0::/user.slice/user-1000.slice\n",
+			"/user.slice/user-1000.slice", false},
+		// In a cgroup namespace, the process's own root.
+		{"0::/\n", "/", false},
+		// A process outside the reader's cgroup namespace cannot be compared
+		// with a path under the mount, so it is refused, never joined up.
+		{"0::/../../system.slice/other.service\n", "", true},
+		// v1 only.
+		{"12:memory:/user.slice\n", "", true},
+		{"", "", true},
+	}
+	for _, c := range cases {
+		got, err := cgroupV2Rel(c.in)
+		if (err != nil) != c.wantErr || got != c.want {
+			t.Errorf("cgroupV2Rel(%q) = %q, %v; want %q, error %v", c.in, got, err, c.want, c.wantErr)
+		}
+	}
+}

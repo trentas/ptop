@@ -19,6 +19,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	"github.com/trentas/ptop/internal/bpf"
+	"github.com/trentas/ptop/internal/mcp"
 	"github.com/trentas/ptop/internal/report"
 	"github.com/trentas/ptop/internal/serve"
 	"github.com/trentas/ptop/internal/tui"
@@ -55,12 +56,40 @@ func main() {
 	forDur := flag.Duration("for", 0, "Capture for this long once every probe has attached, print a bounded JSON report on stdout and exit (1s to 5m, e.g. 10s). With --pid or --cgroup; no TUI, no server")
 	topN := flag.Int("top", report.DefaultTopN, "With --for: the most entries any list in the report carries (1 to 50)")
 	probesSpec := flag.String("probes", "", "With --for: the only subsystems to run, comma-separated. Without it --for runs every one but heap. Known: "+collector.KnownSubsystems())
+	mcpMode := flag.Bool("mcp", false, "Serve the --for capture to an agent as an MCP tool, over stdio. Needs a scope: --mcp-allow-uid, --mcp-allow-cgroup or --mcp-allow-any")
+	mcpAllowUID := flag.String("mcp-allow-uid", "", "With --mcp: capture only processes running as these uids or users, comma-separated (every uid of the process: real, effective, saved, fs)")
+	mcpAllowCgroup := flag.String("mcp-allow-cgroup", "", "With --mcp: capture processes and cgroups under these cgroup paths or container ids, comma-separated")
+	mcpAllowAny := flag.Bool("mcp-allow-any", false, "With --mcp: let the agent capture any process on the host — deliberate opt-in")
 	flag.Parse()
 
 	// Which flags were given at all: a default and an explicit value can mean
 	// different things (--overhead-budget under --for).
 	given := map[string]bool{}
 	flag.Visit(func(f *flag.Flag) { given[f.Name] = true })
+
+	// --mcp (#187) owns stdout: the protocol is the stdout stream, and one stray
+	// write breaks the session. So it is taken first, before anything prints,
+	// and everything else that writes to stdout lands on stderr.
+	var mcpOut *os.File
+	if *mcpMode {
+		var err error
+		if mcpOut, err = mcp.TakeStdout(); err != nil {
+			fmt.Fprintf(os.Stderr, "error: --mcp: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if err := checkMCPFlags(*mcpMode, given); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
+	var mcpScope mcp.Scope
+	if *mcpMode {
+		var err error
+		if mcpScope, err = mcp.ParseScope(*mcpAllowAny, *mcpAllowUID, *mcpAllowCgroup); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(2)
+		}
+	}
 
 	// 0 on the command line reads as "off" — off meaning no sampling, i.e.
 	// every allocation recorded. SetConfig cannot spell it that way (there its
@@ -107,14 +136,14 @@ func main() {
 		os.Exit(2)
 	}
 	if capture {
-		if disable, err = captureDisable(*probesSpec, disable); err != nil {
+		if disable, err = serve.CaptureDisable(*probesSpec, disable); err != nil {
 			fmt.Fprintf(os.Stderr, "error: --probes: %v\n", err)
 			os.Exit(2)
 		}
 		// Heap is off unless named. Named, its cost is bounded: above ~1M
 		// allocations a second it is the whole cost of the capture.
 		if !disable[collector.SubsystemHeap] && !given["overhead-budget"] {
-			budget = captureHeapBudget
+			budget = serve.CaptureHeapBudgetPct
 		}
 	}
 
@@ -128,7 +157,7 @@ func main() {
 
 	// One target, named one of two ways (#94). Everything that cannot hold for a
 	// cgroup subtree is rejected here rather than half-working later.
-	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF, *withTUI, capture); err != nil {
+	if err := checkTargetFlags(*pid, *cgroupSpec, *serveAddr, *noEBPF, *withTUI, capture, *mcpMode); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		fmt.Fprintln(os.Stderr, "usage: ptop --pid <PID> [--fps 5] [--no-ebpf] [--export]")
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --for 10s [--probes cpu,syscalls,io] [--top 10]")
@@ -136,6 +165,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "       ptop --pid <PID> --serve tcp://<ip>:50051 --serve-tls-cert <crt> --serve-tls-key <key>")
 		fmt.Fprintln(os.Stderr, "       ptop --cgroup <path|container-id> --serve tcp://127.0.0.1:50051")
 		fmt.Fprintln(os.Stderr, "       ptop --serve unix:///run/ptop.sock          (no --pid: subscribers pick the target)")
+		fmt.Fprintln(os.Stderr, "       ptop --mcp --mcp-allow-uid <uids>           (the --for capture as an MCP tool, over stdio)")
 		fmt.Fprintln(os.Stderr, "       ptop --caps                                 (which collectors these privileges run)")
 		fmt.Fprintln(os.Stderr, "       ptop --version")
 		os.Exit(1)
@@ -193,11 +223,14 @@ func main() {
 				fmt.Fprint(os.Stderr, diag)
 				os.Exit(1)
 			}
-			if *serveAddr != "" && *pid == 0 && *cgroupSpec == "" {
+			switch {
+			case *mcpMode:
+				fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Tracers start per capture, and stop with it.")
+			case *serveAddr != "" && *pid == 0 && *cgroupSpec == "":
 				// On-demand mode loads nothing until a subscriber names a pid,
 				// so don't claim tracers are starting (#72).
 				fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Tracers start per target, on subscribe.")
-			} else {
+			default:
 				fmt.Fprintln(os.Stderr, "[ptop] eBPF embedded, kernel supports it. Starting tracers...")
 			}
 		}
@@ -258,6 +291,12 @@ func main() {
 		serveTLS.ClientCAFile != "" || serveTLS.AllowInsecure) {
 		fmt.Fprintln(os.Stderr, "error: --serve-tls-*/--serve-insecure configure the --serve endpoint, but --serve was not given")
 		os.Exit(1)
+	}
+
+	// The capture, offered to an agent (#187).
+	if *mcpMode {
+		runMCP(mcpOut, base, mcpScope, given["overhead-budget"])
+		return
 	}
 
 	// A fixed window, then a report (#156).
@@ -442,8 +481,12 @@ func runTUI(cfg tui.Config) {
 // header, thread table and fd list are all one process's. Rejecting those
 // combinations here beats a TUI that renders an empty shell. capture is --for
 // (#156): it takes either kind of target, since a report has room for a subtree,
-// but it must name one.
-func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI, capture bool) error {
+// but it must name one. mcpMode (#187) names its targets per tool call, and
+// checkMCPFlags has already refused --pid and --cgroup beside it.
+func checkTargetFlags(pid int, cgroupSpec, serveAddr string, noEBPF, withTUI, capture, mcpMode bool) error {
+	if mcpMode {
+		return nil
+	}
 	if cgroupSpec == "" {
 		if pid < 0 {
 			return fmt.Errorf("--pid %d is not a valid PID", pid)
@@ -598,20 +641,6 @@ func fixedTarget(pid int, cgroupSpec string) serve.Target {
 	return serve.TargetCgroup(path, id)
 }
 
-// The bounds of a --for window (#156). Below a second most axes have not
-// published twice, and a total needs two readings. Above five minutes the
-// stream is the right tool, and an agent that forgot a unit has not asked for
-// an hour of probes on someone's host.
-const (
-	minCaptureWindow = time.Second
-	maxCaptureWindow = 5 * time.Minute
-)
-
-// captureHeapBudget is --overhead-budget under --for when heap was asked for
-// and no budget was: the capture detaches the probe rather than let it cost
-// the target more than this share of its CPU.
-const captureHeapBudget = 5.0
-
 // checkCaptureFlags validates --for and the flags that only mean something
 // with it. given names the flags set on the command line.
 func checkCaptureFlags(forDur time.Duration, top int, probes, disableSpec, serveAddr string, withTUI, tlsCapture bool, given map[string]bool) error {
@@ -624,8 +653,8 @@ func checkCaptureFlags(forDur time.Duration, top int, probes, disableSpec, serve
 		return nil
 	}
 	switch {
-	case forDur < minCaptureWindow || forDur > maxCaptureWindow:
-		return fmt.Errorf("--for %v: a window runs from %v to %v", forDur, minCaptureWindow, maxCaptureWindow)
+	case forDur < serve.MinCaptureWindow || forDur > serve.MaxCaptureWindow:
+		return fmt.Errorf("--for %v: a window runs from %v to %v", forDur, serve.MinCaptureWindow, serve.MaxCaptureWindow)
 	case top < 1 || top > report.MaxTopN:
 		return fmt.Errorf("--top %d: from 1 to %d", top, report.MaxTopN)
 	case serveAddr != "":
@@ -640,20 +669,6 @@ func checkCaptureFlags(forDur time.Duration, top int, probes, disableSpec, serve
 	return nil
 }
 
-// captureDisable is what a --for capture switches off. --probes names what
-// runs and nothing else does. Without it everything runs but heap, whose probe
-// fires on every allocation, plus whatever --disable named.
-func captureDisable(probes string, disable map[string]bool) (map[string]bool, error) {
-	if probes != "" {
-		return collector.ParseOnly(probes)
-	}
-	out := map[string]bool{collector.SubsystemHeap: true}
-	for name := range disable {
-		out[name] = true
-	}
-	return out, nil
-}
-
 // Exit codes of --for (#156). Every one of them but a usage error (2) and a
 // failure before the window opened (1) comes with a report on stdout.
 const (
@@ -664,18 +679,10 @@ const (
 )
 
 // captureExitCode says how a window went, so an agent can branch without
-// parsing the report. A partial probe set is still a measurement: a host
-// without CAP_SYS_ADMIN would otherwise fail every capture.
+// parsing the report.
 func captureExitCode(r *pb.CaptureReport) int {
-	active := false
-	for _, p := range r.GetTarget().GetProbes() {
-		if p.GetState() == pb.ProbeState_PROBE_STATE_ACTIVE {
-			active = true
-			break
-		}
-	}
 	switch {
-	case !active:
+	case !serve.ProbesActive(r):
 		return exitNoProbe
 	case r.GetWindow().GetEnd() == pb.WindowEnd_WINDOW_END_TARGET_EXITED:
 		return exitTargetExited
@@ -683,6 +690,54 @@ func captureExitCode(r *pb.CaptureReport) int {
 		return exitInterrupted
 	}
 	return exitMeasured
+}
+
+// mcpRefuses are the flags that mean nothing under --mcp: the agent names the
+// target and the window in each call, ptop is no server and no TUI there, and a
+// report never carries TLS traffic.
+var mcpRefuses = []string{
+	"pid", "cgroup", "for", "probes", "top", "export", "tls", "tls-bytes", "fps",
+	"serve", "tui", "serve-max-targets", "serve-tls-cert", "serve-tls-key", "serve-tls-client-ca", "serve-insecure",
+}
+
+// checkMCPFlags validates --mcp (#187) and the flags that only mean something
+// with it. The scope itself is checked by mcp.ParseScope.
+func checkMCPFlags(mcpMode bool, given map[string]bool) error {
+	if !mcpMode {
+		for _, f := range []string{"mcp-allow-uid", "mcp-allow-cgroup", "mcp-allow-any"} {
+			if given[f] {
+				return fmt.Errorf("--%s goes with --mcp", f)
+			}
+		}
+		return nil
+	}
+	for _, f := range mcpRefuses {
+		if given[f] {
+			return fmt.Errorf("--%s does not go with --mcp: the agent names the target and the window in each capture call", f)
+		}
+	}
+	return nil
+}
+
+// runMCP serves the capture to an agent over stdio (#187) until the client
+// closes stdin or ptop is told to stop. proto is the real stdout, which
+// mcp.TakeStdout reserved for the protocol.
+func runMCP(proto *os.File, base collector.SetConfig, scope mcp.Scope, budgetGiven bool) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	cfg := mcp.Config{
+		Base: base, BudgetGiven: budgetGiven, Scope: scope, Build: buildIdentity(),
+		StartFeed: func(ctx context.Context, cfg collector.SetConfig) (*collector.Feed, serve.StackResolver) {
+			feed := collector.StartFeed(ctx, cfg)
+			return feed, stackResolverFor(feed.Set)
+		},
+	}
+	fmt.Fprintf(os.Stderr, "[ptop] MCP on stdio; this server captures %s\n", scope)
+	if err := mcp.Run(ctx, cfg, os.Stdin, proto); err != nil {
+		fmt.Fprintf(os.Stderr, "fatal error: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // reportJSON prints a report. EmitDefaultValues because a zero in a report is

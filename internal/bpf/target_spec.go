@@ -186,3 +186,26 @@ func findCgroup(fsys fs.FS, needle string) (string, error) {
 			needle, len(hits), strings.Join(shown, ", "))
 	}
 }
+
+// cgroupV2Rel returns the unified-hierarchy path in the contents of a
+// /proc/<pid>/cgroup file: the "0::<path>" line, which is relative to the
+// reader's cgroup namespace. A path that climbs out of that namespace ("/..")
+// is refused, since it cannot be compared with one under the mount.
+func cgroupV2Rel(procCgroup string) (string, error) {
+	for _, line := range strings.Split(procCgroup, "\n") {
+		rel, ok := strings.CutPrefix(line, "0::")
+		if !ok {
+			continue
+		}
+		if !strings.HasPrefix(rel, "/") {
+			return "", fmt.Errorf("cgroup v2 path %q is not rooted", rel)
+		}
+		for _, elem := range strings.Split(rel, "/") {
+			if elem == ".." {
+				return "", fmt.Errorf("cgroup %q is outside this process's cgroup namespace", rel)
+			}
+		}
+		return rel, nil
+	}
+	return "", errors.New("no cgroup v2 entry (is the unified hierarchy mounted?)")
+}

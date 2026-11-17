@@ -21,6 +21,7 @@ If something here drifts from reality, the code wins. Update this file.
 | Build  | Go 1.25+, clang, libbpf-dev (build only) | Single static binary on Linux (`CGO_ENABLED=0`) |
 | eBPF C | clang `-target bpf` → `.bpf.o` → `go:embed` | See `Makefile` |
 | macOS  | libproc + Mach via cgo (darwin-only build tag) | The only public path for per-process info on macOS |
+| MCP    | [modelcontextprotocol/go-sdk](https://github.com/modelcontextprotocol/go-sdk) | The official SDK; the protocol revises too often to own (#187) |
 
 > Don't introduce a CLI framework — `flag` is sufficient.
 > Don't add a logging library — `fmt.Fprintln(os.Stderr, ...)` is enough.
@@ -142,6 +143,11 @@ ptop/
 │   │   ├── security.go            PROT_EXEC + SELinux AVC loader + stack (#59)
 │   │   └── *_stub.go              stubs for non-Linux / no-ebpf builds
 │   ├── report/                    stream events → bounded CaptureReport (#156)
+│   ├── mcp/                       ptop --mcp: the capture as an MCP tool over stdio (#187)
+│   │   ├── server.go              capture + caps tools; --for's defaults; one at a time
+│   │   ├── scope.go               which targets an agent may name: --mcp-allow-*
+│   │   ├── uids_{linux,darwin}.go a process's uids, for the scope
+│   │   └── stdout_unix.go         TakeStdout: the protocol owns fd 1, strays go to stderr
 │   ├── serve/                     headless gRPC server (ptop --serve)
 │   │   ├── serve.go               addr parse + privilege boundary + Run
 │   │   ├── capture.go             --for: one window through the hub into a report; WatchPID (#156)
@@ -1187,6 +1193,67 @@ writes of 4 KiB must be credited to their file to the byte, a disabled probe
 has no section, and a child that exits 3s into a 30s window ends it as
 `TARGET_EXITED`.
 
+### The capture, offered to an agent (#187)
+
+`ptop --mcp` serves the `--for` capture to an agent over MCP, on stdio
+(`internal/mcp`). It has two tools: `capture(pid | cgroup, seconds, probes?,
+top?)`, which returns the same `CaptureReport`, and `caps`, which returns the
+`--caps` inventory and the scope. Five decisions, each with its reason:
+
+- **It runs privileged, on stdio.** The host launches ptop with the
+  capabilities (`setcap`), so the process an agent drives can attach to any pid.
+  The other shape, an unprivileged MCP client of a `--serve` on-demand server,
+  keeps `--serve` as the boundary, but the server's probe config and list cap
+  would then have to ride `SubscribeRequest`.
+- **A scope is mandatory** (`mcp.Scope`). `--mcp` refuses to start without
+  `--mcp-allow-uid`, `--mcp-allow-cgroup` or an explicit `--mcp-allow-any`, the
+  `--serve-insecure` pattern. A uid rule needs every uid of the process (real,
+  effective, saved, fs) on the list, because a setuid program started by an
+  allowed user holds someone else's secrets. A cgroup rule compares path
+  components (`/a/b` does not allow `/a/bc`). A uid rule never allows a
+  `cgroup` target, since a subtree may hold anyone's processes. The scope is
+  checked when the call arrives, not again during the window.
+- **The defaults of `--for` are shared, not copied.** `serve.MinCaptureWindow`,
+  `MaxCaptureWindow`, `CaptureHeapBudgetPct`, `CaptureDisable` and
+  `ProbesActive` are what both use. The input schema carries the same bounds,
+  so an agent learns them before it hits one, and the `probes` enum leaves out
+  `tls` and whatever the operator disabled. The operator's `--disable`
+  restricts every capture: a probe it names is refused, never run.
+- **The report rides twice:** protojson with `EmitDefaultValues` as text, and
+  the same object as `structuredContent`. There is no `outputSchema` yet. The
+  one the SDK would infer from the protobuf Go struct names Go fields, not
+  protojson's, so it would be a wrong schema. One generated from
+  `report.proto` is the follow-up. A window with no active probe is `isError`
+  and still carries the report, whose probe set says why.
+- **One capture at a time.** A second call gets `busy` at once, naming what
+  holds the slot. Two captures would load the eBPF set twice on the host.
+
+The rest:
+
+- **Cancellation returns nothing.** MCP says the receiver of
+  `notifications/cancelled` does not answer, and the client ignores a late
+  answer. So a cancelled capture releases its probes, and its report is lost.
+  The issue asked for the `INTERRUPTED` report back, as SIGINT gives `--for`.
+- **Progress** goes out every second when the call carried a token, because a
+  client times a silent request out (60s by default in the TypeScript one).
+- **The protocol owns fd 1** (`mcp.TakeStdout`, first thing in `main`). The real
+  stdout moves to a descriptor only the transport holds, and fd 1 becomes a
+  copy of stderr. Under `--for` a stray write cost one report. Here it would
+  break the session, so a write through `fmt.Print`, `os.Stdout` or C lands in
+  the log instead. `TestTakeStdout` checks both paths in a child process. A
+  no-op guard fails it.
+- **The SDK is the one new dependency** (`go-sdk` v1.8.0). The protocol has
+  revised four times in about 18 months, and owning version negotiation,
+  cancellation and progress is the kind of surface that drifts quietly. It adds
+  1.8 MB to the release binary (17.8 to 19.6 MB, linux/arm64, `-s -w`).
+
+`internal/mcp/server_test.go` drives `Run` over pipes, as stdio does, with a
+fake feed, and once with a real `--no-ebpf` set on its own process.
+`cmd/ptop`'s `TestMCPStdoutCarriesOnlyTheProtocol` re-execs the test binary as
+`ptop --mcp` (`TestMain`, `PTOP_TEST_RUN_MAIN`). It fails on any stdout line
+that is not JSON-RPC, from the first byte to exit. The selftest's `report` case
+already grades the numbers, so the MCP path only has to return the same report.
+
 ---
 
 ## TUI conventions
@@ -1355,6 +1422,8 @@ ptop --pid <PID> --overhead-budget 5   detach heap when its estimate stays > 5% 
 ptop --pid <PID> --pprof localhost:6060   dev: serve net/http/pprof to profile ptop itself
 ptop --pid <PID> --for 10s  one fixed window, then a JSON CaptureReport on stdout and exit (#156)
 ptop --pid <PID> --for 30s --probes cpu,syscalls,io --top 20   only those probes; up to 20 rows per list
+ptop --mcp --mcp-allow-uid 1000      the --for capture as an MCP tool over stdio, for processes of uid 1000 (#187)
+ptop --mcp --mcp-allow-cgroup <path>  … for a cgroup subtree; --mcp-allow-any for every process (opt-in)
 ptop --caps                 which capabilities this binary holds, and which collectors they run
 ptop --version              print version + commit + build date
 ```
