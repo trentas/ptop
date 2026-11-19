@@ -4,6 +4,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"net"
@@ -30,11 +31,12 @@ const peerEnv = "PTOP_SELFTEST_PEER"
 const netPayload = 32 << 10
 
 // runPeer is the child side: "echo" serves an echo on a loopback port it
-// prints, "client:<addr>:<n>" sends n bytes to addr and reads until EOF, and
-// "burn" spins on a CPU until killed.
+// prints, "pump" serves each connection the number of bytes it asks for (see
+// pumpServe), "client:<addr>:<n>" sends n bytes to addr and reads until EOF,
+// and "burn" spins on a CPU until killed.
 func runPeer(spec string) {
 	switch {
-	case spec == "echo":
+	case spec == "echo" || spec == "pump":
 		ln, err := net.Listen("tcp4", "127.0.0.1:0")
 		if err != nil {
 			os.Exit(1)
@@ -44,6 +46,10 @@ func runPeer(spec string) {
 			c, err := ln.Accept()
 			if err != nil {
 				os.Exit(0)
+			}
+			if spec == "pump" {
+				go pumpServe(c)
+				continue
 			}
 			go func() { _, _ = io.Copy(c, c); _ = c.Close() }()
 		}
@@ -71,6 +77,22 @@ func runPeer(spec string) {
 	os.Exit(2)
 }
 
+// pumpServe reads an 8-byte big-endian count, writes that many bytes, then
+// discards whatever else arrives until EOF. One peer, three shapes: a
+// connection that sends nothing is idle, one that asks for n downloads, one
+// that asks for 0 and writes n uploads.
+func pumpServe(c net.Conn) {
+	defer c.Close()
+	var hdr [8]byte
+	if _, err := io.ReadFull(c, hdr[:]); err != nil {
+		return
+	}
+	if _, err := c.Write(make([]byte, binary.BigEndian.Uint64(hdr[:]))); err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, c)
+}
+
 func peerCmd(spec string) *exec.Cmd {
 	cmd := exec.Command("/proc/self/exe")
 	cmd.Env = append(os.Environ(), peerEnv+"="+spec)
@@ -79,8 +101,12 @@ func peerCmd(spec string) *exec.Cmd {
 }
 
 // startEchoPeer starts the echo child and returns its port and a stop func.
-func startEchoPeer() (int, func(), error) {
-	cmd := peerCmd("echo")
+func startEchoPeer() (int, func(), error) { return startServingPeer("echo") }
+
+// startServingPeer starts a child that listens (echo, pump) and returns the
+// port it printed and a stop func.
+func startServingPeer(spec string) (int, func(), error) {
+	cmd := peerCmd(spec)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return 0, nil, err
@@ -92,12 +118,12 @@ func startEchoPeer() (int, func(), error) {
 	line, err := bufio.NewReader(out).ReadString('\n')
 	if err != nil {
 		stop()
-		return 0, nil, fmt.Errorf("echo peer: %w", err)
+		return 0, nil, fmt.Errorf("%s peer: %w", spec, err)
 	}
 	port, err := strconv.Atoi(strings.TrimSpace(line))
 	if err != nil {
 		stop()
-		return 0, nil, fmt.Errorf("echo peer port %q: %w", line, err)
+		return 0, nil, fmt.Errorf("%s peer port %q: %w", spec, line, err)
 	}
 	return port, stop, nil
 }
@@ -143,6 +169,17 @@ func row(found bool) string {
 		return "a row"
 	}
 	return "none"
+}
+
+// originName renders the tracer's origin.
+func originName(o bpf.NetOrigin) string {
+	switch o {
+	case bpf.NetOriginConnected:
+		return "connected"
+	case bpf.NetOriginAccepted:
+		return "accepted"
+	}
+	return "unknown"
 }
 
 // rtt renders a row's handshake time, or says it was not measured.
@@ -192,6 +229,10 @@ func checkNetwork(g *grader, pid int) {
 	}
 	if s, ok := findConn(t, preKey); g.check("net", "pre-existing connection has a row (#142)", ok, "a row", row(ok)) {
 		bytesMatch(g, "pre-existing connection, bytes since the attach", s)
+		// Opened before the attach: the program saw no connect(), and must
+		// not make one up from the bytes (#195).
+		g.check("net", "pre-existing connection: origin", s.Origin == bpf.NetOriginUnknown,
+			"unknown (the open predates the probe)", originName(s.Origin))
 	}
 
 	// 2. Active open: keyed by the real source port, handshake timed.
@@ -207,6 +248,7 @@ func checkNetwork(g *grader, pid int) {
 	if s, ok := findConn(t, actKey); g.check("net", "connect(): row under the real source port", ok, "a row", row(ok)) {
 		g.check("net", "connect(): handshake RTT", s.RTTMeasured, "measured", rtt(s))
 		bytesMatch(g, "connect(), bytes", s)
+		g.check("net", "connect(): origin (#195)", s.Origin == bpf.NetOriginConnected, "connected", originName(s.Origin))
 	}
 	zero := actKey
 	zero.SPort = 0
@@ -261,6 +303,7 @@ func checkNetwork(g *grader, pid int) {
 	if s, ok := findConn(t, accKey); g.check("net", "accept(): the server's connection has a row (#135)", ok, "a row", row(ok)) {
 		g.check("net", "accept(): handshake RTT", !s.RTTMeasured, "not measured (nobody timed it)", rtt(s))
 		bytesMatch(g, "accept(), bytes", s)
+		g.check("net", "accept(): origin (#195)", s.Origin == bpf.NetOriginAccepted, "accepted", originName(s.Origin))
 	}
 	_, peerCredited := findConn(t, peerKey)
 	g.check("net", "the peer process's socket is not credited to this one (#135)", !peerCredited,

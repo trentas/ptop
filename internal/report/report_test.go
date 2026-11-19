@@ -292,14 +292,14 @@ func TestIoFilesAndBuckets(t *testing.T) {
 }
 
 func TestNetwork(t *testing.T) {
-	conn := func(remote string, fd int32, tx, rx uint64) *pb.NetConn {
-		return &pb.NetConn{Type: "TCP", Remote: remote, Fd: fd, State: "ESTABLISHED", TxBytes: tx, RxBytes: rx}
+	conn := func(local, remote string, tx, rx uint64) *pb.NetConn {
+		return &pb.NetConn{Type: "TCP", Local: local, Remote: remote, State: "ESTABLISHED", TxBytes: tx, RxBytes: rx}
 	}
 	events := []*pb.Event{
 		ev(0, &pb.NetThroughputSample{TxBytes: 1000, RxBytes: 2000}),
 		ev(1, &pb.NetThroughputSample{TxBytes: 1500, RxBytes: 2600, DroppedConnections: 1}),
-		ev(0, &pb.NetworkSnapshot{Conns: []*pb.NetConn{conn("10.0.0.1:443", 5, 1000, 2000)}}),
-		ev(1, &pb.NetworkSnapshot{Conns: []*pb.NetConn{conn("10.0.0.1:443", 5, 1100, 2100), conn("10.0.0.2:80", 6, 400, 500)}}),
+		ev(0, &pb.NetworkSnapshot{Conns: []*pb.NetConn{conn("10.0.9.9:40000", "10.0.0.1:443", 1000, 2000)}}),
+		ev(1, &pb.NetworkSnapshot{Conns: []*pb.NetConn{conn("10.0.9.9:40000", "10.0.0.1:443", 1100, 2100), conn("10.0.9.9:40001", "10.0.0.2:80", 400, 500)}}),
 		ev(0.5, &pb.NetErrorEvent{Kind: "reset", Remote: "10.0.0.3:80"}),
 		ev(0.6, &pb.NetErrorEvent{Kind: "reset", Remote: "10.0.0.3:80"}),
 	}
@@ -323,6 +323,47 @@ func TestNetwork(t *testing.T) {
 	proc := &pb.TargetInfo{Probes: []*pb.ProbeInfo{{Name: collector.SubsystemNetwork, State: pb.ProbeState_PROBE_STATE_ACTIVE, Source: "/proc"}}}
 	if got := build(t, Config{}, proc, events[:4]...).GetNetwork(); got.Errors != nil {
 		t.Errorf("errors = %d from a /proc lane, want absent", got.GetErrors())
+	}
+}
+
+// Two connections to one peer are two rows (#195). The eBPF lane's rows all
+// carried fd 0, so a key of type, remote and fd folded them into one: here a
+// single connection that moved 4,000 bytes, baselined on whichever of the two
+// the first reading listed last, where there are two that moved 100 and 4,000.
+func TestNetworkConnsToOnePeerAreRows(t *testing.T) {
+	conn := func(local string, tx uint64, origin pb.ConnOrigin) *pb.NetConn {
+		return &pb.NetConn{Type: "TCP", Local: local, Remote: "10.0.0.1:5432", State: "ESTABLISHED",
+			TxBytes: tx, Origin: origin}
+	}
+	connected, accepted := pb.ConnOrigin_CONN_ORIGIN_CONNECTED, pb.ConnOrigin_CONN_ORIGIN_ACCEPTED
+	r := build(t, Config{}, probes(collector.SubsystemNetwork),
+		ev(0, &pb.NetworkSnapshot{Conns: []*pb.NetConn{conn("10.0.9.9:40000", 0, connected), conn("10.0.9.9:40001", 5000, accepted)}}),
+		ev(1, &pb.NetworkSnapshot{Conns: []*pb.NetConn{conn("10.0.9.9:40001", 9000, accepted), conn("10.0.9.9:40000", 100, connected)}}),
+	).GetNetwork()
+	if r.GetTotalConns() != 2 || len(r.GetConns()) != 2 {
+		t.Fatalf("%d conns, %d rows, want 2 and 2: %v", r.GetTotalConns(), len(r.GetConns()), r.GetConns())
+	}
+	want := map[string]struct {
+		tx     uint64
+		origin pb.ConnOrigin
+	}{"10.0.9.9:40000": {100, connected}, "10.0.9.9:40001": {4000, accepted}}
+	for _, c := range r.GetConns() {
+		w, ok := want[c.GetLocal()]
+		if !ok || c.GetTxBytes() != w.tx || c.GetOrigin() != w.origin {
+			t.Errorf("row %s: tx %d origin %v, want %+v", c.GetLocal(), c.GetTxBytes(), c.GetOrigin(), w)
+		}
+	}
+
+	// A lane that knows the fd keys on it too: two UNIX sockets to one path.
+	unix := func(fd int32, tx uint64) *pb.NetConn {
+		return &pb.NetConn{Type: "UNIX", Remote: "/run/db.sock", Fd: proto.Int32(fd), TxBytes: tx}
+	}
+	r = build(t, Config{}, probes(collector.SubsystemNetwork),
+		ev(0, &pb.NetworkSnapshot{Conns: []*pb.NetConn{unix(7, 0), unix(8, 0)}}),
+		ev(1, &pb.NetworkSnapshot{Conns: []*pb.NetConn{unix(7, 10), unix(8, 20)}}),
+	).GetNetwork()
+	if r.GetTotalConns() != 2 {
+		t.Errorf("%d UNIX conns, want 2 told apart by fd", r.GetTotalConns())
 	}
 }
 

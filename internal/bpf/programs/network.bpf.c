@@ -46,6 +46,34 @@
 // context. That is what brings back ESTABLISHED (the handshake RTT) and CLOSE
 // (the prune).
 //
+// WHO OPENED IT (#195)
+//
+// A row says who opened its connection, when this program saw the open:
+// NET_F_CONNECTED for an active open, a dependency of the target's, and
+// NET_F_ACCEPTED for a passive one, a caller. Byte volume cannot answer that:
+// a client downloading reads as inbound, and the ratio moves.
+//
+//   - Connected is evidence 1: the socket is in `connecting`.
+//   - Accepted is the handshake of a passive open completing, SYN_RECV →
+//     ESTABLISHED. That runs in softirq, so it proves no owner, and the program
+//     notes it for every socket on the host (`passive_open`). The note becomes
+//     the row's flag when the target owns the socket, which for an accepted
+//     one is its first read, write or close. A simultaneous open also passes
+//     through SYN_RECV, but its socket was connect()ed and is in `connecting`,
+//     which is checked first.
+//
+// A row with neither flag is unknown, and the collector says so: a socket
+// adopted by its bytes may be one the target connected before the capture, or
+// one another process handed it.
+//
+// The first version hooked accept(2) instead, with a kretprobe on
+// inet_csk_accept(), which returns the socket in the accepting task's own
+// context. It fired for every accept on the host, and on arm64 a loopback
+// accept loop fell from ~110k accepts a second to ~79k with it, against the
+// same build without it, while the program's own run time was 166ns a hit.
+// The tracepoint already runs for every transition, and the note is one map
+// update per passive open.
+//
 // NO KEY AT SYN_SENT
 //
 // tcp_v4_connect() sets SYN_SENT BEFORE inet_hash_connect() picks the source
@@ -95,6 +123,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 #define TCP_ESTABLISHED 1
 #define TCP_SYN_SENT    2
+#define TCP_SYN_RECV    3
 #define TCP_FIN_WAIT1   4
 #define TCP_CLOSE       7
 #define TCP_LAST_ACK    9
@@ -163,7 +192,10 @@ struct net_key {
 };
 
 // Flags on a net_val — must match netFlag* in internal/bpf/network.go.
-#define NET_F_RTT 1 // rtt_ns is a measurement: this program saw the handshake
+#define NET_F_RTT       1 // rtt_ns is a measurement: this program saw the handshake
+#define NET_F_CONNECTED 2 // an active open: the target connect()ed it (evidence 1)
+#define NET_F_ACCEPTED  4 // a passive open: it is a listener's child, see passive_open
+#define NET_F_ORIGIN    (NET_F_CONNECTED | NET_F_ACCEPTED)
 
 struct net_val {
     __u64 first_seen_ns;
@@ -232,6 +264,23 @@ struct {
     __type(value, __u64);
     __uint(max_entries, 4096);
 } connecting SEC(".maps");
+
+// passive_open: sockets whose passive open was seen to complete (SYN_RECV →
+// ESTABLISHED), sock pointer → the 4-tuple at that moment (#195). Written for
+// every socket on the host, since the transition runs in softirq and proves
+// no owner; read and deleted by own_sock when the target owns one. The tuple
+// is checked there too, so a note left by a socket that died unowned cannot
+// name a later socket at the same address.
+//
+// LRU: the notes of other processes' connections are never consumed and must
+// age out. A note lives through about max_entries passive opens on the host.
+// One the target owns later than that loses its origin: unknown, not wrong.
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __type(key, __u64);
+    __type(value, struct net_key);
+    __uint(max_entries, 16384);
+} passive_open SEC(".maps");
 
 // net_stats counts what this program could not record (#133).
 //
@@ -320,23 +369,50 @@ static __always_inline int key_from_ctx(struct sock_set_state_args *ctx, struct 
     return 1;
 }
 
+// net_key_eq compares two keys. Both were built zeroed (key_from_ctx,
+// key_from_sock), so the padding compares equal. By halfwords, unrolled:
+// memcmp is not a BPF instruction, and a key is only 2-aligned.
+static __always_inline int net_key_eq(const struct net_key *a, const struct net_key *b)
+{
+    const __u16 *x = (const __u16 *)a, *y = (const __u16 *)b;
+#pragma unroll
+    for (int i = 0; i < (int)(sizeof(*a) / 2); i++)
+        if (x[i] != y[i])
+            return 0;
+    return 1;
+}
+
 // own_sock records that the target owns `sk`: it makes sure the socket's row
 // exists and registers the socket, so that every later event on it — in any
 // context — is attributed. A socket the target is connect()ing carries its
 // SYN_SENT time over, which is what lets ESTABLISHED compute the handshake.
 //
+// It is also where a row learns who opened the connection (#195): a socket in
+// `connecting` was connect()ed, one with a note in passive_open for this very
+// tuple was accepted, and the note is consumed either way.
+//
 // Returns the row, or NULL when a map was full (counted).
 static __always_inline struct net_val *own_sock(__u64 skaddr, struct net_key *k,
                                                __u32 state, __u64 now)
 {
+    __u32 origin = 0;
+    __u64 *syn = bpf_map_lookup_elem(&connecting, &skaddr);
+    struct net_key *pk = bpf_map_lookup_elem(&passive_open, &skaddr);
+    if (pk) {
+        if (!syn && net_key_eq(pk, k))
+            origin = NET_F_ACCEPTED;
+        bpf_map_delete_elem(&passive_open, &skaddr);
+    }
+    if (syn)
+        origin = NET_F_CONNECTED;
     struct net_val *v = bpf_map_lookup_elem(&net_conn_map, k);
     if (!v) {
         struct net_val nv = {
             .first_seen_ns = now,
             .last_seen_ns  = now,
             .state         = state,
+            .flags         = origin,
         };
-        __u64 *syn = bpf_map_lookup_elem(&connecting, &skaddr);
         if (syn) {
             nv.first_seen_ns = *syn;
             nv.syn_sent_ns   = *syn;
@@ -353,6 +429,16 @@ static __always_inline struct net_val *own_sock(__u64 skaddr, struct net_key *k,
             if (!v)
                 return 0;
         }
+    }
+    // The row may predate the evidence: the userspace seed writes a row for
+    // each socket in the target's fds, and its 5-second rescan can find one
+    // still in SYN_SENT. The open is what the socket is, so it overrides the
+    // row, and the SYN_SENT time the seed could not know gives the row its
+    // handshake too.
+    if (origin && (v->flags & NET_F_ORIGIN) != origin) {
+        v->flags = (v->flags & ~NET_F_ORIGIN) | origin;
+        if (syn && !v->syn_sent_ns && !(v->flags & NET_F_RTT))
+            v->syn_sent_ns = *syn;
     }
     if (state != TCP_CLOSE &&
         bpf_map_update_elem(&sock_to_key, &skaddr, k, BPF_ANY) < 0)
@@ -417,6 +503,13 @@ int handle_inet_set_state(struct sock_set_state_args *ctx)
     struct net_val *v = owned_row(skaddr, &k);
     if (v) {
         apply_state(v, newstate, now);
+        // A passive open the target owned before it completed: a Fast Open
+        // child, which accept() hands over in SYN_RECV and the target can
+        // read before the handshake's last ACK. A simultaneous open passes
+        // SYN_RECV too, but it was owned out of `connecting`, as connected.
+        if (newstate == TCP_ESTABLISHED && ctx->oldstate == TCP_SYN_RECV &&
+            !(v->flags & NET_F_ORIGIN))
+            v->flags |= NET_F_ACCEPTED;
         if (newstate == TCP_CLOSE)
             bpf_map_delete_elem(&sock_to_key, &skaddr);
         if (newstate != TCP_SYN_SENT)
@@ -445,6 +538,13 @@ int handle_inet_set_state(struct sock_set_state_args *ctx)
         bpf_map_delete_elem(&connecting, &skaddr);
         return 0;
     }
+
+    // A passive open completing (#195). This runs in softirq, so nothing
+    // here says whose listener it is: note it, and let own_sock turn the note
+    // into the row's origin if the target turns out to own the socket. Before
+    // evidence 3, so that a socket adopted right here consumes its own note.
+    if (newstate == TCP_ESTABLISHED && ctx->oldstate == TCP_SYN_RECV)
+        bpf_map_update_elem(&passive_open, &skaddr, &k, BPF_ANY);
 
     // Evidence 3: a row already proven names this socket.
     v = adopt_by_tuple(skaddr, &k, newstate, now);

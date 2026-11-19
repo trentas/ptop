@@ -26,6 +26,10 @@ import (
 //     indicator, but the F3 "Traffic" column must be read as a gauge, not
 //     a counter. See LPSocketFDInfo.SndQueued/RcvQueued.
 //   - Dir (→/←/↔): inferred from local vs remote address presence.
+//   - FD is the real descriptor (FDKnown), and Local the socket's own
+//     endpoint, so Local+Remote+FD names the socket (#195).
+//   - Origin stays "" (unknown): libproc says nothing of whether the socket
+//     was connect()ed or accept()ed.
 //
 // The label "eBPF" in the type name lies on darwin; the source string is
 // fixed up in the model layer (see task #5 / issue #22).
@@ -57,8 +61,8 @@ func (c *NetworkEBPFCollector) StartCgroup(string) error {
 	return errors.New("cgroup targeting is Linux-only")
 }
 
-func (c *NetworkEBPFCollector) Stop()                          { close(c.stop) }
-func (c *NetworkEBPFCollector) Subscribe() <-chan interface{}  { return c.ch }
+func (c *NetworkEBPFCollector) Stop()                         { close(c.stop) }
+func (c *NetworkEBPFCollector) Subscribe() <-chan interface{} { return c.ch }
 
 func (c *NetworkEBPFCollector) loop() {
 	t := time.NewTicker(1 * time.Second)
@@ -97,8 +101,10 @@ func (c *NetworkEBPFCollector) collect() ([]NetConn, error) {
 			continue
 		}
 		nc := socketToNetConn(int(raw.FD), s)
-		// Skip degenerate entries (no protocol info we can label).
-		if nc.Type == "" {
+		// Skip degenerate entries (no protocol info we can label), and
+		// listeners: not connections, and on the wire a listener's row read
+		// as one more peer (#195). The fd list (F6) still shows them.
+		if nc.Type == "" || nc.State == "LISTEN" {
 			continue
 		}
 		out = append(out, nc)
@@ -123,7 +129,8 @@ func (c *NetworkEBPFCollector) collect() ([]NetConn, error) {
 }
 
 // connRank orders connections by usefulness: an active peer connection first,
-// then anything with a TCP state (e.g. a listener), then idle/unconnected.
+// then anything with a TCP state but no peer, then idle/unconnected. Listeners
+// never reach it any more (collect drops them, #195).
 func connRank(c NetConn) int {
 	switch {
 	case c.Dir == "↔": // has a remote peer
@@ -185,7 +192,9 @@ func socketToNetConn(fd int, s LPSocketFDInfo) NetConn {
 
 	return NetConn{
 		FD:        fd,
+		FDKnown:   true,
 		Type:      protoLabel,
+		Local:     s.LocalAddr,
 		Remote:    pickRemoteOrLocal(s.LocalAddr, remote),
 		State:     state,
 		Dir:       dir,

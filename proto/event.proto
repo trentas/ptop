@@ -281,12 +281,39 @@ message SyscallSnapshot {
 }
 
 // ─── Network ────────────────────────────────────────────────────────────────
+
+// NetConn is one of the target's connections. On the macOS lane the list also
+// holds the sockets that carry traffic without a peer: unconnected UDP, UNIX.
+//
+// A listening socket is not listed on either lane (#195). It has no peer, and
+// on the eBPF lane its row carried `0.0.0.0:0` as `remote`, which a consumer
+// counted as one more peer. The target's listeners are in its fd list.
 message NetConn {
-  int32 fd = 1;
+  // The target's descriptor for the socket, when the lane knows it. The macOS
+  // lane reads it from the fd table. The eBPF lane follows sockets in the
+  // kernel and never sees a descriptor, so there it is ABSENT. It used to be 0
+  // there for every socket (#195), and 0 is a descriptor too: a
+  // socket-activated service can hold its connection on fd 0. `local` and
+  // `remote` tell connections apart, the fd does not.
+  optional int32 fd = 1;
   string type = 2; // "TCP" | "UDP" | "UNIX"
+  // The peer's endpoint, "ip:port" or "[ip6]:port". It names the peer, not
+  // the connection: two connections to one peer share it and differ in
+  // `local`. On the macOS lane a socket without a peer carries its own
+  // endpoint here (the bound address, a UNIX path).
   string remote = 3;
-  string state = 4; // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
-  string dir = 5; // "→" | "←" | "↔"
+  // The kernel's name for the TCP state: "ESTABLISHED", "SYN_SENT",
+  // "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2", "TIME_WAIT", "CLOSE_WAIT",
+  // "LAST_ACK", "CLOSING", or on macOS "CLOSED". A closed connection leaves
+  // the eBPF lane's list, so it never says "CLOSE". Empty for UDP and UNIX.
+  string state = 4;
+  // A display hint for the TUI: which way most bytes went so far. On the eBPF
+  // lane "→" is more than four times as many sent as received, "←" the
+  // reverse, and "↔" neither, or no bytes yet. It is NOT who opened the
+  // connection, and it moves with the byte ratio: a client that downloads
+  // more than it uploads reads "←". `origin` is who opened it (#195). The
+  // macOS lane sets "↔" when there is a peer and "←" when there is none.
+  string dir = 5;
   // The handshake RTT (SYN_SENT → ESTABLISHED), when it was measured.
   //
   // ABSENT means not measured, never 0ms: a connection the target accepted
@@ -304,6 +331,40 @@ message NetConn {
   // handshake (and age) were never observable. Its byte counters are not
   // affected: they cover the capture, like every other connection's.
   bool preexisting = 9;
+  // The target's own endpoint, formatted like `remote` (a path for a UNIX
+  // socket). With `remote` it identifies the connection among the target's
+  // (#195).
+  string local = 10;
+  // Who opened the connection (#195).
+  ConnOrigin origin = 11;
+}
+
+// ConnOrigin is who opened a connection: the target, with connect(), or the
+// peer, whose connection the target accept()ed. Of a service, the first are
+// its dependencies and the second its callers. `dir` cannot answer this.
+enum ConnOrigin {
+  // Unknown. Never a guess, so a consumer must not read it as either value.
+  // It is what a connection gets when nothing saw it opened and the eBPF
+  // lane has no rule for it: one open before the capture whose local endpoint
+  // is not one of the target's listeners (an old client connection, or an
+  // accepted one whose listener has since closed), one that predates the
+  // capture in cgroup scope, one another process connected and handed over,
+  // or an accepted one the target first touched after its passive open had
+  // aged out of the kernel's notes (~16k passive opens on the host later).
+  // Also every connection on the macOS lane, and from a server that predates
+  // the field.
+  CONN_ORIGIN_UNSPECIFIED = 0;
+  // An active open: the target called connect(), and set SYN_SENT on the
+  // socket in its own context.
+  CONN_ORIGIN_CONNECTED = 1;
+  // A passive open: the socket is a listener's child, and the target owns it,
+  // which it can only have got by accept() (or from the process that did).
+  // Seen as the handshake completing (SYN_RECV → ESTABLISHED) on a socket the
+  // target then reads, writes or closes. For a connection open before the
+  // capture, its local endpoint is one of the target's listening sockets,
+  // which only an accepted connection can share (or one bound with
+  // SO_REUSEPORT beside the listener).
+  CONN_ORIGIN_ACCEPTED = 2;
 }
 message NetworkSnapshot {
   repeated NetConn conns = 1;

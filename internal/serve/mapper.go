@@ -68,13 +68,17 @@ func toEvent(pid int, buildID string, v interface{}) *pb.Event {
 		conns := make([]*pb.NetConn, len(x))
 		for i, c := range x {
 			conns[i] = &pb.NetConn{
-				Fd: int32(c.FD), Type: c.Type, Remote: c.Remote, State: c.State,
+				Type: c.Type, Local: c.Local, Remote: c.Remote, State: c.State,
 				Dir: c.Dir, TxBytes: c.TxBytes, RxBytes: c.RxBytes,
-				Preexisting: c.Preexisting,
+				Preexisting: c.Preexisting, Origin: connOrigins[c.Origin],
 			}
 			// Absent unless measured: an untimed handshake is not a 0ms one.
 			if c.RTTMeasured {
 				conns[i].LatencyMs = proto.Float64(c.LatencyMs)
+			}
+			// Absent unless the lane read it: 0 is a descriptor too (#195).
+			if c.FDKnown {
+				conns[i].Fd = proto.Int32(int32(c.FD))
 			}
 		}
 		ev.Payload = &pb.Event_Network{Network: &pb.NetworkSnapshot{Conns: conns}}
@@ -358,6 +362,13 @@ func heapCallSites(in []collector.HeapCallSite) []*pb.HeapCallSite {
 // never as USER (#152).
 var stackScopes = map[string]pb.StackScope{
 	collector.StackScopeUser: pb.StackScope_STACK_SCOPE_USER,
+}
+
+// connOrigins maps a connection's origin onto the wire enum. "" and anything
+// this server does not know become UNSPECIFIED: unknown, never a guess (#195).
+var connOrigins = map[string]pb.ConnOrigin{
+	collector.ConnOriginConnected: pb.ConnOrigin_CONN_ORIGIN_CONNECTED,
+	collector.ConnOriginAccepted:  pb.ConnOrigin_CONN_ORIGIN_ACCEPTED,
 }
 
 func cpuSites(in []collector.CPUSite) []*pb.CpuSite {

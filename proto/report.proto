@@ -398,7 +398,9 @@ message NetworkReport {
   // each moved after the window's first connection reading (all of it, for a
   // connection that reading did not list); state is at its last reading. A
   // connection opened and closed between two readings is in the totals above
-  // and in no row.
+  // and in no row. A row is one connection: type, local and remote, and the
+  // fd where the lane has one. Two connections to one peer are two rows
+  // (#195).
   repeated NetConn conns = 6;
   uint32 total_conns = 7;
   uint64 omitted_tx_bytes = 8;

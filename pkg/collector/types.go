@@ -156,12 +156,32 @@ type FdClassStat struct {
 
 // ─── Network ─────────────────────────────────────────────────────────────────
 
+// NetConn is one of the target's connections. A listening socket is not one,
+// and no lane publishes it here (#195): the fd list has the listeners.
 type NetConn struct {
-	FD     int
-	Type   string // "TCP" | "UDP" | "UNIX"
+	// FD is the target's descriptor for the socket, and one only when FDKnown
+	// is set: the macOS lane reads the fd table, the eBPF lane follows sockets
+	// in the kernel and never sees one. Unset, FD is 0 because nothing is
+	// known, and 0 is a real descriptor (#195).
+	FD      int
+	FDKnown bool
+	Type    string // "TCP" | "UDP" | "UNIX"
+	// Local and Remote are the two endpoints, "ip:port" or "[ip6]:port".
+	// Remote names the peer; the pair names the connection, so two
+	// connections to one peer differ in Local (#195).
+	Local  string
 	Remote string
-	State  string // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
-	Dir    string // "→" | "←" | "↔"
+	// State is the kernel's TCP state name ("ESTABLISHED", "SYN_SENT",
+	// "CLOSE_WAIT", ...); empty for UDP and UNIX.
+	State string
+	// Dir is a display hint: which way most bytes went (→ sent, ← received,
+	// ↔ neither). It is not who opened the connection, and it moves with the
+	// byte ratio. Origin is that.
+	Dir string
+	// Origin is who opened the connection: ConnOriginConnected,
+	// ConnOriginAccepted, or "" when nothing saw the open (#195). "" is
+	// unknown, never a guess either way.
+	Origin string
 	// LatencyMs is the handshake RTT, and a measurement only when RTTMeasured
 	// is set. Unset, it is 0 because nothing was timed — an accepted
 	// connection, one older than the capture, or a source with no RTT at all —
@@ -176,6 +196,15 @@ type NetConn struct {
 	// connection that moved nothing while watched.
 	Preexisting bool
 }
+
+// The values of NetConn.Origin (#195).
+const (
+	// ConnOriginConnected: the target called connect() on the socket.
+	ConnOriginConnected = "connected"
+	// ConnOriginAccepted: the target accept()ed it, or, for a connection open
+	// before the capture, its local endpoint is one the target listens on.
+	ConnOriginAccepted = "accepted"
+)
 
 // NetThroughputSample is the target's network volume: monotonic byte totals
 // since the collector attached, and the rate over the last interval (#128).

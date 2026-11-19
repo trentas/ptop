@@ -10,6 +10,7 @@ import (
 var errNetStub = errors.New("eBPF network tracer not available in this build")
 
 type NetSnapshot struct {
+	Key     NetConnKey
 	Family  uint16
 	SAddr   net.IP
 	DAddr   net.IP
@@ -22,6 +23,7 @@ type NetSnapshot struct {
 	LastNs  uint64
 
 	RTTMeasured bool
+	Origin      NetOrigin
 }
 
 type NetConnKey struct {
@@ -33,7 +35,9 @@ type NetConnKey struct {
 	_      uint16
 }
 
-type NetTracer struct{ ByteLane string }
+type NetTracer struct {
+	ByteLane string
+}
 
 func OpenNetTracer(Target) (*NetTracer, error)             { return nil, errNetStub }
 func (*NetTracer) Stats() ([]NetSnapshot, error)           { return nil, errNetStub }

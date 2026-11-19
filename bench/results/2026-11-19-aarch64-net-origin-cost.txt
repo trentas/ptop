@@ -1,0 +1,68 @@
+Host
+----
+arch          aarch64, 10 CPUs (OrbStack VM, privileged container)
+kernel        7.2.12-orbstack
+ptop          fix/195-netconn-origin, eBPF build (-tags=ebpf), three arms:
+                none       no ptop
+                noaccept   the branch with no accept-side hook: the set_state
+                           program as on main
+                kretprobe  the first version: a kretprobe on inet_csk_accept
+                note       the version merged: a passive_open note in the
+                           inet_sock_set_state program
+target        a Go server accept()ing on loopback, closing each connection
+load          another process: 4 goroutines dialing and closing as fast as
+              they can
+command       ptop --pid <server> --for 30s --probes network; the server
+              counts accepts over 8s; probecost -window 7-8s beside it
+
+#195 needs to know which of the target's connections it accepted. The first
+version hooked accept(2): a kretprobe on inet_csk_accept(), which returns the
+child socket in the accepting task's context. A kretprobe fires for every
+accept on the host, not only the target's, and it was the arm that moved.
+
+Accepts a second, alternated per round:
+
+kretprobe run      none     noaccept  kretprobe
+round 1          111910     114854      81229
+round 2          113450     103084      77210
+round 3           72872      81535      70870
+
+probecost, round 1, kretprobe arm:
+program              type             runs/s    ns/run   % of a core
+handle_inet_csk      Kprobe            93933       166        1.560%
+handle_inet_set      TracePoint       812000        72        5.846%
+
+The program's own run time was 166ns a hit, which does not account for the
+~25% drop in rounds 1-2. probecost times the program, not the probe's entry
+and return around it.
+
+The note replaces it: SYN_RECV -> ESTABLISHED already reaches
+handle_inet_set_state for every passive open, so it writes one LRU entry there
+(sk -> 4-tuple), and own_sock consumes it when the target owns the socket. No
+new attach point. Two runs, the note against noaccept, probecost on both arms:
+
+run 1              none     noaccept       note
+round 1               -          -      108846
+round 2          122178     109779       96848
+round 3           70828      82312       94355
+(round 1's first two lines were not kept)
+
+run 2              none     noaccept       note
+round 1          110313      99121      110281
+round 2          112355     102149       92493
+round 3           45633      61402       65194
+
+handle_inet_set_state, ns/run       noaccept   note
+run 1, rounds 1-3                   87 87 85   95 91 93
+run 2, rounds 1-3                   97 92 108  98 100 114
+mean                                92.7       98.5
+
+The accept rate does not separate from noaccept in either run; round 3 is noisy
+in every arm, none included. The program is ~6ns a transition slower: the LRU
+update, ~10 transitions per connection in this load (client and server sides
+both on the host), so ~60ns per accepted connection, charged to whatever runs
+the softirq.
+
+Every report in both ptop arms had droppedConnections in the hundreds of
+thousands: at this connection rate net_conn_map is full, the #133 limit, in
+both arms alike. It does not bear on the comparison.
