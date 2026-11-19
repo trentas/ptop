@@ -156,6 +156,77 @@ func (StackScope) EnumDescriptor() ([]byte, []int) {
 	return file_event_proto_rawDescGZIP(), []int{1}
 }
 
+// ConnOrigin is who opened a connection: the target, with connect(), or the
+// peer, whose connection the target accept()ed. Of a service, the first are
+// its dependencies and the second its callers. `dir` cannot answer this.
+type ConnOrigin int32
+
+const (
+	// Unknown. Never a guess, so a consumer must not read it as either value.
+	// It is what a connection gets when nothing saw it opened and the eBPF
+	// lane has no rule for it: one open before the capture whose local endpoint
+	// is not one of the target's listeners (an old client connection, or an
+	// accepted one whose listener has since closed), one that predates the
+	// capture in cgroup scope, one another process connected and handed over,
+	// or an accepted one the target first touched after its passive open had
+	// aged out of the kernel's notes (~16k passive opens on the host later).
+	// Also every connection on the macOS lane, and from a server that predates
+	// the field.
+	ConnOrigin_CONN_ORIGIN_UNSPECIFIED ConnOrigin = 0
+	// An active open: the target called connect(), and set SYN_SENT on the
+	// socket in its own context.
+	ConnOrigin_CONN_ORIGIN_CONNECTED ConnOrigin = 1
+	// A passive open: the socket is a listener's child, and the target owns it,
+	// which it can only have got by accept() (or from the process that did).
+	// Seen as the handshake completing (SYN_RECV → ESTABLISHED) on a socket the
+	// target then reads, writes or closes. For a connection open before the
+	// capture, its local endpoint is one of the target's listening sockets,
+	// which only an accepted connection can share (or one bound with
+	// SO_REUSEPORT beside the listener).
+	ConnOrigin_CONN_ORIGIN_ACCEPTED ConnOrigin = 2
+)
+
+// Enum value maps for ConnOrigin.
+var (
+	ConnOrigin_name = map[int32]string{
+		0: "CONN_ORIGIN_UNSPECIFIED",
+		1: "CONN_ORIGIN_CONNECTED",
+		2: "CONN_ORIGIN_ACCEPTED",
+	}
+	ConnOrigin_value = map[string]int32{
+		"CONN_ORIGIN_UNSPECIFIED": 0,
+		"CONN_ORIGIN_CONNECTED":   1,
+		"CONN_ORIGIN_ACCEPTED":    2,
+	}
+)
+
+func (x ConnOrigin) Enum() *ConnOrigin {
+	p := new(ConnOrigin)
+	*p = x
+	return p
+}
+
+func (x ConnOrigin) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ConnOrigin) Descriptor() protoreflect.EnumDescriptor {
+	return file_event_proto_enumTypes[2].Descriptor()
+}
+
+func (ConnOrigin) Type() protoreflect.EnumType {
+	return &file_event_proto_enumTypes[2]
+}
+
+func (x ConnOrigin) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ConnOrigin.Descriptor instead.
+func (ConnOrigin) EnumDescriptor() ([]byte, []int) {
+	return file_event_proto_rawDescGZIP(), []int{2}
+}
+
 // ProbeState is what became of one collector for one target (#112).
 //
 // The three ways a subsystem goes quiet are unrelated and call for opposite
@@ -211,11 +282,11 @@ func (x ProbeState) String() string {
 }
 
 func (ProbeState) Descriptor() protoreflect.EnumDescriptor {
-	return file_event_proto_enumTypes[2].Descriptor()
+	return file_event_proto_enumTypes[3].Descriptor()
 }
 
 func (ProbeState) Type() protoreflect.EnumType {
-	return &file_event_proto_enumTypes[2]
+	return &file_event_proto_enumTypes[3]
 }
 
 func (x ProbeState) Number() protoreflect.EnumNumber {
@@ -224,7 +295,7 @@ func (x ProbeState) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ProbeState.Descriptor instead.
 func (ProbeState) EnumDescriptor() ([]byte, []int) {
-	return file_event_proto_rawDescGZIP(), []int{2}
+	return file_event_proto_rawDescGZIP(), []int{3}
 }
 
 // StackRef references a stack captured at event time and resolved out-of-band
@@ -1538,14 +1609,39 @@ func (x *SyscallSnapshot) GetStats() []*SyscallStat {
 	return nil
 }
 
-// ─── Network ────────────────────────────────────────────────────────────────
+// NetConn is one of the target's connections. On the macOS lane the list also
+// holds the sockets that carry traffic without a peer: unconnected UDP, UNIX.
+//
+// A listening socket is not listed on either lane (#195). It has no peer, and
+// on the eBPF lane its row carried `0.0.0.0:0` as `remote`, which a consumer
+// counted as one more peer. The target's listeners are in its fd list.
 type NetConn struct {
-	state  protoimpl.MessageState `protogen:"open.v1"`
-	Fd     int32                  `protobuf:"varint,1,opt,name=fd,proto3" json:"fd,omitempty"`
-	Type   string                 `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "TCP" | "UDP" | "UNIX"
-	Remote string                 `protobuf:"bytes,3,opt,name=remote,proto3" json:"remote,omitempty"`
-	State  string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"` // "ESTABLISHED" | "WAIT" | "RECV" | "LISTEN"
-	Dir    string                 `protobuf:"bytes,5,opt,name=dir,proto3" json:"dir,omitempty"`     // "→" | "←" | "↔"
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The target's descriptor for the socket, when the lane knows it. The macOS
+	// lane reads it from the fd table. The eBPF lane follows sockets in the
+	// kernel and never sees a descriptor, so there it is ABSENT. It used to be 0
+	// there for every socket (#195), and 0 is a descriptor too: a
+	// socket-activated service can hold its connection on fd 0. `local` and
+	// `remote` tell connections apart, the fd does not.
+	Fd   *int32 `protobuf:"varint,1,opt,name=fd,proto3,oneof" json:"fd,omitempty"`
+	Type string `protobuf:"bytes,2,opt,name=type,proto3" json:"type,omitempty"` // "TCP" | "UDP" | "UNIX"
+	// The peer's endpoint, "ip:port" or "[ip6]:port". It names the peer, not
+	// the connection: two connections to one peer share it and differ in
+	// `local`. On the macOS lane a socket without a peer carries its own
+	// endpoint here (the bound address, a UNIX path).
+	Remote string `protobuf:"bytes,3,opt,name=remote,proto3" json:"remote,omitempty"`
+	// The kernel's name for the TCP state: "ESTABLISHED", "SYN_SENT",
+	// "SYN_RECV", "FIN_WAIT1", "FIN_WAIT2", "TIME_WAIT", "CLOSE_WAIT",
+	// "LAST_ACK", "CLOSING", or on macOS "CLOSED". A closed connection leaves
+	// the eBPF lane's list, so it never says "CLOSE". Empty for UDP and UNIX.
+	State string `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"`
+	// A display hint for the TUI: which way most bytes went so far. On the eBPF
+	// lane "→" is more than four times as many sent as received, "←" the
+	// reverse, and "↔" neither, or no bytes yet. It is NOT who opened the
+	// connection, and it moves with the byte ratio: a client that downloads
+	// more than it uploads reads "←". `origin` is who opened it (#195). The
+	// macOS lane sets "↔" when there is a peer and "←" when there is none.
+	Dir string `protobuf:"bytes,5,opt,name=dir,proto3" json:"dir,omitempty"`
 	// The handshake RTT (SYN_SENT → ESTABLISHED), when it was measured.
 	//
 	// ABSENT means not measured, never 0ms: a connection the target accepted
@@ -1562,7 +1658,13 @@ type NetConn struct {
 	// The connection was already open when the capture started, so its
 	// handshake (and age) were never observable. Its byte counters are not
 	// affected: they cover the capture, like every other connection's.
-	Preexisting   bool `protobuf:"varint,9,opt,name=preexisting,proto3" json:"preexisting,omitempty"`
+	Preexisting bool `protobuf:"varint,9,opt,name=preexisting,proto3" json:"preexisting,omitempty"`
+	// The target's own endpoint, formatted like `remote` (a path for a UNIX
+	// socket). With `remote` it identifies the connection among the target's
+	// (#195).
+	Local string `protobuf:"bytes,10,opt,name=local,proto3" json:"local,omitempty"`
+	// Who opened the connection (#195).
+	Origin        ConnOrigin `protobuf:"varint,11,opt,name=origin,proto3,enum=ptop.v1.ConnOrigin" json:"origin,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1598,8 +1700,8 @@ func (*NetConn) Descriptor() ([]byte, []int) {
 }
 
 func (x *NetConn) GetFd() int32 {
-	if x != nil {
-		return x.Fd
+	if x != nil && x.Fd != nil {
+		return *x.Fd
 	}
 	return 0
 }
@@ -1658,6 +1760,20 @@ func (x *NetConn) GetPreexisting() bool {
 		return x.Preexisting
 	}
 	return false
+}
+
+func (x *NetConn) GetLocal() string {
+	if x != nil {
+		return x.Local
+	}
+	return ""
+}
+
+func (x *NetConn) GetOrigin() ConnOrigin {
+	if x != nil {
+		return x.Origin
+	}
+	return ConnOrigin_CONN_ORIGIN_UNSPECIFIED
 }
 
 type NetworkSnapshot struct {
@@ -5014,18 +5130,22 @@ const file_event_proto_rawDesc = "" +
 	"\n" +
 	"latency_ns\x18\x03 \x01(\x04R\tlatencyNs\"=\n" +
 	"\x0fSyscallSnapshot\x12*\n" +
-	"\x05stats\x18\x01 \x03(\v2\x14.ptop.v1.SyscallStatR\x05stats\"\xf8\x01\n" +
-	"\aNetConn\x12\x0e\n" +
-	"\x02fd\x18\x01 \x01(\x05R\x02fd\x12\x12\n" +
+	"\x05stats\x18\x01 \x03(\v2\x14.ptop.v1.SyscallStatR\x05stats\"\xc7\x02\n" +
+	"\aNetConn\x12\x13\n" +
+	"\x02fd\x18\x01 \x01(\x05H\x00R\x02fd\x88\x01\x01\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x16\n" +
 	"\x06remote\x18\x03 \x01(\tR\x06remote\x12\x14\n" +
 	"\x05state\x18\x04 \x01(\tR\x05state\x12\x10\n" +
 	"\x03dir\x18\x05 \x01(\tR\x03dir\x12\"\n" +
 	"\n" +
-	"latency_ms\x18\x06 \x01(\x01H\x00R\tlatencyMs\x88\x01\x01\x12\x19\n" +
+	"latency_ms\x18\x06 \x01(\x01H\x01R\tlatencyMs\x88\x01\x01\x12\x19\n" +
 	"\btx_bytes\x18\a \x01(\x04R\atxBytes\x12\x19\n" +
 	"\brx_bytes\x18\b \x01(\x04R\arxBytes\x12 \n" +
-	"\vpreexisting\x18\t \x01(\bR\vpreexistingB\r\n" +
+	"\vpreexisting\x18\t \x01(\bR\vpreexisting\x12\x14\n" +
+	"\x05local\x18\n" +
+	" \x01(\tR\x05local\x12+\n" +
+	"\x06origin\x18\v \x01(\x0e2\x13.ptop.v1.ConnOriginR\x06originB\x05\n" +
+	"\x03_fdB\r\n" +
 	"\v_latency_ms\"9\n" +
 	"\x0fNetworkSnapshot\x12&\n" +
 	"\x05conns\x18\x01 \x03(\v2\x10.ptop.v1.NetConnR\x05conns\"\xc6\x01\n" +
@@ -5310,7 +5430,12 @@ const file_event_proto_rawDesc = "" +
 	"StackScope\x12\x1b\n" +
 	"\x17STACK_SCOPE_UNSPECIFIED\x10\x00\x12\x14\n" +
 	"\x10STACK_SCOPE_USER\x10\x01\x12\x1f\n" +
-	"\x1bSTACK_SCOPE_USER_AND_KERNEL\x10\x02*\x90\x01\n" +
+	"\x1bSTACK_SCOPE_USER_AND_KERNEL\x10\x02*^\n" +
+	"\n" +
+	"ConnOrigin\x12\x1b\n" +
+	"\x17CONN_ORIGIN_UNSPECIFIED\x10\x00\x12\x19\n" +
+	"\x15CONN_ORIGIN_CONNECTED\x10\x01\x12\x18\n" +
+	"\x14CONN_ORIGIN_ACCEPTED\x10\x02*\x90\x01\n" +
 	"\n" +
 	"ProbeState\x12\x1b\n" +
 	"\x17PROBE_STATE_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -5333,124 +5458,126 @@ func file_event_proto_rawDescGZIP() []byte {
 	return file_event_proto_rawDescData
 }
 
-var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_event_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
 var file_event_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_event_proto_goTypes = []any{
 	(Category)(0),               // 0: ptop.v1.Category
 	(StackScope)(0),             // 1: ptop.v1.StackScope
-	(ProbeState)(0),             // 2: ptop.v1.ProbeState
-	(*StackRef)(nil),            // 3: ptop.v1.StackRef
-	(*StackFrame)(nil),          // 4: ptop.v1.StackFrame
-	(*Event)(nil),               // 5: ptop.v1.Event
-	(*CpuSample)(nil),           // 6: ptop.v1.CpuSample
-	(*CpuSite)(nil),             // 7: ptop.v1.CpuSite
-	(*CpuProfile)(nil),          // 8: ptop.v1.CpuProfile
-	(*SyscallStat)(nil),         // 9: ptop.v1.SyscallStat
-	(*FdClassStat)(nil),         // 10: ptop.v1.FdClassStat
-	(*SyscallSnapshot)(nil),     // 11: ptop.v1.SyscallSnapshot
-	(*NetConn)(nil),             // 12: ptop.v1.NetConn
-	(*NetworkSnapshot)(nil),     // 13: ptop.v1.NetworkSnapshot
-	(*NetThroughputSample)(nil), // 14: ptop.v1.NetThroughputSample
-	(*NetErrorEvent)(nil),       // 15: ptop.v1.NetErrorEvent
-	(*TLSPayloadEvent)(nil),     // 16: ptop.v1.TLSPayloadEvent
-	(*MemStats)(nil),            // 17: ptop.v1.MemStats
-	(*HeapEvent)(nil),           // 18: ptop.v1.HeapEvent
-	(*HeapCallSite)(nil),        // 19: ptop.v1.HeapCallSite
-	(*HeapSnapshot)(nil),        // 20: ptop.v1.HeapSnapshot
-	(*ThreadInfo)(nil),          // 21: ptop.v1.ThreadInfo
-	(*ThreadSnapshot)(nil),      // 22: ptop.v1.ThreadSnapshot
-	(*GoPauses)(nil),            // 23: ptop.v1.GoPauses
-	(*JvmPauses)(nil),           // 24: ptop.v1.JvmPauses
-	(*PauseHistogram)(nil),      // 25: ptop.v1.PauseHistogram
-	(*RunqLatency)(nil),         // 26: ptop.v1.RunqLatency
-	(*IoWaitSample)(nil),        // 27: ptop.v1.IoWaitSample
-	(*IoThroughputSample)(nil),  // 28: ptop.v1.IoThroughputSample
-	(*IoFileStats)(nil),         // 29: ptop.v1.IoFileStats
-	(*LatencyBucket)(nil),       // 30: ptop.v1.LatencyBucket
-	(*IoSnapshot)(nil),          // 31: ptop.v1.IoSnapshot
-	(*FSEvent)(nil),             // 32: ptop.v1.FSEvent
-	(*SignalEvent)(nil),         // 33: ptop.v1.SignalEvent
-	(*ProcContext)(nil),         // 34: ptop.v1.ProcContext
-	(*HostSample)(nil),          // 35: ptop.v1.HostSample
-	(*CpuThrottling)(nil),       // 36: ptop.v1.CpuThrottling
-	(*CgroupPressure)(nil),      // 37: ptop.v1.CgroupPressure
-	(*Pressure)(nil),            // 38: ptop.v1.Pressure
-	(*PressureStall)(nil),       // 39: ptop.v1.PressureStall
-	(*ProbeInfo)(nil),           // 40: ptop.v1.ProbeInfo
-	(*CaptureCost)(nil),         // 41: ptop.v1.CaptureCost
-	(*ProbeCost)(nil),           // 42: ptop.v1.ProbeCost
-	(*CgroupLimits)(nil),        // 43: ptop.v1.CgroupLimits
-	(*ProcLifecycleEvent)(nil),  // 44: ptop.v1.ProcLifecycleEvent
-	(*SecurityEvent)(nil),       // 45: ptop.v1.SecurityEvent
-	(*FdEntry)(nil),             // 46: ptop.v1.FdEntry
-	(*FdSnapshot)(nil),          // 47: ptop.v1.FdSnapshot
-	(*FdEvent)(nil),             // 48: ptop.v1.FdEvent
-	(*LockEntry)(nil),           // 49: ptop.v1.LockEntry
-	(*LockSnapshot)(nil),        // 50: ptop.v1.LockSnapshot
-	(*TimelineEvent)(nil),       // 51: ptop.v1.TimelineEvent
+	(ConnOrigin)(0),             // 2: ptop.v1.ConnOrigin
+	(ProbeState)(0),             // 3: ptop.v1.ProbeState
+	(*StackRef)(nil),            // 4: ptop.v1.StackRef
+	(*StackFrame)(nil),          // 5: ptop.v1.StackFrame
+	(*Event)(nil),               // 6: ptop.v1.Event
+	(*CpuSample)(nil),           // 7: ptop.v1.CpuSample
+	(*CpuSite)(nil),             // 8: ptop.v1.CpuSite
+	(*CpuProfile)(nil),          // 9: ptop.v1.CpuProfile
+	(*SyscallStat)(nil),         // 10: ptop.v1.SyscallStat
+	(*FdClassStat)(nil),         // 11: ptop.v1.FdClassStat
+	(*SyscallSnapshot)(nil),     // 12: ptop.v1.SyscallSnapshot
+	(*NetConn)(nil),             // 13: ptop.v1.NetConn
+	(*NetworkSnapshot)(nil),     // 14: ptop.v1.NetworkSnapshot
+	(*NetThroughputSample)(nil), // 15: ptop.v1.NetThroughputSample
+	(*NetErrorEvent)(nil),       // 16: ptop.v1.NetErrorEvent
+	(*TLSPayloadEvent)(nil),     // 17: ptop.v1.TLSPayloadEvent
+	(*MemStats)(nil),            // 18: ptop.v1.MemStats
+	(*HeapEvent)(nil),           // 19: ptop.v1.HeapEvent
+	(*HeapCallSite)(nil),        // 20: ptop.v1.HeapCallSite
+	(*HeapSnapshot)(nil),        // 21: ptop.v1.HeapSnapshot
+	(*ThreadInfo)(nil),          // 22: ptop.v1.ThreadInfo
+	(*ThreadSnapshot)(nil),      // 23: ptop.v1.ThreadSnapshot
+	(*GoPauses)(nil),            // 24: ptop.v1.GoPauses
+	(*JvmPauses)(nil),           // 25: ptop.v1.JvmPauses
+	(*PauseHistogram)(nil),      // 26: ptop.v1.PauseHistogram
+	(*RunqLatency)(nil),         // 27: ptop.v1.RunqLatency
+	(*IoWaitSample)(nil),        // 28: ptop.v1.IoWaitSample
+	(*IoThroughputSample)(nil),  // 29: ptop.v1.IoThroughputSample
+	(*IoFileStats)(nil),         // 30: ptop.v1.IoFileStats
+	(*LatencyBucket)(nil),       // 31: ptop.v1.LatencyBucket
+	(*IoSnapshot)(nil),          // 32: ptop.v1.IoSnapshot
+	(*FSEvent)(nil),             // 33: ptop.v1.FSEvent
+	(*SignalEvent)(nil),         // 34: ptop.v1.SignalEvent
+	(*ProcContext)(nil),         // 35: ptop.v1.ProcContext
+	(*HostSample)(nil),          // 36: ptop.v1.HostSample
+	(*CpuThrottling)(nil),       // 37: ptop.v1.CpuThrottling
+	(*CgroupPressure)(nil),      // 38: ptop.v1.CgroupPressure
+	(*Pressure)(nil),            // 39: ptop.v1.Pressure
+	(*PressureStall)(nil),       // 40: ptop.v1.PressureStall
+	(*ProbeInfo)(nil),           // 41: ptop.v1.ProbeInfo
+	(*CaptureCost)(nil),         // 42: ptop.v1.CaptureCost
+	(*ProbeCost)(nil),           // 43: ptop.v1.ProbeCost
+	(*CgroupLimits)(nil),        // 44: ptop.v1.CgroupLimits
+	(*ProcLifecycleEvent)(nil),  // 45: ptop.v1.ProcLifecycleEvent
+	(*SecurityEvent)(nil),       // 46: ptop.v1.SecurityEvent
+	(*FdEntry)(nil),             // 47: ptop.v1.FdEntry
+	(*FdSnapshot)(nil),          // 48: ptop.v1.FdSnapshot
+	(*FdEvent)(nil),             // 49: ptop.v1.FdEvent
+	(*LockEntry)(nil),           // 50: ptop.v1.LockEntry
+	(*LockSnapshot)(nil),        // 51: ptop.v1.LockSnapshot
+	(*TimelineEvent)(nil),       // 52: ptop.v1.TimelineEvent
 }
 var file_event_proto_depIdxs = []int32{
 	0,  // 0: ptop.v1.Event.category:type_name -> ptop.v1.Category
-	3,  // 1: ptop.v1.Event.stack:type_name -> ptop.v1.StackRef
-	6,  // 2: ptop.v1.Event.cpu:type_name -> ptop.v1.CpuSample
-	11, // 3: ptop.v1.Event.syscalls:type_name -> ptop.v1.SyscallSnapshot
-	13, // 4: ptop.v1.Event.network:type_name -> ptop.v1.NetworkSnapshot
-	17, // 5: ptop.v1.Event.memory:type_name -> ptop.v1.MemStats
-	22, // 6: ptop.v1.Event.threads:type_name -> ptop.v1.ThreadSnapshot
-	27, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
-	28, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
-	31, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
-	47, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
-	48, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
-	50, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
-	51, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
-	20, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
-	18, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
-	15, // 16: ptop.v1.Event.net_error:type_name -> ptop.v1.NetErrorEvent
-	32, // 17: ptop.v1.Event.fs_event:type_name -> ptop.v1.FSEvent
-	33, // 18: ptop.v1.Event.signal:type_name -> ptop.v1.SignalEvent
-	16, // 19: ptop.v1.Event.tls:type_name -> ptop.v1.TLSPayloadEvent
-	34, // 20: ptop.v1.Event.proc_context:type_name -> ptop.v1.ProcContext
-	44, // 21: ptop.v1.Event.proc_lifecycle:type_name -> ptop.v1.ProcLifecycleEvent
-	45, // 22: ptop.v1.Event.security:type_name -> ptop.v1.SecurityEvent
-	8,  // 23: ptop.v1.Event.cpu_profile:type_name -> ptop.v1.CpuProfile
-	14, // 24: ptop.v1.Event.net_throughput:type_name -> ptop.v1.NetThroughputSample
-	35, // 25: ptop.v1.Event.host:type_name -> ptop.v1.HostSample
-	26, // 26: ptop.v1.Event.runq_latency:type_name -> ptop.v1.RunqLatency
-	41, // 27: ptop.v1.Event.capture_cost:type_name -> ptop.v1.CaptureCost
-	40, // 28: ptop.v1.Event.probe_change:type_name -> ptop.v1.ProbeInfo
-	23, // 29: ptop.v1.Event.go_pauses:type_name -> ptop.v1.GoPauses
-	24, // 30: ptop.v1.Event.jvm_pauses:type_name -> ptop.v1.JvmPauses
-	7,  // 31: ptop.v1.CpuProfile.sites:type_name -> ptop.v1.CpuSite
+	4,  // 1: ptop.v1.Event.stack:type_name -> ptop.v1.StackRef
+	7,  // 2: ptop.v1.Event.cpu:type_name -> ptop.v1.CpuSample
+	12, // 3: ptop.v1.Event.syscalls:type_name -> ptop.v1.SyscallSnapshot
+	14, // 4: ptop.v1.Event.network:type_name -> ptop.v1.NetworkSnapshot
+	18, // 5: ptop.v1.Event.memory:type_name -> ptop.v1.MemStats
+	23, // 6: ptop.v1.Event.threads:type_name -> ptop.v1.ThreadSnapshot
+	28, // 7: ptop.v1.Event.io_wait:type_name -> ptop.v1.IoWaitSample
+	29, // 8: ptop.v1.Event.io_throughput:type_name -> ptop.v1.IoThroughputSample
+	32, // 9: ptop.v1.Event.io:type_name -> ptop.v1.IoSnapshot
+	48, // 10: ptop.v1.Event.fds:type_name -> ptop.v1.FdSnapshot
+	49, // 11: ptop.v1.Event.fd_event:type_name -> ptop.v1.FdEvent
+	51, // 12: ptop.v1.Event.locks:type_name -> ptop.v1.LockSnapshot
+	52, // 13: ptop.v1.Event.timeline:type_name -> ptop.v1.TimelineEvent
+	21, // 14: ptop.v1.Event.heap:type_name -> ptop.v1.HeapSnapshot
+	19, // 15: ptop.v1.Event.heap_event:type_name -> ptop.v1.HeapEvent
+	16, // 16: ptop.v1.Event.net_error:type_name -> ptop.v1.NetErrorEvent
+	33, // 17: ptop.v1.Event.fs_event:type_name -> ptop.v1.FSEvent
+	34, // 18: ptop.v1.Event.signal:type_name -> ptop.v1.SignalEvent
+	17, // 19: ptop.v1.Event.tls:type_name -> ptop.v1.TLSPayloadEvent
+	35, // 20: ptop.v1.Event.proc_context:type_name -> ptop.v1.ProcContext
+	45, // 21: ptop.v1.Event.proc_lifecycle:type_name -> ptop.v1.ProcLifecycleEvent
+	46, // 22: ptop.v1.Event.security:type_name -> ptop.v1.SecurityEvent
+	9,  // 23: ptop.v1.Event.cpu_profile:type_name -> ptop.v1.CpuProfile
+	15, // 24: ptop.v1.Event.net_throughput:type_name -> ptop.v1.NetThroughputSample
+	36, // 25: ptop.v1.Event.host:type_name -> ptop.v1.HostSample
+	27, // 26: ptop.v1.Event.runq_latency:type_name -> ptop.v1.RunqLatency
+	42, // 27: ptop.v1.Event.capture_cost:type_name -> ptop.v1.CaptureCost
+	41, // 28: ptop.v1.Event.probe_change:type_name -> ptop.v1.ProbeInfo
+	24, // 29: ptop.v1.Event.go_pauses:type_name -> ptop.v1.GoPauses
+	25, // 30: ptop.v1.Event.jvm_pauses:type_name -> ptop.v1.JvmPauses
+	8,  // 31: ptop.v1.CpuProfile.sites:type_name -> ptop.v1.CpuSite
 	1,  // 32: ptop.v1.CpuProfile.stack_scope:type_name -> ptop.v1.StackScope
-	10, // 33: ptop.v1.SyscallStat.fd_classes:type_name -> ptop.v1.FdClassStat
-	9,  // 34: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
-	12, // 35: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
-	19, // 36: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
-	21, // 37: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
-	25, // 38: ptop.v1.JvmPauses.safepoints:type_name -> ptop.v1.PauseHistogram
-	25, // 39: ptop.v1.JvmPauses.gc:type_name -> ptop.v1.PauseHistogram
-	29, // 40: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
-	30, // 41: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
-	43, // 42: ptop.v1.HostSample.limits:type_name -> ptop.v1.CgroupLimits
-	36, // 43: ptop.v1.HostSample.throttling:type_name -> ptop.v1.CpuThrottling
-	37, // 44: ptop.v1.HostSample.pressure:type_name -> ptop.v1.CgroupPressure
-	38, // 45: ptop.v1.CgroupPressure.cpu:type_name -> ptop.v1.Pressure
-	38, // 46: ptop.v1.CgroupPressure.memory:type_name -> ptop.v1.Pressure
-	38, // 47: ptop.v1.CgroupPressure.io:type_name -> ptop.v1.Pressure
-	39, // 48: ptop.v1.Pressure.some:type_name -> ptop.v1.PressureStall
-	39, // 49: ptop.v1.Pressure.full:type_name -> ptop.v1.PressureStall
-	2,  // 50: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
-	42, // 51: ptop.v1.CaptureCost.probes:type_name -> ptop.v1.ProbeCost
-	4,  // 52: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
-	46, // 53: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
-	4,  // 54: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
-	49, // 55: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
-	56, // [56:56] is the sub-list for method output_type
-	56, // [56:56] is the sub-list for method input_type
-	56, // [56:56] is the sub-list for extension type_name
-	56, // [56:56] is the sub-list for extension extendee
-	0,  // [0:56] is the sub-list for field type_name
+	11, // 33: ptop.v1.SyscallStat.fd_classes:type_name -> ptop.v1.FdClassStat
+	10, // 34: ptop.v1.SyscallSnapshot.stats:type_name -> ptop.v1.SyscallStat
+	2,  // 35: ptop.v1.NetConn.origin:type_name -> ptop.v1.ConnOrigin
+	13, // 36: ptop.v1.NetworkSnapshot.conns:type_name -> ptop.v1.NetConn
+	20, // 37: ptop.v1.HeapSnapshot.top_call_sites:type_name -> ptop.v1.HeapCallSite
+	22, // 38: ptop.v1.ThreadSnapshot.threads:type_name -> ptop.v1.ThreadInfo
+	26, // 39: ptop.v1.JvmPauses.safepoints:type_name -> ptop.v1.PauseHistogram
+	26, // 40: ptop.v1.JvmPauses.gc:type_name -> ptop.v1.PauseHistogram
+	30, // 41: ptop.v1.IoSnapshot.top_files:type_name -> ptop.v1.IoFileStats
+	31, // 42: ptop.v1.IoSnapshot.latency_buckets:type_name -> ptop.v1.LatencyBucket
+	44, // 43: ptop.v1.HostSample.limits:type_name -> ptop.v1.CgroupLimits
+	37, // 44: ptop.v1.HostSample.throttling:type_name -> ptop.v1.CpuThrottling
+	38, // 45: ptop.v1.HostSample.pressure:type_name -> ptop.v1.CgroupPressure
+	39, // 46: ptop.v1.CgroupPressure.cpu:type_name -> ptop.v1.Pressure
+	39, // 47: ptop.v1.CgroupPressure.memory:type_name -> ptop.v1.Pressure
+	39, // 48: ptop.v1.CgroupPressure.io:type_name -> ptop.v1.Pressure
+	40, // 49: ptop.v1.Pressure.some:type_name -> ptop.v1.PressureStall
+	40, // 50: ptop.v1.Pressure.full:type_name -> ptop.v1.PressureStall
+	3,  // 51: ptop.v1.ProbeInfo.state:type_name -> ptop.v1.ProbeState
+	43, // 52: ptop.v1.CaptureCost.probes:type_name -> ptop.v1.ProbeCost
+	5,  // 53: ptop.v1.SecurityEvent.call_site:type_name -> ptop.v1.StackFrame
+	47, // 54: ptop.v1.FdSnapshot.fds:type_name -> ptop.v1.FdEntry
+	5,  // 55: ptop.v1.LockEntry.call_site:type_name -> ptop.v1.StackFrame
+	50, // 56: ptop.v1.LockSnapshot.locks:type_name -> ptop.v1.LockEntry
+	57, // [57:57] is the sub-list for method output_type
+	57, // [57:57] is the sub-list for method input_type
+	57, // [57:57] is the sub-list for extension type_name
+	57, // [57:57] is the sub-list for extension extendee
+	0,  // [0:57] is the sub-list for field type_name
 }
 
 func init() { file_event_proto_init() }
@@ -5499,7 +5626,7 @@ func file_event_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_event_proto_rawDesc), len(file_event_proto_rawDesc)),
-			NumEnums:      3,
+			NumEnums:      4,
 			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   0,

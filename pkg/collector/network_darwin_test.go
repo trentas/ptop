@@ -40,6 +40,12 @@ func TestSocketToNetConn_queuedBytes(t *testing.T) {
 	if nc.RxBytes != 1024 {
 		t.Fatalf("RxBytes = %d, want 1024 (from RcvQueued)", nc.RxBytes)
 	}
+	// The fd is read from the fd table, so it is known; with Local it names
+	// the socket (#195). libproc cannot say who opened it.
+	if !nc.FDKnown || nc.FD != 7 || nc.Local != "127.0.0.1:5000" || nc.Origin != "" {
+		t.Fatalf("FD %d known %v, Local %q, Origin %q: want 7, true, 127.0.0.1:5000, unknown",
+			nc.FD, nc.FDKnown, nc.Local, nc.Origin)
+	}
 	// A listener (no remote) maps to the local bind and the "←" direction.
 	listener := LPSocketFDInfo{Family: 2, SockType: 1, TCPState: TCPStateListen, LocalAddr: "127.0.0.1:5000"}
 	if lnc := socketToNetConn(8, listener); lnc.Dir != "←" || lnc.Remote != "127.0.0.1:5000" {
@@ -187,5 +193,51 @@ func TestNetworkCollector_live(t *testing.T) {
 	}
 	if maxQueued == 0 {
 		t.Skip("no queued bytes surfaced (kernel drained immediately); pipeline still exercised")
+	}
+}
+
+// A listener is not a connection and is not listed (#195); the connections on
+// it are, each with its fd and both endpoints.
+func TestCollectSkipsListeners(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("cannot listen: %v", err)
+	}
+	defer ln.Close()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Skipf("cannot dial: %v", err)
+	}
+	defer conn.Close()
+	peer, err := ln.Accept()
+	if err != nil {
+		t.Skipf("cannot accept: %v", err)
+	}
+	defer peer.Close()
+
+	c := &NetworkEBPFCollector{pid: os.Getpid()}
+	conns, err := c.collect()
+	if err != nil {
+		t.Fatalf("collect: %v", err)
+	}
+	lnAddr := ln.Addr().String()
+	var toListener, fromListener int
+	for _, nc := range conns {
+		if nc.State == "LISTEN" {
+			t.Errorf("listener published as a connection: %+v", nc)
+		}
+		if nc.Remote == lnAddr && nc.Local == conn.LocalAddr().String() {
+			toListener++
+		}
+		if nc.Local == lnAddr && nc.Remote == conn.LocalAddr().String() {
+			fromListener++
+		}
+		if nc.Type == "TCP" && !nc.FDKnown {
+			t.Errorf("TCP socket without a known fd: %+v", nc)
+		}
+	}
+	if toListener != 1 || fromListener != 1 {
+		t.Errorf("dialed %d, accepted %d, want one of each told apart by Local/Remote: %+v",
+			toListener, fromListener, conns)
 	}
 }

@@ -2166,7 +2166,9 @@ type NetworkReport struct {
 	// each moved after the window's first connection reading (all of it, for a
 	// connection that reading did not list); state is at its last reading. A
 	// connection opened and closed between two readings is in the totals above
-	// and in no row.
+	// and in no row. A row is one connection: type, local and remote, and the
+	// fd where the lane has one. Two connections to one peer are two rows
+	// (#195).
 	Conns          []*NetConn `protobuf:"bytes,6,rep,name=conns,proto3" json:"conns,omitempty"`
 	TotalConns     uint32     `protobuf:"varint,7,opt,name=total_conns,json=totalConns,proto3" json:"total_conns,omitempty"`
 	OmittedTxBytes uint64     `protobuf:"varint,8,opt,name=omitted_tx_bytes,json=omittedTxBytes,proto3" json:"omitted_tx_bytes,omitempty"`

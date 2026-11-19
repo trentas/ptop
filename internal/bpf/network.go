@@ -51,7 +51,24 @@ const (
 	// handshake. Without it RTTNs is 0 because nothing was measured, which is
 	// every accepted connection and every one older than the capture.
 	netFlagRTT uint32 = 1
+	// netFlagConnected / netFlagAccepted: the program saw the socket's open,
+	// active (the target connect()ed it) or passive (its handshake completed
+	// as a listener's child), #195. At most one is set; neither means nobody
+	// saw the open.
+	netFlagConnected uint32 = 2
+	netFlagAccepted  uint32 = 4
 )
+
+// netOrigin decodes a net_val's origin flags.
+func netOrigin(flags uint32) NetOrigin {
+	switch {
+	case flags&netFlagConnected != 0:
+		return NetOriginConnected
+	case flags&netFlagAccepted != 0:
+		return NetOriginAccepted
+	}
+	return NetOriginUnknown
+}
 
 // Net error kinds — must match NET_ERR_* in programs/network.bpf.c.
 const (
@@ -92,6 +109,8 @@ type NetSnapshot struct {
 	// RTTMeasured says RTTNs is a handshake the tracer timed. False means
 	// RTTNs is not a measurement at all — never a 0ms handshake.
 	RTTMeasured bool
+	// Origin is who opened the connection, when the tracer saw it opened.
+	Origin NetOrigin
 }
 
 // NetTracer loads network.bpf.o, attaches the sock:inet_sock_set_state
@@ -354,6 +373,7 @@ func (t *NetTracer) Stats() ([]NetSnapshot, error) {
 			LastNs:  v.LastSeenNs,
 
 			RTTMeasured: v.Flags&netFlagRTT != 0,
+			Origin:      netOrigin(v.Flags),
 		})
 	}
 	if err := iter.Err(); err != nil {

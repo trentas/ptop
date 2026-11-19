@@ -31,7 +31,7 @@ func TestToEventCategoriesAndPayloads(t *testing.T) {
 				s[0].LatencyNs != nil && s[0].GetLatencyNs() == 8000 &&
 				s[1].LatencyNs != nil && s[1].GetLatencyNs() == 0
 		}},
-		{"network", []collector.NetConn{{FD: 7, Type: "TCP", Remote: "1.2.3.4:80"}},
+		{"network", []collector.NetConn{{FD: 7, FDKnown: true, Type: "TCP", Remote: "1.2.3.4:80"}},
 			pb.Category_CATEGORY_NETWORK, func(e *pb.Event) bool {
 				c := e.GetNetwork().GetConns()
 				return len(c) == 1 && c[0].GetFd() == 7 && c[0].GetType() == "TCP"
@@ -401,5 +401,42 @@ func TestMapNetConnLatencyPresenceAndPreexisting(t *testing.T) {
 	}
 	if c[1].GetTxBytes() != 4096 {
 		t.Errorf("a pre-existing connection's bytes are measured and must pass through, got %d", c[1].GetTxBytes())
+	}
+}
+
+// A connection names itself by its two endpoints, says who opened it, and
+// carries an fd only when the lane read one (#195). The eBPF lane has none,
+// and published 0 for every socket; 0 is a descriptor too.
+func TestMapNetConnIdentityOriginAndFD(t *testing.T) {
+	ev := toEvent(1, "", []collector.NetConn{
+		{Type: "TCP", Local: "10.0.9.9:40000", Remote: "10.0.0.1:5432", Origin: collector.ConnOriginConnected},
+		{Type: "TCP", Local: "10.0.9.9:8080", Remote: "10.0.0.7:51000", Origin: collector.ConnOriginAccepted},
+		{Type: "TCP", Local: "10.0.9.9:40001", Remote: "10.0.0.1:5432"},                       // nobody saw the open
+		{Type: "TCP", Local: "10.0.9.9:8080", Remote: "10.0.0.8:51000", FD: 0, FDKnown: true}, // socket-activated
+	})
+	c := ev.GetNetwork().GetConns()
+	if len(c) != 4 {
+		t.Fatalf("got %d conns, want 4", len(c))
+	}
+	wantOrigin := []pb.ConnOrigin{
+		pb.ConnOrigin_CONN_ORIGIN_CONNECTED, pb.ConnOrigin_CONN_ORIGIN_ACCEPTED,
+		pb.ConnOrigin_CONN_ORIGIN_UNSPECIFIED, pb.ConnOrigin_CONN_ORIGIN_UNSPECIFIED,
+	}
+	for i, w := range wantOrigin {
+		if c[i].GetOrigin() != w {
+			t.Errorf("conn %d: origin %v, want %v", i, c[i].GetOrigin(), w)
+		}
+	}
+	if c[0].GetLocal() != "10.0.9.9:40000" || c[2].GetLocal() != "10.0.9.9:40001" || c[0].GetRemote() != c[2].GetRemote() {
+		t.Errorf("two connections to one peer: local %q and %q to %q/%q, want them told apart by local",
+			c[0].GetLocal(), c[2].GetLocal(), c[0].GetRemote(), c[2].GetRemote())
+	}
+	for i := 0; i < 3; i++ {
+		if c[i].Fd != nil {
+			t.Errorf("conn %d: fd = %d, want absent — the lane never read one", i, *c[i].Fd)
+		}
+	}
+	if c[3].Fd == nil || c[3].GetFd() != 0 {
+		t.Errorf("a known fd 0 must reach the wire as 0, got %v", c[3].Fd)
 	}
 }

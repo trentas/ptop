@@ -27,7 +27,12 @@ import (
 // Which sockets are the target's is decided in the kernel, by evidence rather
 // than by whichever task a softirq interrupted (#135): the target connected
 // it, moved bytes on it, closed it, or it matches a row seeded from the
-// target's own fds. network.bpf.c has the whole argument and the measurements.
+// target's own fds. network.bpf.c has the whole argument and the
+// measurements. The kernel also says who opened a connection it saw open
+// (#195): connected, from the connect(), or accepted, from a passive open's
+// handshake completing. A connection older than the capture gets its origin
+// from the bootstrap, when it sits on one of the target's listening endpoints
+// (listensOn).
 //
 // Publishes []NetConn every 500ms, plus a NetError per error event. Connections
 // opened before the attach are seeded from /proc (bootstrapFromProc) and adopted
@@ -53,6 +58,14 @@ type NetworkEBPFCollector struct {
 	// an existing row would race the kernel's own byte counters. Written in
 	// start; read and pruned by publishLoop.
 	preexisting map[bpf.NetConnKey]struct{}
+	// onListener holds the connections a bootstrap found on one of the
+	// target's listening endpoints: accepted ones (#195). The kernel names
+	// those itself when it saw the passive open and the target has touched
+	// the socket since. This covers the rest: one accepted before the attach,
+	// and one the target has not read, written or closed yet. Kept here for
+	// the same reason as preexisting, and written and pruned alike, except
+	// that the rescans add to it too.
+	onListener map[bpf.NetConnKey]struct{}
 }
 
 // Caveat reports what an ACTIVE network probe could not see — pre-existing
@@ -184,6 +197,9 @@ func (c *NetworkEBPFCollector) readLoop(tracer *bpf.NetTracer) {
 // change, by matching this 4-tuple (#142). That leaves no gap: a seeded row
 // with zero bytes is a connection the target did not use while watched.
 //
+// Listeners are not seeded: they are not connections (#195). Each connection
+// on one of their endpoints goes into onListener, which makes it accepted.
+//
 // atAttach records what this call finds as open before the capture. Only the
 // first call can say that; a later one finds connections opened since.
 func (c *NetworkEBPFCollector) bootstrapFromProc(atAttach bool) seedReport {
@@ -213,24 +229,40 @@ func (c *NetworkEBPFCollector) bootstrapFromProc(atAttach bool) seedReport {
 	}
 	// Resolve via SocketResolver. The resolver has a 2s cache, but we call it
 	// once here — forces a refresh if stale.
+	var conns []SocketInfo
+	var listeners []netEndpoint
 	for inode := range inodes {
 		info, ok := c.resolver.Resolve(inode)
 		if !ok {
 			continue
 		}
 		rep.resolved++
-		if info.Family != "TCP" {
+		if info.Family != "TCP" || info.StateNum == 0 {
 			continue
 		}
-		if info.StateNum == 0 {
+		// A listener is not a connection and gets no row (#195). It is what
+		// names the connections it accepted, below.
+		if info.StateNum == tcpStateLISTEN {
+			listeners = append(listeners, netEndpoint{family: info.AF, addr: info.SAddr, port: info.SPort})
 			continue
 		}
+		conns = append(conns, info)
+	}
+	for _, info := range conns {
 		key := bpf.NetConnKey{
 			DAddr:  info.DAddr,
 			SAddr:  info.SAddr,
 			DPort:  info.DPort,
 			SPort:  info.SPort,
 			Family: info.AF,
+		}
+		// Whether or not the program already holds the row: an accept it
+		// saw says the same thing, and one before the attach it could not.
+		if listensOn(listeners, netEndpoint{family: info.AF, addr: info.SAddr, port: info.SPort}) {
+			if c.onListener == nil {
+				c.onListener = make(map[bpf.NetConnKey]struct{})
+			}
+			c.onListener[key] = struct{}{}
 		}
 		if c.tracer.SeedConnection(key, info.StateNum) != nil || !atAttach {
 			continue
@@ -268,8 +300,10 @@ func (c *NetworkEBPFCollector) snapshot() ([]NetConn, NetThroughputSample) {
 		})
 		if s.State == tcpStateCLOSE {
 			spent = append(spent, s.Key)
-			// The tuple is free for a new connection, which is not pre-existing.
+			// The tuple is free for a new connection, which is not pre-existing
+			// and has its own origin.
 			delete(c.preexisting, s.Key)
+			delete(c.onListener, s.Key)
 		}
 	}
 	tput := c.tput.observe(readings, time.Now())
@@ -306,93 +340,11 @@ func (c *NetworkEBPFCollector) snapshot() ([]NetConn, NetThroughputSample) {
 	sort.SliceStable(snaps, func(i, j int) bool { return snaps[i].LastNs > snaps[j].LastNs })
 	out := make([]NetConn, 0, len(snaps))
 	for _, s := range snaps {
-		if s.State == tcpStateCLOSE {
-			continue
+		_, pre := c.preexisting[s.Key]
+		_, onListener := c.onListener[s.Key]
+		if nc, ok := netConnFromRow(s, pre, onListener); ok {
+			out = append(out, nc)
 		}
-		nc := NetConn{
-			Type:    "TCP",
-			Remote:  formatNetAddr(s.DAddr.String(), s.DPort, s.Family),
-			State:   mapTCPState(s.State),
-			Dir:     directionFromBytes(s.TxBytes, s.RxBytes),
-			TxBytes: s.TxBytes,
-			RxBytes: s.RxBytes,
-		}
-		_, nc.Preexisting = c.preexisting[s.Key]
-		if s.RTTMeasured {
-			nc.LatencyMs, nc.RTTMeasured = float64(s.RTTNs)/1e6, true
-		}
-		out = append(out, nc)
 	}
 	return out, tput
-}
-
-// Kernel TCP states (linux/tcp.h) — also used in sockets.go for the
-// /proc/net/tcp parser, but there the values come in as hex strings.
-const (
-	tcpStateESTABLISHED uint32 = 1
-	tcpStateSYN_SENT    uint32 = 2
-	tcpStateSYN_RECV    uint32 = 3
-	tcpStateFIN_WAIT1   uint32 = 4
-	tcpStateFIN_WAIT2   uint32 = 5
-	tcpStateTIME_WAIT   uint32 = 6
-	tcpStateCLOSE       uint32 = 7
-	tcpStateCLOSE_WAIT  uint32 = 8
-	tcpStateLAST_ACK    uint32 = 9
-	tcpStateLISTEN      uint32 = 10
-	tcpStateCLOSING     uint32 = 11
-)
-
-func mapTCPState(s uint32) string {
-	switch s {
-	case tcpStateESTABLISHED:
-		return "ESTABLISHED"
-	case tcpStateSYN_SENT:
-		return "SYN_SENT"
-	case tcpStateSYN_RECV:
-		return "SYN_RECV"
-	case tcpStateFIN_WAIT1:
-		return "FIN_WAIT1"
-	case tcpStateFIN_WAIT2:
-		return "FIN_WAIT2"
-	case tcpStateTIME_WAIT:
-		return "TIME_WAIT"
-	case tcpStateCLOSE_WAIT:
-		return "CLOSE_WAIT"
-	case tcpStateLAST_ACK:
-		return "LAST_ACK"
-	case tcpStateLISTEN:
-		return "LISTEN"
-	case tcpStateCLOSING:
-		return "CLOSING"
-	default:
-		return "?"
-	}
-}
-
-// directionFromBytes infers the connection's predominant "direction" from
-// tx vs rx volume. "→" outbound (tx >> rx), "←" inbound (rx >> tx),
-// "↔" balanced or both zero. It's just a visual indicator — doesn't change
-// what the user sees of the remote.
-func directionFromBytes(tx, rx uint64) string {
-	switch {
-	case tx == 0 && rx == 0:
-		return "↔"
-	case tx > 0 && rx == 0:
-		return "→"
-	case rx > 0 && tx == 0:
-		return "←"
-	case tx > rx*4:
-		return "→"
-	case rx > tx*4:
-		return "←"
-	default:
-		return "↔"
-	}
-}
-
-func formatNetAddr(ip string, port uint16, family uint16) string {
-	if family == 10 { // AF_INET6
-		return fmt.Sprintf("[%s]:%d", ip, port)
-	}
-	return fmt.Sprintf("%s:%d", ip, port)
 }

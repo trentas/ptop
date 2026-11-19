@@ -1159,7 +1159,7 @@ func (a *netAgg) addConns(ts int64, s *pb.NetworkSnapshot) {
 		a.rows = make(map[string]*connRow)
 	}
 	for _, c := range s.GetConns() {
-		k := c.GetType() + "\x00" + c.GetRemote() + "\x00" + strconv.Itoa(int(c.GetFd()))
+		k := connKey(c)
 		r := a.rows[k]
 		if r == nil {
 			r = &connRow{key: k}
@@ -1169,6 +1169,18 @@ func (a *netAgg) addConns(ts int64, s *pb.NetworkSnapshot) {
 		r.tx.see(c.GetTxBytes(), base)
 		r.rx.see(c.GetRxBytes(), base)
 	}
+}
+
+// connKey names one connection across readings: its type, both endpoints, and
+// the fd where the lane has one. The remote alone names the peer, and the fd
+// was 0 on every eBPF row, so every connection to one peer used to fold into a
+// single row whose counters jumped between them (#195).
+func connKey(c *pb.NetConn) string {
+	k := c.GetType() + "\x00" + c.GetLocal() + "\x00" + c.GetRemote()
+	if c.Fd != nil {
+		k += "\x00" + strconv.Itoa(int(c.GetFd()))
+	}
+	return k
 }
 
 func (b *Builder) netReport(target *pb.TargetInfo, n int) *pb.NetworkReport {

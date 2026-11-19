@@ -101,7 +101,7 @@ ptop/
 │   │   │   ├── cpu.bpf.c          sched_switch → target on-CPU nanoseconds
 │   │   │   ├── cpuprof.bpf.c      perf_event sampler → on-CPU stacks, per function (#125)
 │   │   │   ├── io.bpf.c           read/write + fs semantics, on raw_syscalls (#159); file inode + opens (#162); counts kept in the kernel (#181)
-│   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135)
+│   │   │   ├── network.bpf.c      sock tracepoints + tcp kprobes; socket ownership by evidence (#135); who opened it (#195)
 │   │   │   ├── threads.bpf.c      sched_switch → on-CPU / asleep / run-queue per thread (#150)
 │   │   │   ├── memory.bpf.c       mmap/brk/page-fault
 │   │   │   ├── heap.bpf.c         libc malloc/free uprobes → lifetime + leak
@@ -590,6 +590,43 @@ receive would have adopted it.
 `cmd/ebpfselftest` checks all of it against a peer in another process — a peer
 inside the selftest's own process would make `current` the target every time
 and pass a filter that is wrong.
+
+### Who opened a connection, and which one it is (#195)
+
+The consumer that reported it told a service's callers from its dependencies
+by `dir`, and told its sockets apart by `fd`. Neither held on the eBPF lane.
+`dir` is the byte ratio, so a client downloading read as inbound. `fd` was 0 on
+every row, so a report folded every connection to one peer into one row.
+
+- **`origin` is the open, seen in the kernel.** Connected is evidence 1
+  (`connecting`). Accepted is SYN_RECV → ESTABLISHED. That runs in softirq and
+  proves no owner, so `network.bpf.c` notes it per socket (`passive_open`, an
+  LRU, checked against the 4-tuple), and `own_sock` turns the note into the
+  flag when the target owns the socket. A connection older than the capture
+  is accepted when its local endpoint is one the target listens on
+  (`listensOn`): only a listener's child can share it, short of
+  `SO_REUSEPORT`. Neither is `CONN_ORIGIN_UNSPECIFIED`, never a guess.
+- **Not a kretprobe on `inet_csk_accept`.** That was the first version. It
+  fired for every accept on the host, and an arm64 loopback accept loop fell
+  from ~110k accepts a second to ~79k. The note adds ~6ns a transition to
+  `handle_inet_set_state` and leaves the accept rate within noise
+  (`bench/results/2026-11-19-aarch64-net-origin-cost.txt`).
+- **A connection is local + remote**, plus the fd where the lane has one.
+  `local` is new. `fd` is `optional`, and absent on the eBPF lane, which has
+  no fd to give: 0 is a real fd. The report keys its rows the same way.
+- **A listener is not a connection.** Its row had remote `0.0.0.0:0`, which a
+  consumer counted as one more peer. Both lanes leave it out. The F6 fd list
+  still shows it.
+
+The selftest's `netorigin` case plants connections the target connected and
+accepted, idle and busy each way, and one of each from before the capture. It
+grades the report: the origin, a row per connection, exact bytes, no listener
+row, no fd. Its window outlasts the collector's 5-second rescan, since an idle
+accepted connection gives the kernel no evidence and is found there. Each rule
+removed on its own fails its own check. Without the note, `net`'s accept
+origin fails. Without the listener rule, the two accepted connections nobody
+touched fail. The old report key folds four connections to one peer into one
+row.
 
 ### The observer's cost is charged to the target
 

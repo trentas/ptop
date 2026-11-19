@@ -49,7 +49,7 @@ func TestEventPayloadArms(t *testing.T) {
 	}{
 		{"cpu", &Event_Cpu{Cpu: &CpuSample{UsagePct: 1}}, func(e *Event) bool { return e.GetCpu() != nil }},
 		{"syscalls", &Event_Syscalls{Syscalls: &SyscallSnapshot{Stats: []*SyscallStat{{Name: "read", Count: 2}}}}, func(e *Event) bool { return len(e.GetSyscalls().GetStats()) == 1 }},
-		{"network", &Event_Network{Network: &NetworkSnapshot{Conns: []*NetConn{{Fd: 3}}}}, func(e *Event) bool { return len(e.GetNetwork().GetConns()) == 1 }},
+		{"network", &Event_Network{Network: &NetworkSnapshot{Conns: []*NetConn{{Fd: proto.Int32(3)}}}}, func(e *Event) bool { return len(e.GetNetwork().GetConns()) == 1 }},
 		{"memory", &Event_Memory{Memory: &MemStats{RssBytes: 4}}, func(e *Event) bool { return e.GetMemory().GetRssBytes() == 4 }},
 		{"threads", &Event_Threads{Threads: &ThreadSnapshot{Threads: []*ThreadInfo{{Tid: 5}}}}, func(e *Event) bool { return len(e.GetThreads().GetThreads()) == 1 }},
 		{"io_wait", &Event_IoWait{IoWait: &IoWaitSample{Pct: 6}}, func(e *Event) bool { return e.GetIoWait().GetPct() == 6 }},
