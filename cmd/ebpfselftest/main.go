@@ -99,6 +99,7 @@ func suite() []selfCase {
 		{"net", "socket ownership and bytes, against a peer in another process (#135, #142)", checkNetwork},
 		{"netorigin", "connections the target opened and accepted, idle and busy each way, are told apart on the wire, by origin and by endpoint (#195)", checkNetOrigin},
 		{"blind", "a probe switched off says disabled, one that cannot attach says failed (#112)", checkBlind},
+		{"unmatched", "a target filter that matches nothing fails every probe behind it, with both numbers; an idle target and a real filter fail nothing (#199)", checkUnmatched},
 		{"report", "a --for window counts the calls made in it and not before, credits writes to their file, and ends when its target exits (#156)", checkReport},
 	}
 }

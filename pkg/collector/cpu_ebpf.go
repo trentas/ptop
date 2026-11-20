@@ -71,6 +71,17 @@ func (c *CPUEBPFCollector) Stop() {
 	}
 }
 
+// FilterMatched reports whether the target filter has matched the target since
+// the attach: the witness of the filter check (#199).
+func (c *CPUEBPFCollector) FilterMatched() (bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.tracer == nil {
+		return false, fmt.Errorf("tracer not open")
+	}
+	return c.tracer.FilterMatched()
+}
+
 func (c *CPUEBPFCollector) Subscribe() <-chan interface{} {
 	return c.ch
 }

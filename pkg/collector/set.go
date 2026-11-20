@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync/atomic"
+	"time"
 
 	"github.com/trentas/ptop/internal/bpf"
 	"github.com/trentas/ptop/pkg/symbol"
@@ -150,8 +152,15 @@ type Set struct {
 	Cost              *CostCollector // what the capture costs, every second (#154)
 	ProcLifecycleEBPF *ProcLifecycleEBPFCollector
 	SecurityEBPF      *SecurityEBPFCollector
+	// FilterCheck grades the target filter against /proc while the capture
+	// runs (#199). Context, like Cost: it has no --disable name.
+	FilterCheck *FilterCheckCollector
 
 	Sources Sources
+
+	// filterBlind is set once the filter check failed the target filter. The
+	// bus drops whatever the probes behind it publish from then on (heldBack).
+	filterBlind atomic.Bool
 
 	// probes records what became of every subsystem — including the ones that
 	// produced nothing, and why. Read it through Probes().
@@ -455,6 +464,7 @@ func NewSet(cfg SetConfig) *Set {
 	}
 
 	s.startCost(cfg)
+	s.startFilterCheck(cfg)
 	return s
 }
 
@@ -487,6 +497,88 @@ func (s *Set) detach(name, reason string) error {
 	s.probes.transition(ProbeStatus{Name: name, State: ProbeDisabled, Detail: reason})
 	return nil
 }
+
+// startFilterCheck grades the target filter while the capture runs (#199). The
+// witness is the cpu probe's program, or the threads probe's when cpu is not on
+// eBPF; the evidence is the target's context switches as /proc counts them.
+// With neither probe on eBPF there is no program to read the filter through,
+// and no check.
+func (s *Set) startFilterCheck(cfg SetConfig) {
+	var w filterWitness
+	var name string
+	switch {
+	case s.CPUEBPF != nil:
+		w, name = s.CPUEBPF, SubsystemCPU
+	case s.ThreadsEBPF != nil:
+		w, name = s.ThreadsEBPF, SubsystemThreads
+	default:
+		return
+	}
+	pid := cfg.PID
+	scope := fmt.Sprintf("pid %d's threads", pid)
+	evidence := func() (map[int]uint64, error) { return pidThreadSwitches(pid) }
+	if cfg.Cgroup != "" {
+		// The cgroup the operator named, resolved here and not through the
+		// filter: the evidence must not share what it is checking.
+		dir, _, err := bpf.ResolveCgroupSpec(cfg.Cgroup)
+		if err != nil {
+			return
+		}
+		pid = 0
+		scope = "the threads of cgroup " + dir
+		evidence = func() (map[int]uint64, error) { return cgroupThreadSwitches(dir) }
+	}
+	c := newFilterCheck(w, name, scope, evidence, s.failFilter)
+	if c.Start(pid) == nil {
+		s.FilterCheck = c
+	}
+}
+
+// failFilter is what the filter check does when the filter matches nothing
+// (#199): every active eBPF probe behind it fails, with detail saying so, and
+// the bus withholds what they publish from then on. It returns one ProbeChange
+// per probe it failed.
+//
+// The collectors keep running rather than stop: most of them cannot be stopped
+// safely while their loops run, and a program whose filter matches nothing
+// costs the target nothing. The heap probe is the exception, stopped like
+// --overhead-budget stops it, because its uprobe traps land on the target's
+// threads whatever the filter says. io stays active when its /proc lane runs
+// (iowait and throughput), with the reason it lost the rest.
+func (s *Set) failFilter(detail string) []ProbeChange {
+	s.filterBlind.Store(true)
+	if s.Cost != nil {
+		s.Cost.forget(SubsystemHeap) // before the stop, so no estimate reads a closed probe
+	}
+	now := time.Now()
+	var changes []ProbeChange
+	for _, name := range filterSubsystems {
+		st, ok := s.probes.get(name)
+		if !ok || st.State != ProbeActive || st.Source != "eBPF" {
+			continue
+		}
+		next := ProbeStatus{Name: name, State: ProbeFailed, Detail: detail}
+		if name == SubsystemIO && (s.IOWait != nil || s.IOThroughput != nil) {
+			next = ProbeStatus{Name: name, State: ProbeActive, Source: SourceProc,
+				Detail: "iowait and throughput only, from /proc: the per-file eBPF lane is withheld. " + detail}
+		}
+		s.probes.transition(next)
+		changes = append(changes, ProbeChange{Timestamp: now, Status: next})
+	}
+	if s.HeapEBPF != nil {
+		s.HeapEBPF.Stop()
+	}
+	return changes
+}
+
+// heldBack is a collector behind the target filter. The bus drops what it
+// publishes once the filter check has failed the filter (#199).
+type heldBack struct {
+	Collector
+	blind *atomic.Bool
+}
+
+func (h heldBack) Withheld() bool { return h.blind.Load() }
 
 // enabled reports whether a subsystem should be started, recording it as
 // disabled when it should not.
@@ -601,6 +693,7 @@ func (s *Set) startCgroup(cfg SetConfig) {
 	}
 	// No heap probe over a subtree, but ptop's own CPU is still worth saying.
 	s.startCost(cfg)
+	s.startFilterCheck(cfg)
 }
 
 // startCgroupCollector starts c against a cgroup subtree, honouring --disable and
@@ -625,6 +718,11 @@ func (s *Set) startCgroupCollector(name string, c CgroupTargeter, cfg SetConfig)
 func (s *Set) Stop() {
 	if s == nil {
 		return
+	}
+	// First: the check reads the cpu and threads probes, whose Stop does not
+	// wait for a reader.
+	if s.FilterCheck != nil {
+		s.FilterCheck.Stop()
 	}
 	if s.FD != nil {
 		s.FD.Stop()
@@ -709,30 +807,38 @@ func (s *Set) Collectors() []Collector {
 			cs = append(cs, c)
 		}
 	}
+	// The probes behind the shared target filter (filterSubsystems): what they
+	// publish is dropped once the filter check fails it (#199).
+	held := func(c Collector, ok bool) {
+		if ok {
+			cs = append(cs, heldBack{c, &s.filterBlind})
+		}
+	}
 	add(s.FD, s.FD != nil)
 	add(s.CPUProc, s.CPUProc != nil)
-	add(s.CPUEBPF, s.CPUEBPF != nil)
+	held(s.CPUEBPF, s.CPUEBPF != nil)
 	add(s.ThreadsProc, s.ThreadsProc != nil)
-	add(s.ThreadsEBPF, s.ThreadsEBPF != nil)
+	held(s.ThreadsEBPF, s.ThreadsEBPF != nil)
 	add(s.MemProc, s.MemProc != nil)
-	add(s.MemEBPF, s.MemEBPF != nil)
-	add(s.HeapEBPF, s.HeapEBPF != nil)
-	add(s.CPUProfEBPF, s.CPUProfEBPF != nil)
-	add(s.GoPauseEBPF, s.GoPauseEBPF != nil)
-	add(s.JVMPauseEBPF, s.JVMPauseEBPF != nil)
+	held(s.MemEBPF, s.MemEBPF != nil)
+	held(s.HeapEBPF, s.HeapEBPF != nil)
+	held(s.CPUProfEBPF, s.CPUProfEBPF != nil)
+	held(s.GoPauseEBPF, s.GoPauseEBPF != nil)
+	held(s.JVMPauseEBPF, s.JVMPauseEBPF != nil)
 	add(s.IOWait, s.IOWait != nil)
 	add(s.IOThroughput, s.IOThroughput != nil)
-	add(s.SyscallsEBPF, s.SyscallsEBPF != nil)
-	add(s.IOEBPF, s.IOEBPF != nil)
-	add(s.NetworkEBPF, s.NetworkEBPF != nil)
-	add(s.FutexEBPF, s.FutexEBPF != nil)
+	held(s.SyscallsEBPF, s.SyscallsEBPF != nil)
+	held(s.IOEBPF, s.IOEBPF != nil)
+	held(s.NetworkEBPF, s.NetworkEBPF != nil)
+	held(s.FutexEBPF, s.FutexEBPF != nil)
 	add(s.SignalEBPF, s.SignalEBPF != nil)
-	add(s.TLSEBPF, s.TLSEBPF != nil)
+	held(s.TLSEBPF, s.TLSEBPF != nil)
 	add(s.ProcContext, s.ProcContext != nil)
 	add(s.Host, s.Host != nil)
 	add(s.Cost, s.Cost != nil)
+	add(s.FilterCheck, s.FilterCheck != nil)
 	add(s.ProcLifecycleEBPF, s.ProcLifecycleEBPF != nil)
-	add(s.SecurityEBPF, s.SecurityEBPF != nil)
+	held(s.SecurityEBPF, s.SecurityEBPF != nil)
 	return cs
 }
 

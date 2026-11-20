@@ -86,8 +86,12 @@ func (m Model) probeReason(probe string, ps panelSource) string {
 		return reason
 	}
 	// The probe runs, but not the lane this panel needs: io is active on /proc
-	// (throughput, iowait) while the per-file view is eBPF-only.
+	// (throughput, iowait) while the per-file view is eBPF-only. When the eBPF
+	// lane ran and was withdrawn (#199), the probe's caveat says why.
 	if ps == srcIOFiles {
+		if st.Detail != "" {
+			return st.Detail
+		}
 		if m.cfg.NoEBPF {
 			return "per-file I/O needs eBPF: disabled by --no-ebpf"
 		}
@@ -104,6 +108,11 @@ func inactiveReason(st collector.ProbeStatus) (string, bool) {
 	case collector.ProbeDisabled:
 		return "disabled: " + st.Detail, true
 	case collector.ProbeFailed:
+		// The filter check fails a probe that attached (#199); its detail
+		// says so, and "to attach" would send the operator to the wrong fix.
+		if strings.HasPrefix(st.Detail, collector.FilterBlindPrefix) {
+			return "failed: " + st.Detail, true
+		}
 		return "failed to attach: " + st.Detail, true
 	case collector.ProbeUnsupported:
 		return st.Detail, true

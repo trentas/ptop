@@ -115,6 +115,10 @@ type NetThroughputMsg collector.NetThroughputSample
 type IOWaitMsg collector.IOWaitSample
 type IOThroughputMsg collector.IOThroughputSample
 type TimelineMsg collector.TimelineEvent
+
+// ProbeChangeMsg is a probe changing state mid-capture: detached by its
+// budget (#154), or failed by the filter check (#199).
+type ProbeChangeMsg collector.ProbeChange
 type FDEventMsg collector.FDEvent
 type SyscallsMsg []collector.SyscallEvent
 type IOEBPFMsg collector.IOEBPFSnapshot
@@ -244,8 +248,9 @@ type Model struct {
 	// events in the stream and in the export (#149).
 	demo bool
 
-	// probes is the Set's probe set at startup, by name: why each subsystem
-	// that has no source has none. noSource reads its reasons from here.
+	// probes is the Set's probe set by name, from startup and kept current by
+	// ProbeChangeMsg: why each subsystem that has no source has none.
+	// noSource reads its reasons from here.
 	probes map[string]collector.ProbeStatus
 
 	// Sources: indicate where the real data came from ("eBPF" | "/proc" | "" for mock).
@@ -467,12 +472,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.waitBus()
 
 	case TimelineMsg:
-		// Timeline is prepended; most recent on top. Cap at 120 (same limit
-		// used by the simulation).
-		m.Timeline = append([]collector.TimelineEvent{collector.TimelineEvent(v)}, m.Timeline...)
-		if len(m.Timeline) > 120 {
-			m.Timeline = m.Timeline[:120]
-		}
+		m = m.addTimeline(collector.TimelineEvent(v))
+		return m, m.waitBus()
+
+	case ProbeChangeMsg:
+		m = m.applyProbeChange(collector.ProbeChange(v))
 		return m, m.waitBus()
 
 	case FDEventMsg:
@@ -1428,10 +1432,7 @@ func busMsg(v interface{}) tea.Msg {
 	case collector.TimelineEvent:
 		return TimelineMsg(t)
 	case collector.ProbeChange:
-		// A probe that stops mid-capture goes on the timeline, so the operator
-		// sees why the heap panel froze (#154).
-		return TimelineMsg(collector.TimelineEvent{Timestamp: t.Timestamp, Category: "mem",
-			Message: fmt.Sprintf("%s probe %s: %s", t.Status.Name, t.Status.State, t.Status.Detail)})
+		return ProbeChangeMsg(t)
 	case collector.CpuSample:
 		return CpuMsg(t)
 	case []collector.ThreadInfo:
@@ -1559,4 +1560,92 @@ func runtimeFromBasename(base string) string {
 	default:
 		return ""
 	}
+}
+
+// addTimeline prepends an event: most recent on top, capped at 120 (the same
+// limit the simulation uses).
+func (m Model) addTimeline(ev collector.TimelineEvent) Model {
+	m.Timeline = append([]collector.TimelineEvent{ev}, m.Timeline...)
+	if len(m.Timeline) > 120 {
+		m.Timeline = m.Timeline[:120]
+	}
+	return m
+}
+
+// applyProbeChange records a probe's change of state mid-capture and puts it on
+// the timeline. A probe that stopped is a subsystem with no source from then
+// on, so its panel says why instead of freezing on its last reading (#154).
+// One the filter check failed (#199) never had a reading worth showing: its
+// zeros were the filter, so what it fed the model goes too.
+func (m Model) applyProbeChange(pc collector.ProbeChange) Model {
+	st := pc.Status
+	if m.probes == nil {
+		m.probes = make(map[string]collector.ProbeStatus)
+	}
+	m.probes[st.Name] = st
+	m = m.addTimeline(collector.TimelineEvent{Timestamp: pc.Timestamp, Category: probeTimelineCategory(st.Name),
+		Message: fmt.Sprintf("%s probe %s: %s", st.Name, st.State, st.Detail)})
+
+	off := st.State != collector.ProbeActive
+	if !off && !(st.Name == collector.SubsystemIO && st.Source != "eBPF") {
+		return m
+	}
+	switch st.Name {
+	case collector.SubsystemCPU:
+		m.usingMockCPU, m.cpuSource, m.CPUHistory = true, "", nil
+	case collector.SubsystemCPUProf:
+		m.cpuProfSource, m.CPUSites = "", cpuSiteWindow{}
+	case collector.SubsystemThreads:
+		m.usingMockThreads, m.threadsSource, m.Threads = true, "", nil
+	case collector.SubsystemMemory:
+		m.usingMockMem, m.memSource, m.MemStats = true, "", collector.MemStats{}
+	case collector.SubsystemHeap:
+		// Detached by its budget, the heap keeps what it measured: the panel
+		// shows it, and the overlay says the probe is off. Failed, it goes.
+		if st.State == collector.ProbeFailed {
+			m.heapSource, m.HeapStats, m.HeapLiveHist = "", collector.HeapStats{}, nil
+		}
+	case collector.SubsystemSyscalls:
+		m.usingMockSyscalls, m.syscallsSource, m.SyscallCounts = true, "", nil
+	case collector.SubsystemIO:
+		m.usingMockIOFiles, m.ioFilesSource = true, ""
+		m.IOStats.TopFiles, m.IOStats.LatencyBuckets = nil, nil
+	case collector.SubsystemNetwork:
+		m.usingMockNet, m.netSource, m.NetConns = true, "", nil
+	case collector.SubsystemFutex:
+		m.locksSource, m.LockGraph = "", nil
+	case collector.SubsystemSecurity:
+		m.securitySource = ""
+	case collector.SubsystemTLS:
+		m.tlsSource = ""
+	}
+	return m
+}
+
+// probeTimelineCategory is the timeline category of a probe's own events.
+func probeTimelineCategory(name string) string {
+	switch name {
+	case collector.SubsystemCPU, collector.SubsystemCPUProf, collector.SubsystemThreads,
+		collector.SubsystemGoPause, collector.SubsystemJVMPause:
+		return "cpu"
+	case collector.SubsystemMemory, collector.SubsystemHeap:
+		return "mem"
+	case collector.SubsystemSyscalls:
+		return "syscall"
+	case collector.SubsystemIO:
+		return "io"
+	case collector.SubsystemNetwork, collector.SubsystemTLS:
+		return "net"
+	case collector.SubsystemFutex:
+		return "lock"
+	case collector.SubsystemSecurity:
+		return "sec"
+	case collector.SubsystemSignals:
+		return "sig"
+	case collector.SubsystemLifecycle:
+		return "proc"
+	case collector.SubsystemFD:
+		return "fd"
+	}
+	return "proc"
 }

@@ -115,7 +115,12 @@ type CaptureReport struct {
 	Window *CaptureWindow `protobuf:"bytes,2,opt,name=window,proto3" json:"window,omitempty"`
 	// Every probe that changed state during the window, in order (#154): the
 	// heap probe detached by --overhead-budget, for one. A section whose probe
-	// stopped covers the readings before the change.
+	// was detached covers the readings before the change. A probe that FAILED
+	// during the window, or left its eBPF lane for another, has no section, or
+	// only its other lane's part (io's iowait and throughput): ptop no longer
+	// vouches for what that lane read. That is what the filter check does when
+	// a target filter matches nothing (#199), and then every zero before the
+	// change was the filter's, not the target's.
 	ProbeChanges []*ProbeTransition `protobuf:"bytes,3,rep,name=probe_changes,json=probeChanges,proto3" json:"probe_changes,omitempty"`
 	// The target's execution context, from the last reading in the window (#60).
 	Context       *ProcContext      `protobuf:"bytes,4,opt,name=context,proto3" json:"context,omitempty"`

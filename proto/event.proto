@@ -100,11 +100,17 @@ message Event {
     HostSample host = 33; // #153 — host steal and the target cgroup's limits, periodic
     RunqLatency runq_latency = 34; // #151 — the target's waits for a CPU, by length
     CaptureCost capture_cost = 35; // #154 — what this capture costs, estimated every second
-    // #154 — a probe whose state changed mid-capture (--overhead-budget
-    // detaching the heap probe). The handshake's probe set is the state at
-    // subscribe time; this is the moment it stopped being true. Its category
-    // is the probe's own (heap → MEMORY), so it reaches whoever reads that
-    // axis, in order with its events.
+    // #154 — a probe whose state changed mid-capture: --overhead-budget
+    // detaching the heap probe, or the filter check failing every probe
+    // behind a target filter that matches nothing (#199). The handshake's
+    // probe set is the state at subscribe time; this is the moment it stopped
+    // being true. Its category is the probe's own (heap → MEMORY), so it
+    // reaches whoever reads that axis, in order with its events.
+    //
+    // A probe failed by the filter check never saw the target: what it
+    // published before the change was the filter's silence, not the target's,
+    // and nothing it publishes reaches the stream after it. Its detail starts
+    // "the target filter matches nothing" and gives both numbers.
     ProbeInfo probe_change = 36;
     GoPauses go_pauses = 37; // #175 — a Go target's stop-the-world pauses, by length
     JvmPauses jvm_pauses = 38; // #189 — a HotSpot JVM's safepoints and GC pauses, by length
@@ -846,11 +852,12 @@ message ProbeInfo {
   // otherwise. The same subsystem read through different sources is not the
   // same measurement, so this is part of the comparison key too.
   string source = 3;
-  // Why a probe that is not ACTIVE is not running — the attach error, or the
-  // flag that switched it off. On an ACTIVE probe, a caveat: what it attached
-  // and still could not see, such as connections that predate the capture and
-  // could not be seeded (#140); empty when there is none. Operator-facing prose;
-  // do not parse it.
+  // Why a probe that is not ACTIVE is not running — the attach error, the flag
+  // that switched it off, or, on a probe that attached, the filter check's
+  // finding that its target filter matches nothing (#199). On an ACTIVE probe,
+  // a caveat: what it attached and still could not see, such as connections
+  // that predate the capture and could not be seeded (#140); empty when there
+  // is none. Operator-facing prose; do not parse it.
   string detail = 4;
 }
 

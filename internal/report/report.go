@@ -71,8 +71,9 @@ type Builder struct {
 	topN    int
 	listCap int
 
-	changes []*pb.ProbeTransition
-	context *pb.ProcContext
+	changes   []*pb.ProbeTransition
+	retracted map[string]bool // probes whose readings a change took back (#199)
+	context   *pb.ProcContext
 
 	host    hostAgg
 	cost    costAgg
@@ -121,9 +122,15 @@ func (b *Builder) Emit(ev *pb.Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	if name := payloadProbe(ev.GetPayload()); name != "" && b.retracted[name] {
+		return // sent before the change took effect, and arriving after it
+	}
 	switch p := ev.GetPayload().(type) {
 	case *pb.Event_ProbeChange:
 		b.changes = append(b.changes, &pb.ProbeTransition{TsUnixNano: ts, Probe: p.ProbeChange})
+		if retracts(p.ProbeChange) {
+			b.retract(p.ProbeChange.GetName())
+		}
 	case *pb.Event_ProcContext:
 		b.context = p.ProcContext
 	case *pb.Event_Host:
@@ -226,14 +233,14 @@ func (b *Builder) Report(target *pb.TargetInfo, w Window) *pb.CaptureReport {
 	if d := b.cpu.dist(); d != nil {
 		r.Cpu = &pb.CpuReport{UsagePct: d}
 	}
-	if b.signals.seen() || ebpfActive(target, collector.SubsystemSignals) {
+	if b.signals.seen() || b.measured(target, collector.SubsystemSignals) {
 		top, omitted := b.signals.top(n)
 		r.Signals = &pb.SignalsReport{Total: b.signals.total, Signals: top, Omitted: omitted}
 	}
-	if b.life.any() || ebpfActive(target, collector.SubsystemLifecycle) {
+	if b.life.any() || b.measured(target, collector.SubsystemLifecycle) {
 		r.Lifecycle = b.life.report(n)
 	}
-	if b.sec.seen() || ebpfActive(target, collector.SubsystemSecurity) {
+	if b.sec.seen() || b.measured(target, collector.SubsystemSecurity) {
 		r.Security = b.secReport(n)
 	}
 	return r
@@ -249,6 +256,99 @@ func ebpfActive(target *pb.TargetInfo, name string) bool {
 		}
 	}
 	return false
+}
+
+// measured is ebpfActive for a probe whose readings still stand: one no change
+// retracted during the window.
+func (b *Builder) measured(target *pb.TargetInfo, name string) bool {
+	return ebpfActive(target, name) && !b.retracted[name]
+}
+
+// retracts reports whether a change takes back what its probe read before it:
+// the probe failed mid-window, or left its eBPF lane for another. Both say ptop
+// can no longer vouch for what the eBPF lane read, which is what the filter
+// check concludes when the target filter matched nothing (#199): every zero
+// before it was the filter, not the target. A probe detached on purpose
+// (--overhead-budget) read what it read, and keeps it.
+func retracts(st *pb.ProbeInfo) bool {
+	switch st.GetState() {
+	case pb.ProbeState_PROBE_STATE_FAILED:
+		return true
+	case pb.ProbeState_PROBE_STATE_ACTIVE:
+		return st.GetSource() != "eBPF"
+	}
+	return false
+}
+
+// retract forgets what a probe's eBPF lane read, so its section is absent, as
+// it would be had the probe never run, and the probe set says why. io keeps
+// what its /proc lane read: iowait and throughput.
+func (b *Builder) retract(name string) {
+	if b.retracted == nil {
+		b.retracted = make(map[string]bool)
+	}
+	b.retracted[name] = true
+	switch name {
+	case collector.SubsystemCPU:
+		b.cpu = nil
+	case collector.SubsystemCPUProf:
+		b.prof = profAgg{}
+	case collector.SubsystemThreads:
+		b.threads, b.runq = threadsAgg{}, histAgg{}
+	case collector.SubsystemGoPause:
+		b.pauses = histAgg{}
+	case collector.SubsystemJVMPause:
+		b.jvmSP, b.jvmGC = histAgg{}, histAgg{}
+	case collector.SubsystemMemory:
+		b.mem = memAgg{}
+	case collector.SubsystemHeap:
+		b.heap = heapAgg{}
+	case collector.SubsystemSyscalls:
+		b.sys = sysAgg{}
+	case collector.SubsystemIO:
+		b.io = ioAgg{readBps: b.io.readBps, writeBps: b.io.writeBps, wait: b.io.wait}
+		b.fs = fsAgg{}
+	case collector.SubsystemNetwork:
+		b.net, b.netErr = netAgg{}, counts[*pb.NetErrorCount]{}
+	case collector.SubsystemFutex:
+		b.locks = lockAgg{}
+	case collector.SubsystemSecurity:
+		b.sec = counts[*pb.SecurityCount]{}
+	}
+}
+
+// payloadProbe names the probe whose eBPF lane sends a payload, for the
+// payloads retract can take back; "" for the rest. A /proc lane that sends the
+// same payload (cpu, memory, threads) runs only when the eBPF one did not, and
+// then nothing retracts it.
+func payloadProbe(p any) string {
+	switch p.(type) {
+	case *pb.Event_Cpu:
+		return collector.SubsystemCPU
+	case *pb.Event_CpuProfile:
+		return collector.SubsystemCPUProf
+	case *pb.Event_Threads, *pb.Event_RunqLatency:
+		return collector.SubsystemThreads
+	case *pb.Event_GoPauses:
+		return collector.SubsystemGoPause
+	case *pb.Event_JvmPauses:
+		return collector.SubsystemJVMPause
+	case *pb.Event_Memory:
+		return collector.SubsystemMemory
+	case *pb.Event_Heap:
+		return collector.SubsystemHeap
+	case *pb.Event_Syscalls:
+		return collector.SubsystemSyscalls
+	case *pb.Event_Io, *pb.Event_FsEvent:
+		return collector.SubsystemIO
+	case *pb.Event_NetThroughput, *pb.Event_Network, *pb.Event_NetError:
+		return collector.SubsystemNetwork
+	case *pb.Event_Locks:
+		return collector.SubsystemFutex
+	case *pb.Event_Security:
+		return collector.SubsystemSecurity
+	}
+	return ""
 }
 
 // ─── Building blocks ────────────────────────────────────────────────────────
@@ -1121,7 +1221,7 @@ func (a *fsAgg) add(e *pb.FSEvent) {
 
 func (b *Builder) fsReport(target *pb.TargetInfo, n int) *pb.FsEventsReport {
 	a := &b.fs
-	if !a.counts.seen() && !ebpfActive(target, collector.SubsystemIO) {
+	if !a.counts.seen() && !b.measured(target, collector.SubsystemIO) {
 		return nil
 	}
 	top, omitted := a.counts.top(n)
@@ -1185,7 +1285,7 @@ func connKey(c *pb.NetConn) string {
 
 func (b *Builder) netReport(target *pb.TargetInfo, n int) *pb.NetworkReport {
 	a := &b.net
-	measured := ebpfActive(target, collector.SubsystemNetwork)
+	measured := b.measured(target, collector.SubsystemNetwork)
 	if a.tp.n == 0 && a.conns.n == 0 && !b.netErr.seen() && !measured {
 		return nil
 	}

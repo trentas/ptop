@@ -62,11 +62,23 @@ func (b *Bus) Start(ctx context.Context, cols []Collector) {
 		if ch == nil {
 			continue // stub collector (non-Linux / no-ebpf build)
 		}
-		go b.drain(ctx, ch)
+		var held func() bool
+		if w, ok := c.(withholder); ok {
+			held = w.Withheld
+		}
+		go b.drain(ctx, ch, held)
 	}
 }
 
-func (b *Bus) drain(ctx context.Context, ch <-chan interface{}) {
+// withholder is a collector whose values may stop being worth passing on while
+// it runs: one behind a target filter the filter check failed (#199). Its
+// channel is still drained, so it never blocks, and what it publishes is
+// dropped.
+type withholder interface {
+	Withheld() bool
+}
+
+func (b *Bus) drain(ctx context.Context, ch <-chan interface{}, held func() bool) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -74,6 +86,9 @@ func (b *Bus) drain(ctx context.Context, ch <-chan interface{}) {
 		case v, ok := <-ch:
 			if !ok {
 				return
+			}
+			if held != nil && held() {
+				continue
 			}
 			b.broadcast(v)
 		}

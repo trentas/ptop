@@ -33,7 +33,7 @@ const netPayload = 32 << 10
 // runPeer is the child side: "echo" serves an echo on a loopback port it
 // prints, "pump" serves each connection the number of bytes it asks for (see
 // pumpServe), "client:<addr>:<n>" sends n bytes to addr and reads until EOF,
-// and "burn" spins on a CPU until killed.
+// "burn" spins on a CPU until killed, and "napper" naps 2ms at a time.
 func runPeer(spec string) {
 	switch {
 	case spec == "echo" || spec == "pump":
@@ -57,6 +57,13 @@ func runPeer(spec string) {
 		runCgroupNSChild() // the cgroupns case's child (#193)
 	case spec == "pidns":
 		runPidNSChild() // the pidns case's child (#197)
+	case spec == "napper":
+		// The unmatched case's busy target (#199): a getppid and a 2ms sleep
+		// at a time, so hundreds of context switches a second.
+		for {
+			_ = os.Getppid()
+			time.Sleep(2 * time.Millisecond)
+		}
 	case spec == "burn":
 		// One thread on a CPU until killed: the saturation case's workload,
 		// in a process of its own so it can be put in a cgroup of its own.
