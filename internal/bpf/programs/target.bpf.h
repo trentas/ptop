@@ -8,9 +8,17 @@
  * INITIAL pid namespace, while ptop's --pid is a namespace-local PID (what
  * /proc and ps show). Under a nested pid namespace (WSL2, Docker, LXC) the two
  * differ, so a plain `tgid == target` comparison never matched.
- * bpf_get_ns_current_pid_tgid() (kernel 5.7+) projects the current task's pid
- * into a specific namespace, identified by the (dev, ino) of
- * /proc/<pid>/ns/pid.
+ *
+ * bpf_get_ns_current_pid_tgid() (kernel 5.7+) is NOT a projection into any
+ * namespace. It answers only when the current task's own pid namespace is the
+ * one named by (dev, ino), with the task's pid there, and fails for every
+ * other task. So the filter names the target's namespace (/proc/<pid>/ns/pid)
+ * and compares with the target's pid inside it — the last entry of NSpid,
+ * which the loader writes. That is the number /proc shows only when ptop
+ * shares the namespace. Seen from an ancestor (the host, a `pid: host`
+ * container), a containerized target is 1452007 in /proc and 1 in its own
+ * namespace; comparing with 1452007 matched nothing, and every probe read
+ * zero while reporting `active` (#197).
  *
  * CGROUP mode (PTOP_TARGET_CGROUP). A cgroup subtree is the target, and no PID
  * needs to be known in advance — which is what lets ptop attach to a container
@@ -37,7 +45,8 @@
 
 /* Written by the Go loader (see internal/bpf/target.go). In PID mode dev+ino
  * identify the target's PID namespace and pid is its tgid within that
- * namespace; in CGROUP mode only mode is read, and the cgroup is in
+ * namespace (NSpid's last entry, not the number ptop's /proc shows — #197);
+ * in CGROUP mode only mode is read, and the cgroup is in
  * ptop_target_cgroup. 24 bytes — keep targetFilter in target.go byte-for-byte
  * identical. */
 struct target_filter {

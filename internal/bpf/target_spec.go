@@ -18,11 +18,12 @@ const (
 // Target names what the eBPF programs should filter on: a single process, or
 // every process in a cgroup subtree.
 //
-// PID mode is resolved inside the target's own PID namespace, so a
-// namespace-local pid (what /proc and ps show) matches even from a nested
-// namespace. Cgroup mode needs no pid at all, which is what lets ptop attach
-// to a container or a whole pod whose processes are not known in advance
-// (#94), and it follows forks into the subtree for free.
+// PID mode takes the pid ptop's /proc and ps show, and the filter matches the
+// target inside its own PID namespace by its pid there (NSpid), whether ptop
+// shares that namespace or watches it from an ancestor — the host, or a
+// `pid: host` container (#197). Cgroup mode needs no pid at all, which is what
+// lets ptop attach to a container or a whole pod whose processes are not known
+// in advance (#94), and it follows forks into the subtree for free.
 type Target struct {
 	PID int
 

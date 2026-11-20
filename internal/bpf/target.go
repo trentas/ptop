@@ -46,20 +46,35 @@ func resolveTarget(t Target) (resolvedTarget, error) {
 	return resolvedTarget{targetFilter: tf}, err
 }
 
-// resolvePIDTarget builds the filter for pid: its tgid plus the device and
-// inode of the PID namespace it lives in (/proc/<pid>/ns/pid).
+// resolvePIDTarget builds the filter for pid: the device and inode of the PID
+// namespace it lives in (/proc/<pid>/ns/pid), and its tgid IN THAT namespace.
 //
-// On a native host in the root namespace this resolves to the initial PID
-// namespace, so the BPF-side bpf_get_ns_current_pid_tgid() call returns the
-// same values bpf_get_current_pid_tgid() returned before — identical
-// behavior. Inside a nested namespace (WSL2, containers) it resolves to that
-// namespace, which is what makes the filter match.
+// bpf_get_ns_current_pid_tgid() does not project a task into an arbitrary
+// namespace. It answers only when the current task's own pid namespace is the
+// one named by dev+ino, and then with the task's pid there; for any other task
+// it fails, and the filter reads that as "not the target". So the number the
+// filter compares with has to be the target's pid inside its own namespace —
+// the last entry of NSpid — not the number this /proc shows.
+//
+// The two are the same when ptop shares the target's namespace: natively, on
+// WSL2, inside the target's container. From an ancestor namespace — the host,
+// or a container with `pid: host` — /proc shows a containerized target as, say,
+// 1452007 while its own namespace calls it 1. The filter used to compare with
+// 1452007, matched nothing, and every eBPF probe reported `active` and read
+// zero (#197). Without NSpid there is no way to know the inner number, so the
+// resolution fails rather than load a filter that matches nothing.
 func resolvePIDTarget(pid int) (targetFilter, error) {
 	var st unix.Stat_t
 	if err := unix.Stat(fmt.Sprintf("/proc/%d/ns/pid", pid), &st); err != nil {
 		return targetFilter{}, targetReadError(fmt.Sprintf("stat pid namespace of %d", pid), err)
 	}
-	return targetFilter{Mode: targetModePID, Pid: uint32(pid), Dev: st.Dev, Ino: st.Ino}, nil
+	chain := NSpidChain(fmt.Sprintf("/proc/%d/status", pid))
+	if len(chain) == 0 || chain[0] != pid {
+		return targetFilter{}, fmt.Errorf("read the pid of %d inside its own namespace: "+
+			"/proc/%d/status has no NSpid line naming it (NSpid = %v)", pid, pid, chain)
+	}
+	inner := chain[len(chain)-1]
+	return targetFilter{Mode: targetModePID, Pid: uint32(inner), Dev: st.Dev, Ino: st.Ino}, nil
 }
 
 // resolveCgroupTarget resolves a cgroup spec (path or container id) to the

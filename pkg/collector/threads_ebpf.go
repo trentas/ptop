@@ -40,13 +40,23 @@ type ThreadsEBPFCollector struct {
 
 	mu      sync.Mutex
 	windows *threadWindows
+
+	// The threads program keys a thread by its tid in the TARGET's pid
+	// namespace, while /proc/<pid>/task lists tids in the namespace ptop reads
+	// /proc from. The two differ when the target lives below it — a container
+	// seen from the host, or from a `pid: host` container (#197). nested says
+	// so, decided once at Start; kernelTIDs caches each live thread's inner tid,
+	// read from its NSpid, so a thread costs one status read, not one a tick.
+	nested     bool
+	kernelTIDs map[uint32]uint32
 }
 
 func NewThreadsEBPFCollector() *ThreadsEBPFCollector {
 	return &ThreadsEBPFCollector{
-		ch:      make(chan interface{}, 4),
-		stop:    make(chan struct{}),
-		windows: newThreadWindows(),
+		ch:         make(chan interface{}, 4),
+		stop:       make(chan struct{}),
+		windows:    newThreadWindows(),
+		kernelTIDs: map[uint32]uint32{},
 	}
 }
 
@@ -60,8 +70,31 @@ func (c *ThreadsEBPFCollector) Start(pid int) error {
 	}
 	c.tracer = tracer
 	c.pid = pid
+	// The target filter already refused a target whose NSpid it could not
+	// read, so this chain is there; more than one entry is a nested target.
+	c.nested = len(bpf.NSpidChain(fmt.Sprintf("/proc/%d/status", pid))) > 1
 	go c.loop()
 	return nil
+}
+
+// kernelTID is the key the threads program files tid under (see kernelTIDs).
+// ok is false when a nested target's thread cannot be translated — it exited
+// between the listing and the read — and then its totals are not looked up,
+// rather than looked up under some other thread's number.
+func (c *ThreadsEBPFCollector) kernelTID(taskDir, name string, tid uint32) (uint32, bool) {
+	if !c.nested {
+		return tid, true
+	}
+	if k, ok := c.kernelTIDs[tid]; ok {
+		return k, true
+	}
+	chain := bpf.NSpidChain(filepath.Join(taskDir, name, "status"))
+	if len(chain) == 0 || chain[0] != int(tid) {
+		return 0, false
+	}
+	k := uint32(chain[len(chain)-1])
+	c.kernelTIDs[tid] = k
+	return k, true
 }
 
 func (c *ThreadsEBPFCollector) Stop() {
@@ -110,10 +143,14 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 		state byte
 		ticks uint64
 		wchan string
+		// key is the thread's tid as the threads program files it; keyed is
+		// false when it could not be translated (see kernelTID).
+		key   uint32
+		keyed bool
 	}
 	procByTID := make(map[uint32]procData, len(entries))
 	alive := make(map[uint32]bool, len(entries))
-	tidList := make([]int, 0, len(entries))
+	liveKeys := make([]int, 0, len(entries))
 	for _, e := range entries {
 		tid, err := strconv.Atoi(e.Name())
 		if err != nil {
@@ -134,13 +171,23 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 				wchan = ""
 			}
 		}
-		procByTID[uint32(tid)] = procData{comm: comm, state: state, ticks: ticks, wchan: wchan}
+		key, keyed := c.kernelTID(taskDir, e.Name(), uint32(tid))
+		procByTID[uint32(tid)] = procData{comm: comm, state: state, ticks: ticks, wchan: wchan, key: key, keyed: keyed}
 		alive[uint32(tid)] = true
-		tidList = append(tidList, tid)
+		if keyed {
+			liveKeys = append(liveKeys, int(key))
+		}
+	}
+	for tid := range c.kernelTIDs {
+		if !alive[tid] {
+			delete(c.kernelTIDs, tid)
+		}
 	}
 
-	// Prune tid_state for threads that exited since the last tick.
-	if err := c.tracer.PruneDeadTIDs(tidList); err != nil {
+	// Prune tid_state for threads that exited since the last tick. The map is
+	// keyed by the program's tids, so the live set has to be too: given the
+	// tids /proc shows, a nested target would have every entry pruned.
+	if err := c.tracer.PruneDeadTIDs(liveKeys); err != nil {
 		// Not fatal: keep publishing /proc data even if the prune fails.
 		_ = err
 	}
@@ -158,7 +205,7 @@ func (c *ThreadsEBPFCollector) collect() ([]ThreadInfo, error) {
 	out := make([]ThreadInfo, 0, len(procByTID))
 	for tid, pd := range procByTID {
 		var sh threadShare
-		if tt, ok := totals[tid]; ok {
+		if tt, ok := totals[pd.key]; pd.keyed && ok {
 			sh = c.windows.known(tid, tt)
 		} else if err == nil && clockErr == nil {
 			sh = c.windows.unseen(tid, pd.state, pd.ticks, endAt, clkTck)

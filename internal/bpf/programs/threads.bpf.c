@@ -16,10 +16,13 @@
 //   runq_hist           PERCPU_ARRAY[1]  log2(µs) histogram of run-queue waits (#151)
 //
 // PID-namespace handling:
-//   sched_switch delivers prev_pid/next_pid as ROOT-namespace TIDs, but the
-//   Go side and tid_state work in the target's namespace-local TIDs. At the
+//   sched_switch delivers prev_pid/next_pid as ROOT-namespace TIDs, but
+//   tid_state is keyed by the tid in the TARGET's namespace. At the
 //   tracepoint `current` == prev, so pid_target_ns() resolves prev's
 //   namespace-local tid; that {root_tid → ns_tid} pair is cached in root2ns.
+//   The Go side lists threads from its own /proc, numbered in ptop's
+//   namespace; when the target lives below it (#197), the collector
+//   translates each tid through NSpid before it looks tid_state up.
 //   The `next` side then recovers the ns-local tid by looking up next_pid in
 //   root2ns (learned the previous time that thread was scheduled out). A
 //   brand-new thread is learned the first time it is `prev` — one context
