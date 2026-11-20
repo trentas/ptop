@@ -1364,6 +1364,28 @@ required because `bpf_get_current_pid_tgid()` returns root-namespace pids —
 wrong when ptop runs inside a nested namespace (WSL2, Docker, LXC). Never
 filter with the bare `bpf_get_current_pid_tgid()` again.
 
+**The helper is not a projection (#197).** It answers only when the current
+task's own pid namespace is the one named by dev+inode, with the task's pid
+*there*, and fails for every other task. So the filter compares with the
+target's pid inside its own namespace — the last entry of `NSpid` in
+`/proc/<pid>/status` (`NSpidChain`, `internal/bpf/nspid.go`) — not with `--pid`.
+The two coincide when ptop shares the namespace, which is every layout this was
+written and tested on. From an ancestor namespace they do not: a profiler that
+runs ptop in a container with `pid: host` against containerized services saw
+`/proc` show a target as 1452007 while its own namespace calls
+it 1. The filter compared with 1452007, matched nothing, and every eBPF probe
+reported `active` and read zero — CPU 0 in every bucket, no syscalls, network
+rows only from the /proc seed at 0 bytes. It surfaced the day the host granted
+ptrace read on the targets: before, `/proc/<pid>/ns/pid` was refused and the
+probes said `failed`, which was honest; the grant turned that into a silent
+zero. A status without NSpid now fails the resolution instead of loading a
+filter that matches nothing.
+
+The tids the programs key things by are therefore the target's, and only the
+threads collector joins them with `/proc/<pid>/task`, which numbers them in
+ptop's namespace: it translates each tid through its own `NSpid` (once per
+thread, cached) when the target is nested, and not at all otherwise.
+
 **Cgroup mode** (#94) targets a whole subtree with
 `bpf_current_task_under_cgroup()`: the kernel answers whether the current task
 is inside the target cgroup's subtree, forks included, so no pid needs to be
@@ -1397,14 +1419,20 @@ Two caveats worth knowing before extending this:
   fills `out` from `bpf_get_current_pid_tgid()` in that mode.
 
 Verify both modes with `make ebpf-selftest` → `sudo ./bin/ebpf-selftest -run
-filter,cgroupns`. `filter` runs one workload and checks the pid filter and the
+filter,cgroupns,pidns`. `filter` runs one workload and checks the pid filter and the
 cgroup filter against it. Its cgroup half reports SKIP where there is no
 subtree to target — a cgroup v1 host, or a cgroup namespace that shows `/` as
 its own root. `cgroupns` builds the nesting CI's runners lack: a child born in
 a fresh cgroup (`CLONE_INTO_CGROUP`) with a cgroup and a mount namespace of its
 own, which mounts cgroup2, moves one cgroup down, and must count its own 2,000
-`getppid` calls through `--cgroup /inner`. The old filter read 0 there. The
-rest of the suite is described under "The selftest grades, CI runs it" below.
+`getppid` calls through `--cgroup /inner`. The old filter read 0 there. `pidns`
+builds the other nesting: a child that is pid 1 of a fresh pid namespace
+(`CLONE_NEWPID`), named by its outer pid, plants 2,000 `getppid` calls, a 300ms
+burn timed by its own thread clock and 5ms naps in a loop; the syscall count,
+the on-CPU counter and the threads collector's switches must each find them.
+Before #197 all three read 0; with the filter fixed and the tids untranslated,
+the threads still did. The rest of the suite is described under "The selftest
+grades, CI runs it" below.
 
 ## Build tags
 

@@ -55,6 +55,8 @@ func runPeer(spec string) {
 		}
 	case spec == "cgroupns":
 		runCgroupNSChild() // the cgroupns case's child (#193)
+	case spec == "pidns":
+		runPidNSChild() // the pidns case's child (#197)
 	case spec == "burn":
 		// One thread on a CPU until killed: the saturation case's workload,
 		// in a process of its own so it can be put in a cgroup of its own.

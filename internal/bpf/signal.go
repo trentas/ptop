@@ -3,15 +3,11 @@
 package bpf
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strconv"
-	"strings"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -112,23 +108,8 @@ func OpenSignalTracer(pid int) (*SignalTracer, error) {
 // global one is what the signal_generate tracepoint reports. Falls back to pid
 // when status is unreadable or NSpid is absent (older kernels).
 func globalPID(pid int) int {
-	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
-	if err != nil {
-		return pid
-	}
-	sc := bufio.NewScanner(bytes.NewReader(data))
-	for sc.Scan() {
-		line := sc.Text()
-		rest, ok := strings.CutPrefix(line, "NSpid:")
-		if !ok {
-			continue
-		}
-		if f := strings.Fields(rest); len(f) > 0 {
-			if v, err := strconv.Atoi(f[0]); err == nil {
-				return v
-			}
-		}
-		break
+	if chain := NSpidChain(fmt.Sprintf("/proc/%d/status", pid)); len(chain) > 0 {
+		return chain[0]
 	}
 	return pid
 }
