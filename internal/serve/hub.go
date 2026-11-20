@@ -19,9 +19,11 @@ type Hub struct {
 	target  Target
 	buildID string          // target exec build-id, stamped onto every StackRef (#54)
 	probes  []*pb.ProbeInfo // what became of each collector, for the handshake (#112); probesMu
-	// probesMu guards probes, which a mid-capture change replaces (#154).
-	probesMu sync.Mutex
-	build    *pb.PtopBuild // which ptop this is, for the handshake (#145); nil = unknown
+	// probesMu guards probes, which a mid-capture change replaces (#154), and
+	// lastDetail, the reason the last change logged.
+	probesMu   sync.Mutex
+	lastDetail string
+	build      *pb.PtopBuild // which ptop this is, for the handshake (#145); nil = unknown
 	// what the target binary is built from, for the handshake (#157); nil in
 	// cgroup mode and whenever it is unknown
 	targetBuild *pb.TargetBuild
@@ -155,8 +157,15 @@ func (h *Hub) noteProbeChange(pc collector.ProbeChange) {
 		probes = append(probes, info)
 	}
 	h.probes = probes
+	// The filter check fails a dozen probes for one reason (#199): say it once.
+	detail := pc.Status.Detail
+	if detail != "" && detail == h.lastDetail {
+		detail = "the same reason as above"
+	} else {
+		h.lastDetail = detail
+	}
 	h.probesMu.Unlock()
-	fmt.Fprintf(os.Stderr, "[ptop] ⚠ %s probe is now %s: %s\n", pc.Status.Name, pc.Status.State, pc.Status.Detail)
+	fmt.Fprintf(os.Stderr, "[ptop] ⚠ %s probe is now %s: %s\n", pc.Status.Name, pc.Status.State, detail)
 }
 
 // Start attaches the hub to the shared collector bus (#71) — the same bus the

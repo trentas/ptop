@@ -14,4 +14,5 @@ func (*ThreadsTracer) Totals() (map[uint32]ThreadTotals, error) {
 	return nil, errThreadsStub
 }
 func (*ThreadsTracer) RunqHistogram() (RunqHist, error) { return RunqHist{}, errThreadsStub }
+func (*ThreadsTracer) FilterMatched() (bool, error)     { return false, errThreadsStub }
 func (*ThreadsTracer) Close() error                     { return nil }

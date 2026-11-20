@@ -16,6 +16,10 @@ func (c *ThreadsEBPFCollector) Start(pid int) error {
 
 func (c *ThreadsEBPFCollector) Stop() {}
 
+func (c *ThreadsEBPFCollector) FilterMatched() (bool, error) {
+	return false, errors.New("threads eBPF not available in this build")
+}
+
 func (c *ThreadsEBPFCollector) Subscribe() <-chan interface{} {
 	return nil
 }

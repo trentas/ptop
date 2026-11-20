@@ -20,6 +20,7 @@ type ThreadsTracer struct {
 	links    []link.Link
 	stateMap *ebpf.Map
 	histMap  *ebpf.Map
+	root2ns  *ebpf.Map // written only when the filter matched a switch-out
 }
 
 func OpenThreadsTracer(target Target) (*ThreadsTracer, error) {
@@ -65,6 +66,11 @@ func OpenThreadsTracer(target Target) (*ThreadsTracer, error) {
 	if t.histMap == nil {
 		t.Close()
 		return nil, errors.New("runq_hist map missing")
+	}
+	t.root2ns = coll.Maps["root2ns"]
+	if t.root2ns == nil {
+		t.Close()
+		return nil, errors.New("root2ns map missing")
 	}
 
 	// sched_wakeup ends a sleep where it ends, so the wait for a CPU after it
@@ -174,6 +180,17 @@ func (t *ThreadsTracer) RunqHistogram() (RunqHist, error) {
 		out.SumNs += h.SumNs
 	}
 	return out, nil
+}
+
+// FilterMatched reports whether the target filter has matched a task being
+// switched out since the tracer attached, the same witness as
+// CPUTracer.FilterMatched (#199): root2ns is written there and nowhere else,
+// and never pruned.
+func (t *ThreadsTracer) FilterMatched() (bool, error) {
+	if t == nil || t.root2ns == nil {
+		return false, errors.New("tracer not initialized")
+	}
+	return mapHasEntry(t.root2ns)
 }
 
 func (t *ThreadsTracer) Close() error {

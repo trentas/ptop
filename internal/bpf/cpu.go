@@ -27,6 +27,7 @@ type CPUTracer struct {
 	link  link.Link
 	acc   *ebpf.Map // cpu_oncpu_ns, per-CPU
 	since *ebpf.Map // cpu_on_since, per-CPU
+	tids  *ebpf.Map // cpu_target_tids: written only when the filter matched
 	ncpu  int
 }
 
@@ -71,9 +72,10 @@ func OpenCPUTracer(target Target) (*CPUTracer, error) {
 
 	t.acc = coll.Maps["cpu_oncpu_ns"]
 	t.since = coll.Maps["cpu_on_since"]
-	if t.acc == nil || t.since == nil {
+	t.tids = coll.Maps["cpu_target_tids"]
+	if t.acc == nil || t.since == nil || t.tids == nil {
 		t.Close()
-		return nil, errors.New("cpu_oncpu_ns / cpu_on_since map not found")
+		return nil, errors.New("cpu_oncpu_ns / cpu_on_since / cpu_target_tids map not found")
 	}
 
 	prog := coll.Programs["handle_sched_switch"]
@@ -118,6 +120,28 @@ func onlineCPUs() ([]int, error) {
 		ids[i] = i
 	}
 	return ids, nil
+}
+
+// FilterMatched reports whether the target filter has matched a task since the
+// tracer attached (#199). cpu_target_tids gets an entry when pid_is_target()
+// says yes for a task being switched out, and at no other time, so an empty map
+// means the filter has not matched one switch-out. The entries are only ever
+// evicted for others, so a true answer stays true.
+func (t *CPUTracer) FilterMatched() (bool, error) {
+	if t == nil || t.tids == nil {
+		return false, errors.New("tracer not initialized")
+	}
+	return mapHasEntry(t.tids)
+}
+
+// mapHasEntry reports whether m holds at least one key.
+func mapHasEntry(m *ebpf.Map) (bool, error) {
+	var k uint32
+	err := m.NextKey(nil, &k)
+	if errors.Is(err, ebpf.ErrKeyNotExist) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // OnCPUNanos returns the target's total on-CPU time since the tracer attached.

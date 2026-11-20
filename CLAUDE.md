@@ -228,6 +228,7 @@ ptop/
 │       ├── host.go                host context types + cpuinfo/steal parsers (#153, build-tag-free)
 │       ├── host_linux.go          ReadHostInfo, cgroup limits, HostCollector (steal, limits, throttling, PSI each second)
 │       ├── cost.go                CostCollector: the heap probe's estimated cost + ptop's CPU, every second (#154)
+│       ├── filtercheck.go         a target filter that matches nothing fails its probes: /proc switches vs the filter's witness (#199)
 │       ├── proclifecycle_ebpf.go  sched fork/exec/exit → exec lineage subtree (#60)
 │       ├── proclifecycle_decode.go  kind/comm/filename decode (build-tag-free)
 │       ├── security_ebpf.go       PROT_EXEC mmap/mprotect + LSM denials (#59)
@@ -1433,6 +1434,71 @@ the on-CPU counter and the threads collector's switches must each find them.
 Before #197 all three read 0; with the filter fixed and the tids untranslated,
 the threads still did. The rest of the suite is described under "The selftest
 grades, CI runs it" below.
+
+### A filter that matches nothing says so (#199)
+
+#193 and #197 were one failure twice: the filter loaded, matched nothing, and
+every probe behind it reported `active` beside an axis of zeros. A zero is a
+measurement, and the probe states are what a consumer checks, so the capture
+said a busy process did nothing. Fixing each layout does not stop the next one,
+so the filter is graded while the capture runs (`FilterCheckCollector`,
+`pkg/collector/filtercheck.go`):
+
+- **The witness is the filter itself.** `cpu.bpf.c` writes `cpu_target_tids`
+  only when `pid_is_target()` says yes for the task being switched out, and
+  `threads.bpf.c` writes `root2ns` the same way. Neither is pruned, so an
+  empty map means the filter has not matched once since the attach
+  (`FilterMatched`). The cpu probe is the witness, threads when cpu is not on
+  eBPF. With neither there is no check.
+- **The evidence is outside it:** the target's context switches,
+  `voluntary_ctxt_switches + nonvoluntary_ctxt_switches` per thread, from
+  `/proc/<pid>/task/*/status`, or from the threads the subtree's
+  `cgroup.threads` files list. Every switch counted is a `sched_switch` with
+  that thread as prev, which is where the witness runs.
+- **The rule:** a match settles it; 20 switches since the attach with an empty
+  witness fails it; anything else concludes nothing. One verdict, then the check
+  stops.
+- **Switches, not CPU time.** The issue proposed comparing CPU time, and that
+  fails a working capture: the CPU axis cannot count a thread before it has seen
+  it switch out once, so a poller pinned to an isolated core is CPU `/proc`
+  counts and the probe never can. On switches it is no evidence either way,
+  and so is an idle target. It never fails.
+- **Withheld, not stopped.** Most collectors' `Stop` races their own loop and
+  is not idempotent. So `failFilter` marks the Set, and the bus drops whatever
+  a probe behind the filter publishes (`heldBack`, a `withholder`).
+  `Set.Collectors()` returns those wrapped, so nothing may type-assert a
+  concrete collector out of that list. The
+  exception is heap, whose uprobe traps cost the target whatever the filter
+  says. It is stopped the way `--overhead-budget` stops it, after `CostCollector`
+  forgets it. io stays `active` on `/proc` when iowait or throughput runs, with
+  the reason as its caveat.
+- **Everyone is told, with both numbers.** Each probe behind the filter
+  transitions to `failed` (`probeLog.transition`), a `ProbeChange` per probe
+  reaches the stream, the hub's handshake and stderr (the repeated reason is
+  printed once), and the TUI, whose panels then say why. The detail starts
+  with `collector.FilterBlindPrefix`, so the TUI says `failed:`, not `failed to
+  attach:`.
+- **The report retracts.** A probe that FAILED mid-window, or left its eBPF
+  lane, takes its section with it (`Builder.retract`): what it read before the
+  change was the filter's silence. A probe detached by its budget keeps its
+  section. A value sent before the flag was set can arrive after the change, so
+  the builder drops those as well.
+
+The selftest's `unmatched` case misdirects the filter on purpose
+(`bpf.MisdirectFiltersForSelftest`), so it plants the bug and not a fake of it.
+The pid filter compares with a pid past pid_max's ceiling, so it cannot land
+on another process. The cgroup filter names an empty decoy.
+- A child napping 2ms at a time must have every eBPF probe behind the filter
+  fail within 3s, with the numbers in the detail and io on `/proc`. Signals and
+  lifecycle stay active, nothing withheld reaches the bus after the change, and
+  a `--for` report has no cpu, syscalls or threads section.
+- `sleep 600` under the same misdirected filter must fail nothing.
+- The napper under its real filter, pid and cgroup, must fail nothing.
+
+Measured on OrbStack 7.2 (arm64): the napper made 973 switches by the first
+reading, 1s in, and the idle target made 0 in the window. Three controls each
+fail their own checks: no check (3), a witness ignored (2, the real-filter
+controls), nothing withheld (1).
 
 ## Build tags
 

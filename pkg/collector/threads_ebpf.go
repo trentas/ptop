@@ -97,6 +97,17 @@ func (c *ThreadsEBPFCollector) kernelTID(taskDir, name string, tid uint32) (uint
 	return k, true
 }
 
+// FilterMatched reports whether the target filter has matched a switch-out of
+// the target since the attach: the filter check's witness when the cpu probe
+// is not running (#199). Set.Stop stops the check before this collector.
+func (c *ThreadsEBPFCollector) FilterMatched() (bool, error) {
+	t := c.tracer
+	if t == nil {
+		return false, fmt.Errorf("tracer not open")
+	}
+	return t.FilterMatched()
+}
+
 func (c *ThreadsEBPFCollector) Stop() {
 	close(c.stop)
 	if c.tracer != nil {

@@ -491,6 +491,52 @@ func TestWindowAndProbeChanges(t *testing.T) {
 	}
 }
 
+// A filter that matched nothing (#199): the probes behind it fail mid-window,
+// and what they read before is not a measurement. Their sections go, as if
+// they had never run, event sections included; io keeps its /proc lane; a
+// probe detached on purpose keeps what it read; signals, behind a filter of
+// their own, are untouched.
+func TestAProbeThatFailsMidWindowTakesBackItsReadings(t *testing.T) {
+	blind := func(name string) *pb.ProbeInfo {
+		return &pb.ProbeInfo{Name: name, State: pb.ProbeState_PROBE_STATE_FAILED, Detail: collector.FilterBlindPrefix}
+	}
+	ioProc := &pb.ProbeInfo{Name: collector.SubsystemIO, State: pb.ProbeState_PROBE_STATE_ACTIVE, Source: "/proc", Detail: "iowait and throughput only"}
+	iowait := func(sec, pct float64) *pb.Event {
+		return &pb.Event{TsUnixNano: at(sec), Payload: &pb.Event_IoWait{IoWait: &pb.IoWaitSample{Pct: pct}}}
+	}
+	zero := &pb.SyscallSnapshot{}
+	r := build(t, Config{}, probes(collector.SubsystemCPU, collector.SubsystemSyscalls, collector.SubsystemIO,
+		collector.SubsystemSecurity, collector.SubsystemNetwork, collector.SubsystemSignals, collector.SubsystemHeap),
+		ev(0, &pb.CpuSample{UsagePct: 0}), ev(1, &pb.CpuSample{UsagePct: 0}),
+		ev(0, zero), ev(1, zero),
+		ev(0, &pb.IoSnapshot{}), iowait(0, 4), iowait(1, 6),
+		ev(0, &pb.HeapSnapshot{AllocRate: 10}), ev(1, &pb.HeapSnapshot{AllocRate: 10}),
+		ev(2, blind(collector.SubsystemCPU)), ev(2, blind(collector.SubsystemSyscalls)), ev(2, ioProc),
+		ev(2, blind(collector.SubsystemSecurity)), ev(2, blind(collector.SubsystemNetwork)),
+		ev(2, &pb.ProbeInfo{Name: collector.SubsystemHeap, State: pb.ProbeState_PROBE_STATE_DISABLED, Detail: "over budget"}),
+		// Sent before the change took effect, arriving after it.
+		ev(2.1, &pb.CpuSample{UsagePct: 0}), ev(2.1, zero),
+		ev(3, &pb.SignalEvent{Signal: "SIGTERM"}),
+	)
+	if r.GetCpu() != nil || r.GetSyscalls() != nil || r.GetSecurity() != nil || r.GetNetwork() != nil {
+		t.Errorf("a probe failed mid-window kept its section: cpu %v syscalls %v security %v network %v",
+			r.GetCpu(), r.GetSyscalls(), r.GetSecurity(), r.GetNetwork())
+	}
+	io := r.GetIo()
+	if io == nil || io.GetIoWaitPct().GetN() != 2 || io.GetReadings() != 0 || io.GetFs() != nil {
+		t.Errorf("io = %v, want iowait's two readings and nothing from the eBPF lane", io)
+	}
+	if r.GetHeap() == nil {
+		t.Error("a probe detached by its budget lost what it measured")
+	}
+	if r.GetSignals().GetTotal() != 1 {
+		t.Errorf("signals = %v, want the one signal", r.GetSignals())
+	}
+	if len(r.GetProbeChanges()) != 6 {
+		t.Errorf("probe changes = %d, want all 6", len(r.GetProbeChanges()))
+	}
+}
+
 func TestHostSaturationOverTheSpan(t *testing.T) {
 	sample := func(steal *float64, throttled uint64, some uint64) *pb.HostSample {
 		return &pb.HostSample{

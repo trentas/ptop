@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"sync/atomic"
 
 	"github.com/cilium/ebpf"
 	"golang.org/x/sys/unix"
@@ -39,11 +40,42 @@ type resolvedTarget struct {
 // resolveTarget builds what the BPF programs read, for either way of naming a
 // target (see Target).
 func resolveTarget(t Target) (resolvedTarget, error) {
+	m := misdirect.Load()
 	if t.IsCgroup() {
-		return resolveCgroupTarget(t.Cgroup)
+		spec := t.Cgroup
+		if m != nil && m.DecoyCgroup != "" {
+			spec = m.DecoyCgroup
+		}
+		return resolveCgroupTarget(spec)
 	}
 	tf, err := resolvePIDTarget(t.PID)
+	if err == nil && m != nil {
+		tf.Pid = uint32(int(tf.Pid) + m.PIDOffset)
+	}
 	return resolvedTarget{targetFilter: tf}, err
+}
+
+// Misdirection rewrites the filters resolveTarget builds, so that they match
+// nothing on purpose, the way #193 and #197 did by accident (#199).
+type Misdirection struct {
+	// PIDOffset is added to the pid a pid filter compares with: the right
+	// namespace, the wrong number, which is #197's shape.
+	PIDOffset int
+	// DecoyCgroup replaces the cgroup a cgroup filter names: a cgroup the
+	// target is not under, which is what #193's short level amounted to.
+	DecoyCgroup string
+}
+
+var misdirect atomic.Pointer[Misdirection]
+
+// MisdirectFiltersForSelftest makes every filter resolved from now on follow m
+// instead of the target, until restore is called. Only the filter: a loader
+// still attaches its uprobes to the real target, and the signal and lifecycle
+// probes, which filter on a global pid of their own, are untouched. The
+// selftest's unmatched case is its one caller.
+func MisdirectFiltersForSelftest(m Misdirection) (restore func()) {
+	misdirect.Store(&m)
+	return func() { misdirect.Store(nil) }
 }
 
 // resolvePIDTarget builds the filter for pid: the device and inode of the PID

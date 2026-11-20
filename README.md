@@ -778,6 +778,29 @@ the same thing on stderr when it starts:
 [ptop] ⚠ 1 collector(s) asked for but NOT attached — … : syscalls (open tracefs: no such file or directory)
 ```
 
+A probe can also fail **after** it attached, when its target filter matches
+nothing (#199). Every probe but signals and lifecycle decides what is the
+target's through one shared filter, and twice that filter loaded, matched
+nothing, and left every probe `active` beside an axis of zeros: in cgroup mode
+inside a cgroup namespace (#193), and in pid mode from an ancestor pid namespace
+(#197). So ptop now checks the filter while it runs. It counts the target's
+context switches in `/proc`, which the filter plays no part in, and watches the
+cpu probe's program, which records the first time the filter says yes. Twenty
+switches with no yes is a filter that matches nothing. Every probe behind it
+then fails, with a `probe_change` giving both numbers, and nothing those probes
+publish reaches the stream from then on:
+
+```
+[ptop] ⚠ cpu probe is now failed: the target filter matches nothing: in 1s /proc counted 973 context switches of pid 14's threads, and the cpu probe's filter matched 0 of them. …
+[ptop] ⚠ cpuprof probe is now failed: the same reason as above
+```
+
+`io` stays active on `/proc` (iowait and throughput) with the reason it lost
+its per-file view, and a `--for` report leaves out the sections of the probes
+that failed: their zeros were the filter's, not the target's. An idle target
+never fails: no switches is no evidence either way. The check needs the cpu or
+threads probe on eBPF, and runs in both pid and cgroup mode.
+
 And it names the **ptop that produced the stream** — `ptop { version, commit,
 build_date }` — for the same reason one level up: what a field means changes
 between releases (until v1.8.1 a connection's `latency_ms` was never a

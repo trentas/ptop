@@ -15,5 +15,8 @@ func (*CPUEBPFCollector) Start(int) error {
 func (*CPUEBPFCollector) StartCgroup(string) error {
 	return errors.New("eBPF cpu sampler not available in this build")
 }
-func (*CPUEBPFCollector) Stop()                          {}
-func (*CPUEBPFCollector) Subscribe() <-chan interface{}  { return nil }
+func (*CPUEBPFCollector) Stop() {}
+func (*CPUEBPFCollector) FilterMatched() (bool, error) {
+	return false, errors.New("eBPF cpu sampler not available in this build")
+}
+func (*CPUEBPFCollector) Subscribe() <-chan interface{} { return nil }

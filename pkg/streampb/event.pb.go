@@ -969,11 +969,17 @@ type Event_CaptureCost struct {
 }
 
 type Event_ProbeChange struct {
-	// #154 — a probe whose state changed mid-capture (--overhead-budget
-	// detaching the heap probe). The handshake's probe set is the state at
-	// subscribe time; this is the moment it stopped being true. Its category
-	// is the probe's own (heap → MEMORY), so it reaches whoever reads that
-	// axis, in order with its events.
+	// #154 — a probe whose state changed mid-capture: --overhead-budget
+	// detaching the heap probe, or the filter check failing every probe
+	// behind a target filter that matches nothing (#199). The handshake's
+	// probe set is the state at subscribe time; this is the moment it stopped
+	// being true. Its category is the probe's own (heap → MEMORY), so it
+	// reaches whoever reads that axis, in order with its events.
+	//
+	// A probe failed by the filter check never saw the target: what it
+	// published before the change was the filter's silence, not the target's,
+	// and nothing it publishes reaches the stream after it. Its detail starts
+	// "the target filter matches nothing" and gives both numbers.
 	ProbeChange *ProbeInfo `protobuf:"bytes,36,opt,name=probe_change,json=probeChange,proto3,oneof"`
 }
 
@@ -4074,11 +4080,12 @@ type ProbeInfo struct {
 	// otherwise. The same subsystem read through different sources is not the
 	// same measurement, so this is part of the comparison key too.
 	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
-	// Why a probe that is not ACTIVE is not running — the attach error, or the
-	// flag that switched it off. On an ACTIVE probe, a caveat: what it attached
-	// and still could not see, such as connections that predate the capture and
-	// could not be seeded (#140); empty when there is none. Operator-facing prose;
-	// do not parse it.
+	// Why a probe that is not ACTIVE is not running — the attach error, the flag
+	// that switched it off, or, on a probe that attached, the filter check's
+	// finding that its target filter matches nothing (#199). On an ACTIVE probe,
+	// a caveat: what it attached and still could not see, such as connections
+	// that predate the capture and could not be seeded (#140); empty when there
+	// is none. Operator-facing prose; do not parse it.
 	Detail        string `protobuf:"bytes,4,opt,name=detail,proto3" json:"detail,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

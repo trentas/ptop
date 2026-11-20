@@ -93,6 +93,7 @@ const costInterval = time.Second
 // ProcContext: it measures the observer, not the target, and has no --disable
 // name. A Set with no heap probe still reports ptop's own CPU.
 type CostCollector struct {
+	srcMu   sync.Mutex // sources: sample reads them, forget drops one from another goroutine
 	sources map[string]CostSource
 	ch      chan interface{}
 	stop    chan struct{}
@@ -146,7 +147,18 @@ func (c *CostCollector) Start(pid int) error {
 	return nil
 }
 
-func (c *CostCollector) Stop()                         { c.once.Do(func() { close(c.stop) }) }
+func (c *CostCollector) Stop() { c.once.Do(func() { close(c.stop) }) }
+
+// forget stops estimating a probe, before something outside this collector
+// stops the probe itself: the filter check, when the heap probe's filter
+// matches nothing (#199). It returns once no sample is reading the probe.
+func (c *CostCollector) forget(name string) {
+	c.srcMu.Lock()
+	defer c.srcMu.Unlock()
+	delete(c.sources, name)
+	delete(c.prev, name)
+}
+
 func (c *CostCollector) Subscribe() <-chan interface{} { return c.ch }
 
 func (c *CostCollector) loop() {
@@ -186,6 +198,8 @@ func (c *CostCollector) calibrate() {
 }
 
 func (c *CostCollector) sample(now time.Time) (CaptureCost, []ProbeChange) {
+	c.srcMu.Lock()
+	defer c.srcMu.Unlock()
 	out := CaptureCost{Timestamp: now}
 	var changes []ProbeChange
 	window := now.Sub(c.prevAt)

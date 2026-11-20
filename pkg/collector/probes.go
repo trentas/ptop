@@ -110,6 +110,14 @@ func (l *probeLog) caveat(name, note string) {
 	}
 }
 
+// get returns a probe's current status.
+func (l *probeLog) get(name string) (ProbeStatus, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	st, ok := l.m[name]
+	return st, ok
+}
+
 func (l *probeLog) disabled(name, why string) {
 	l.set(ProbeStatus{Name: name, State: ProbeDisabled, Detail: why})
 }
@@ -181,6 +189,19 @@ var cgroupUnsupported = map[string]string{
 	SubsystemGoPause:  "cgroup scope: the pause uprobes attach into one process's Go runtime",
 	SubsystemJVMPause: "cgroup scope: the pause uprobes attach into one process's libjvm.so",
 }
+
+// filterSubsystems are the probes behind the shared target filter, pid_is_target()
+// in target.bpf.h: every eBPF probe but signals and lifecycle, which filter on a
+// global pid of their own. The filter check fails them together (#199).
+var filterSubsystems = []string{
+	SubsystemCPU, SubsystemCPUProf, SubsystemThreads, SubsystemMemory, SubsystemHeap,
+	SubsystemSyscalls, SubsystemIO, SubsystemNetwork, SubsystemFutex, SubsystemSecurity,
+	SubsystemTLS, SubsystemGoPause, SubsystemJVMPause,
+}
+
+// FilterSubsystems returns the probes behind the shared target filter, the ones
+// the filter check fails together (#199).
+func FilterSubsystems() []string { return append([]string(nil), filterSubsystems...) }
 
 // cgroupSubsystems are the ones startCgroup can run — the subtree-capable set,
 // everything not in cgroupUnsupported.
