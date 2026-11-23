@@ -233,7 +233,8 @@ ptop/
 │       ├── proclifecycle_decode.go  kind/comm/filename decode (build-tag-free)
 │       ├── security_ebpf.go       PROT_EXEC mmap/mprotect + LSM denials (#59)
 │       ├── security_decode.go     prot/kind/detail decode (build-tag-free)
-│       ├── fds.go                 /proc/<pid>/fd + fdinfo + events
+│       ├── fds.go                 /proc/<pid>/fd + fdinfo + events; RLIMIT_NOFILE from /proc/<pid>/limits
+│       ├── fdlimit.go             FDLimit + its parser (build-tag-free): F6's alert compares with it, not a constant
 │       ├── sockets.go             inode → host:port via the target's /proc/<pid>/net/* (#140)
 │       ├── syscall_names.go       syscall id → name, table picked by GOARCH (build-tag-free)
 │       ├── syscall_names_gen.go   generated from internal/syscalltbl — do not edit

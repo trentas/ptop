@@ -69,6 +69,7 @@ type SnapshotData struct {
 	IOReadHist     []float64                      `json:"io_read_history"`
 	IOWriteHist    []float64                      `json:"io_write_history"`
 	FDs            []collector.FDEntry            `json:"fds"`
+	FDLimit        *collector.FDLimit             `json:"fd_limit,omitempty"` // absent while unknown
 	FDCountHistory []float64                      `json:"fd_count_history"`
 	FDEvents       []collector.FDEvent            `json:"fd_events"`
 	Timeline       []collector.TimelineEvent      `json:"timeline"`
@@ -128,6 +129,7 @@ func buildSnapshot(m Model) Snapshot {
 			IOReadHist:     append([]float64(nil), m.IOReadHist...),
 			IOWriteHist:    append([]float64(nil), m.IOWriteHist...),
 			FDs:            append([]collector.FDEntry(nil), m.FDs...),
+			FDLimit:        m.FDLimit,
 			FDCountHistory: append([]float64(nil), m.FDCountHistory...),
 			FDEvents:       append([]collector.FDEvent(nil), m.FDEvents...),
 			Timeline:       append([]collector.TimelineEvent(nil), m.Timeline...),
