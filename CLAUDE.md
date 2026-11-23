@@ -306,13 +306,15 @@ type IOEvent struct {
 }
 
 type FDEntry struct {
-    FD     int
-    Type   string // "file" | "socket" | "pipe" | "epoll" | "timer"
-    Desc   string
-    Flags  string
-    Bytes  uint64
-    AgeMs  int64
-    Active bool
+    FD          int
+    Type        string // "file" | "socket" | "pipe" | "epoll" | "timer" | "event" | "other", from the fd's link
+    Desc        string
+    Flags       string
+    Bytes       uint64 // the file OFFSET, a reading only where PosKnown
+    AgeMs       int64  // since ptop saw it; a lower bound when Preexisting
+    Active      bool   // the offset moved since the last poll; only where PosKnown
+    PosKnown    bool   // a regular file or block device on Linux; never a socket, never on macOS
+    Preexisting bool   // open at the first poll, which emits no "openat" for it
 }
 
 type ThreadInfo struct {

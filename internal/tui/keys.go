@@ -9,7 +9,7 @@ import (
 
 // fdFilters defines the cycling order when pressing '/' in the FD view (legacy mode
 // when the substring filter is empty — pressing `/` again enters input mode).
-var fdFilters = []string{"all", "file", "socket", "pipe", "epoll", "timer"}
+var fdFilters = append([]string{"all"}, fdTypeOrder...)
 
 // handleKey processes keyboard input.
 //

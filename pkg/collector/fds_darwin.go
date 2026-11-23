@@ -17,12 +17,10 @@ import (
 // shapes regardless of OS.
 //
 // Differences vs Linux:
-//   - Active flag is always false: libproc has no per-FD "pos" cursor like
-//     /proc/<pid>/fdinfo/pos to detect activity between polls. The eBPF
-//     Linux build is the only place this is real-time; both /proc and
-//     darwin fall back to "never active". Marking everything Active is
-//     misleading, so we mark nothing.
-//   - Bytes column is 0: there's no cumulative file-position equivalent on
+//   - PosKnown is always false, so Active and Bytes are not readings and
+//     F6 shows them as unmeasured: libproc has no per-FD "pos" cursor like
+//     /proc/<pid>/fdinfo/pos to detect activity between polls.
+//   - Bytes is 0: there's no cumulative file-position equivalent on
 //     macOS, and sockets are no exception — socket_info exposes only the
 //     current send/recv buffer occupancy (sbi_cc), not lifetime byte
 //     totals, so there's nothing cumulative to put here. The F3 view does
@@ -39,12 +37,14 @@ type FDCollector struct {
 	mu   sync.Mutex
 
 	baseline map[int32]fdStateDarwin
+	primed   bool // the first poll has been taken
 }
 
 type fdStateDarwin struct {
-	openedAt time.Time
-	desc     string
-	fdType   string
+	openedAt    time.Time
+	desc        string
+	fdType      string
+	preexisting bool // open at the first poll, so openedAt is when ptop saw it
 }
 
 func NewFDCollector() *FDCollector {
@@ -106,6 +106,10 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 	defer c.mu.Unlock()
 
 	now := time.Now()
+	// The first poll is the baseline: its fds were open before ptop looked, so
+	// it emits no "openat" for them, as on Linux.
+	first := !c.primed
+	c.primed = true
 	seen := make(map[int32]bool, len(rawFDs))
 	result := make([]FDEntry, 0, len(rawFDs))
 	events := make([]interface{}, 0)
@@ -116,12 +120,14 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 
 		prev, hadPrev := c.baseline[raw.FD]
 		if !hadPrev {
-			c.baseline[raw.FD] = fdStateDarwin{openedAt: now, desc: desc, fdType: fdType}
+			c.baseline[raw.FD] = fdStateDarwin{openedAt: now, desc: desc, fdType: fdType, preexisting: first}
 			prev = c.baseline[raw.FD]
-			events = append(events,
-				FDEvent{Timestamp: now, Message: fmt.Sprintf("openat fd=%d %s", raw.FD, desc)},
-				TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("openat → fd=%d %s", raw.FD, desc)},
-			)
+			if !first {
+				events = append(events,
+					FDEvent{Timestamp: now, Message: fmt.Sprintf("openat fd=%d %s", raw.FD, desc)},
+					TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("openat → fd=%d %s", raw.FD, desc)},
+				)
+			}
 		} else if prev.desc != desc {
 			events = append(events,
 				FDEvent{Timestamp: now, Message: fmt.Sprintf("reuse fd=%d %s → %s", raw.FD, prev.desc, desc)},
@@ -131,14 +137,15 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 			prev = c.baseline[raw.FD]
 		}
 
+		// No offset to read (see the file header), so PosKnown stays false
+		// and Bytes and Active are not readings.
 		result = append(result, FDEntry{
-			FD:     int(raw.FD),
-			Type:   fdType,
-			Desc:   desc,
-			Flags:  flags,
-			Bytes:  0,
-			AgeMs:  now.Sub(prev.openedAt).Milliseconds(),
-			Active: false,
+			FD:          int(raw.FD),
+			Type:        fdType,
+			Desc:        desc,
+			Flags:       flags,
+			AgeMs:       now.Sub(prev.openedAt).Milliseconds(),
+			Preexisting: prev.preexisting,
 		})
 	}
 
@@ -190,7 +197,7 @@ func (c *FDCollector) describe(raw LPFDInfo) (desc, fdType, flags string) {
 	case FDTypeFSEvents:
 		return "fsevents", "event", ""
 	default:
-		return fmt.Sprintf("type=%d", raw.Type), "file", ""
+		return fmt.Sprintf("type=%d", raw.Type), "other", ""
 	}
 }
 

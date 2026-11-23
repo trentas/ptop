@@ -160,6 +160,10 @@ func FDTypeColor(fdType string) lipgloss.Color {
 		return ColorAmber
 	case "timer":
 		return ColorGreen
+	case "event":
+		return ColorOrange
+	case "other":
+		return ColorPink
 	default:
 		return ColorMuted
 	}
@@ -178,6 +182,10 @@ func FDTypeIcon(fdType string) string {
 		return "e"
 	case "timer":
 		return "t"
+	case "event":
+		return "v"
+	case "other":
+		return "o"
 	default:
 		return "?"
 	}

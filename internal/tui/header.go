@@ -6,11 +6,18 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/trentas/ptop/pkg/collector"
 )
 
 // renderHeader draws the top bar:
 //
 //	⬡ ptop │ <process> [PID N] [Go 1.22] [STATE] [N fds]            uptime MM:SS │ HH:MM:SS
+//
+// STATE and uptime are the target's: the state summarizes its threads (see
+// processState), the uptime counts from its start (ProcContext.StartTime).
+// Either is left out while unknown, rather than showing the mockup's
+// RUNNING or the time since ptop opened.
 //
 // The result is ALWAYS truncated to fit m.Width. If the line overflows
 // width, the terminal line-wraps and the rest of the TUI gets flipped upside
@@ -36,15 +43,6 @@ func renderHeader(m Model) string {
 
 	pidBadge := Badge(fmt.Sprintf("PID %d", m.cfg.PID), ColorBlue)
 
-	stateColor := ColorGreen
-	switch strings.ToUpper(m.State) {
-	case "BLOCKED", "STOPPED", "ZOMBIE":
-		stateColor = ColorRed
-	case "SLEEPING":
-		stateColor = ColorMuted
-	}
-	stateBadge := Badge(strings.ToUpper(m.State), stateColor)
-
 	fdBadge := Badge(fmt.Sprintf("%d fds", len(m.FDs)), ColorTeal)
 
 	// build "left" segments in descending priority order
@@ -66,17 +64,23 @@ func renderHeader(m Model) string {
 	if m.ProcCtx.Container != "" {
 		leftSegs = append(leftSegs, seg{Badge(m.ProcCtx.Container, ColorPurple), 2})
 	}
-	leftSegs = append(leftSegs,
-		seg{stateBadge, 1},
-		seg{fdBadge, 1},
-	)
-
-	uptime := time.Since(m.StartedAt)
-	upMin := int(uptime.Minutes())
-	upSec := int(uptime.Seconds()) % 60
+	if state := processState(m.Threads); state != "" {
+		stateColor := ColorGreen
+		switch state {
+		case "BLOCKED", "STOPPED":
+			stateColor = ColorRed
+		case "SLEEPING":
+			stateColor = ColorMuted
+		}
+		leftSegs = append(leftSegs, seg{Badge(state, stateColor), 1})
+	}
+	leftSegs = append(leftSegs, seg{fdBadge, 1})
 
 	clock := time.Now().Format("15:04:05")
-	rightFull := fmt.Sprintf("uptime %02d:%02d  │  %s", upMin, upSec, clock)
+	rightFull := clock
+	if start := m.ProcCtx.StartTime; !start.IsZero() {
+		rightFull = fmt.Sprintf("uptime %s  │  %s", fmtUptime(time.Since(start)), clock)
+	}
 	rightShort := clock // fallback version for narrow terminals
 
 	style := lipgloss.NewStyle().Foreground(ColorMuted).Background(headerBg)
@@ -141,4 +145,56 @@ func filterSegs(segs []seg, maxPrio int) []seg {
 type seg struct {
 	text string
 	prio int
+}
+
+// processState sums up the target's threads for the header badge, from the
+// last thread sample: RUNNING when any thread is on a CPU or runnable,
+// BLOCKED when none is but one sits in uninterruptible sleep (D: disk, a
+// stuck mount), STOPPED when all are stopped, SLEEPING otherwise. "" with no
+// threads, which is the badge left out.
+//
+// It reads every thread, not the leader the way top does: a Go or JVM
+// server's main thread parks for its whole life while the others work, and
+// its state alone would call the busiest process SLEEPING.
+func processState(threads []collector.ThreadInfo) string {
+	if len(threads) == 0 {
+		return ""
+	}
+	var blocked, stopped int
+	for _, t := range threads {
+		switch t.State {
+		case "running":
+			return "RUNNING"
+		case "blocked":
+			blocked++
+		case "stopped":
+			stopped++
+		}
+	}
+	switch {
+	case blocked > 0:
+		return "BLOCKED"
+	case stopped == len(threads):
+		return "STOPPED"
+	default:
+		return "SLEEPING"
+	}
+}
+
+// fmtUptime renders a process's uptime: MM:SS under an hour, H:MM:SS under a
+// day, then days and HH:MM. A long-running server is up for weeks, and the
+// mockup's MM:SS would print 40000 minutes.
+func fmtUptime(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	s := int64(d / time.Second)
+	switch {
+	case s < 3600:
+		return fmt.Sprintf("%02d:%02d", s/60, s%60)
+	case s < 86400:
+		return fmt.Sprintf("%d:%02d:%02d", s/3600, s/60%60, s%60)
+	default:
+		return fmt.Sprintf("%dd %02d:%02d", s/86400, s/3600%24, s/60%60)
+	}
 }

@@ -32,13 +32,16 @@ type FDCollector struct {
 
 	// state between polls
 	baseline map[int]fdState // fd → state at last observation
+	primed   bool            // the first poll has been taken
 }
 
 type fdState struct {
-	openedAt time.Time
-	pos      uint64 // /proc/<pid>/fdinfo/<fd> "pos:" field — used to detect activity
-	desc     string // stable description (file path or resolved TCP IP:port)
-	fdType   string
+	openedAt    time.Time
+	pos         uint64 // /proc/<pid>/fdinfo/<fd> "pos:" field — used to detect activity
+	desc        string // stable description (file path or resolved TCP IP:port)
+	fdType      string
+	posKnown    bool // the fd has a file offset: a regular file or a block device
+	preexisting bool // open at the first poll, so openedAt is when ptop saw it
 }
 
 func NewFDCollector() *FDCollector {
@@ -123,6 +126,10 @@ func (c *FDCollector) emit(msg interface{}) {
 
 // collect returns the current snapshot + events (open/close) detected
 // since the last poll.
+//
+// The first poll is the baseline. Its fds were open before ptop looked, so it
+// emits no "openat" for them (they would put opens that never happened on the
+// timeline) and marks them Preexisting: their age is a lower bound.
 func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 	fdDir := fmt.Sprintf("/proc/%d/fd", c.pid)
 	entries, err := os.ReadDir(fdDir)
@@ -134,6 +141,8 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 	defer c.mu.Unlock()
 
 	now := time.Now()
+	first := !c.primed
+	c.primed = true
 	seen := make(map[int]bool, len(entries))
 	result := make([]FDEntry, 0, len(entries))
 	events := make([]interface{}, 0)
@@ -145,65 +154,62 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 		}
 		seen[fdNum] = true
 
-		link, _ := os.Readlink(filepath.Join(fdDir, e.Name()))
-		fdType := inferType(fdNum, link)
+		fdPath := filepath.Join(fdDir, e.Name())
+		link, _ := os.Readlink(fdPath)
+		fdType := inferType(link)
 		desc := c.describeLink(link)
 		flags := readFlags(c.pid, fdNum)
 		pos := readFDPos(c.pid, fdNum)
 
 		prev, hadPrev := c.baseline[fdNum]
-		// Detect new opens (FD wasn't in baseline OR description changed
-		// — case of dup2 reusing the number)
-		if !hadPrev {
-			openedAt := now
-			c.baseline[fdNum] = fdState{
-				openedAt: openedAt,
-				pos:      pos,
-				desc:     desc,
-				fdType:   fdType,
+		// A new life: the fd was not in the baseline, or its description
+		// changed (dup2, or a close and an open between two polls).
+		if !hadPrev || prev.desc != desc {
+			switch {
+			case first:
+			case !hadPrev:
+				events = append(events,
+					FDEvent{Timestamp: now, Message: fmt.Sprintf("openat fd=%d %s", fdNum, desc)},
+					TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("openat → fd=%d %s", fdNum, desc)},
+				)
+			default:
+				events = append(events,
+					FDEvent{Timestamp: now, Message: fmt.Sprintf("reuse fd=%d %s → %s", fdNum, prev.desc, desc)},
+					TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("dup/reuse fd=%d → %s", fdNum, desc)},
+				)
 			}
-			prev = c.baseline[fdNum]
-			events = append(events,
-				FDEvent{Timestamp: now, Message: fmt.Sprintf("openat fd=%d %s", fdNum, desc)},
-				TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("openat → fd=%d %s", fdNum, desc)},
-			)
-		} else if prev.desc != desc {
-			// FD got reused (dup2/openat after close) — emit close+open
-			events = append(events,
-				FDEvent{Timestamp: now, Message: fmt.Sprintf("reuse fd=%d %s → %s", fdNum, prev.desc, desc)},
-				TimelineEvent{Timestamp: now, Category: "fd", Message: fmt.Sprintf("dup/reuse fd=%d → %s", fdNum, desc)},
-			)
-			c.baseline[fdNum] = fdState{
-				openedAt: now,
-				pos:      pos,
-				desc:     desc,
-				fdType:   fdType,
+			prev = fdState{
+				openedAt:    now,
+				pos:         pos,
+				desc:        desc,
+				fdType:      fdType,
+				posKnown:    fdType == "file" && hasOffset(fdPath),
+				preexisting: first,
 			}
-			prev = c.baseline[fdNum]
 		}
 
-		// Active = pos changed since last poll. Makes sense for files;
-		// for sockets/pipes pos is always 0, so Active stays false.
-		// (Future eBPF via #11 will give correct Active for any fd type.)
-		active := pos != prev.pos
-		c.baseline[fdNum] = fdState{
-			openedAt: prev.openedAt,
-			pos:      pos,
-			desc:     desc,
-			fdType:   fdType,
+		// Active = pos moved since the last poll. Only an fd with an offset
+		// has one to move (PosKnown): a socket's or a pipe's pos stays 0
+		// whatever goes through it.
+		active := prev.posKnown && pos != prev.pos
+		next := prev
+		next.pos = pos
+		c.baseline[fdNum] = next
+
+		entry := FDEntry{
+			FD:          fdNum,
+			Type:        fdType,
+			Desc:        desc,
+			Flags:       flags,
+			AgeMs:       now.Sub(prev.openedAt).Milliseconds(),
+			Active:      active,
+			PosKnown:    prev.posKnown,
+			Preexisting: prev.preexisting,
 		}
-
-		bytes := pos // for sockets/pipes ignored; for files it's cumulative pos
-
-		result = append(result, FDEntry{
-			FD:     fdNum,
-			Type:   fdType,
-			Desc:   desc,
-			Flags:  flags,
-			Bytes:  bytes,
-			AgeMs:  now.Sub(prev.openedAt).Milliseconds(),
-			Active: active,
-		})
+		if prev.posKnown {
+			entry.Bytes = pos
+		}
+		result = append(result, entry)
 	}
 
 	// Detect closes (FDs that were in baseline and disappeared)
@@ -220,22 +226,41 @@ func (c *FDCollector) collect() ([]FDEntry, []interface{}, error) {
 	return result, events, nil
 }
 
-func inferType(fd int, link string) string {
+// hasOffset says whether the file behind /proc/<pid>/fd/<n> has an offset
+// that reads and writes move: a regular file or a block device. A character
+// device (a tty, /dev/null) keeps pos at 0 whatever is written to it. The stat
+// follows the fd's magic link, so it works across mount namespaces.
+func hasOffset(fdPath string) bool {
+	st, err := os.Stat(fdPath)
+	if err != nil {
+		return false
+	}
+	mode := st.Mode()
+	return mode.IsRegular() || (mode&os.ModeDevice != 0 && mode&os.ModeCharDevice == 0)
+}
+
+// inferType classifies an fd by its /proc/<pid>/fd link, as the kernel names
+// it. fds 0-2 are classified like any other: a daemon's stdin is often
+// /dev/null and its stdout a socket to the journal.
+func inferType(link string) string {
 	switch {
-	case fd <= 2:
-		return "pipe"
 	case strings.HasPrefix(link, "socket:"):
 		return "socket"
 	case strings.HasPrefix(link, "pipe:"):
 		return "pipe"
-	case strings.HasPrefix(link, "anon_inode:[eventfd]"):
-		return "event"
-	case strings.HasPrefix(link, "anon_inode:[epoll]"):
+	case link == "anon_inode:[eventpoll]":
 		return "epoll"
-	case strings.HasPrefix(link, "anon_inode:[timerfd]"):
+	case link == "anon_inode:[timerfd]":
 		return "timer"
-	default:
+	case link == "anon_inode:[eventfd]":
+		return "event"
+	case strings.HasPrefix(link, "/"):
 		return "file"
+	default:
+		// Every other anonymous inode (pidfd, inotify, signalfd, io_uring,
+		// bpf maps, ...) and the namespace files ("net:[4026531840]"). The
+		// description is the link, which names the kind.
+		return "other"
 	}
 }
 

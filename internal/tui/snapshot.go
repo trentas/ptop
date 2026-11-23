@@ -49,7 +49,7 @@ type Snapshot struct {
 	CapturedAt time.Time    `json:"captured_at"`
 	PID        int          `json:"pid"`
 	Process    string       `json:"process"`
-	UptimeMs   int64        `json:"uptime_ms"`
+	UptimeMs   int64        `json:"uptime_ms"` // how long the TUI ran; the target's start is data.proc_context.StartTime
 	Data       SnapshotData `json:"data"`
 }
 

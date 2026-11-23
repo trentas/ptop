@@ -105,7 +105,16 @@ func renderFDFilterRow(m Model, w int) string {
 	pieces := []string{}
 	selected := -1
 	counts := fdBreakdownCounts(m.FDs)
-	for i, t := range append([]string{"all"}, fdTypeOrder...) {
+	// A type with no fd gets no chip, unless it is the active filter: seven
+	// types do not fit beside each other, and an empty chip would push out
+	// the one holding most of the fds.
+	chips := []string{"all"}
+	for _, t := range fdTypeOrder {
+		if counts[t] > 0 || t == m.FDFilter {
+			chips = append(chips, t)
+		}
+	}
+	for i, t := range chips {
 		if t == m.FDFilter {
 			selected = i
 		}
@@ -180,7 +189,7 @@ func renderFDTable(m Model, w, h int) string {
 			padRight("TYPE", typeW) + " " +
 			padRight("DESCRIPTION", descW) + " " +
 			padRight("FLAGS", flagsW) + " " +
-			lipgloss.NewStyle().Width(bytesW).Background(ColorPanel).Align(lipgloss.Right).Render("BYTES") + " " +
+			lipgloss.NewStyle().Width(bytesW).Background(ColorPanel).Align(lipgloss.Right).Render("OFFSET") + " " +
 			lipgloss.NewStyle().Width(ageW).Background(ColorPanel).Align(lipgloss.Right).Render("AGE") + " " +
 			lipgloss.NewStyle().Width(dotW).Background(ColorPanel).Render(""),
 	)
@@ -215,7 +224,7 @@ func renderFDTable(m Model, w, h int) string {
 		}
 
 		isOld := f.AgeMs > 3600*1000
-		isSuspect := f.Type == "file" && strings.Contains(f.Desc, "/tmp") && f.AgeMs > 600*1000
+		isSuspect := fdHeldInTmp(f)
 
 		fdNum := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Bold(true).Width(fdW).Render(fmt.Sprintf("%d", f.FD))
 		typeStr := lipgloss.NewStyle().Foreground(FDTypeColor(f.Type)).Background(ColorPanel).Width(typeW).Render(FDTypeIcon(f.Type) + " " + f.Type)
@@ -227,18 +236,27 @@ func renderFDTable(m Model, w, h int) string {
 		descStr := lipgloss.NewStyle().Foreground(descColor).Background(ColorPanel).Width(descW).Render(truncate(f.Desc, descW))
 
 		flagsStr := lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Width(flagsW).Render(f.Flags)
-		bytesStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(bytesW).Align(lipgloss.Right).Render(fmtBytes(f.Bytes))
+		// The offset and the activity dot are readings only where the fd has
+		// an offset (PosKnown): a socket's never moves, and macOS has none.
+		offset, offsetColor := "—", ColorDim
+		if f.PosKnown {
+			offset, offsetColor = fmtBytes(f.Bytes), ColorMuted
+		}
+		bytesStr := lipgloss.NewStyle().Foreground(offsetColor).Background(ColorPanel).Width(bytesW).Align(lipgloss.Right).Render(offset)
 
 		ageColor := ColorDim
 		if isOld {
 			ageColor = ColorAmber
 		}
-		ageStr := lipgloss.NewStyle().Foreground(ageColor).Background(ColorPanel).Width(ageW).Align(lipgloss.Right).Render(fmtAgeMs(f.AgeMs))
+		ageStr := lipgloss.NewStyle().Foreground(ageColor).Background(ColorPanel).Width(ageW).Align(lipgloss.Right).Render(fmtFDAge(f))
 
 		var dot string
-		if f.Active {
+		switch {
+		case !f.PosKnown:
+			dot = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render("—")
+		case f.Active:
 			dot = lipgloss.NewStyle().Foreground(ColorGreen).Background(ColorPanel).Render("●")
-		} else {
+		default:
 			dot = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render("○")
 		}
 
@@ -251,14 +269,29 @@ func renderFDTable(m Model, w, h int) string {
 	return strings.Join(rows, "\n")
 }
 
+// fdHeldInTmp flags a file under /tmp held open for over ten minutes: a temp
+// file that outlives the work it was made for is the usual shape of one that
+// was never closed. It says how long the fd has been open and nothing about
+// its activity, which no poll can vouch for over that span.
+func fdHeldInTmp(f collector.FDEntry) bool {
+	return f.Type == "file" && strings.HasPrefix(f.Desc, "/tmp/") && f.AgeMs > 600*1000
+}
+
+// fmtFDAge is an fd's age, marked "≥" when the fd was already open when ptop
+// first looked: ptop knows only when it saw it.
+func fmtFDAge(f collector.FDEntry) string {
+	if f.Preexisting {
+		return "≥" + fmtAgeMs(f.AgeMs)
+	}
+	return fmtAgeMs(f.AgeMs)
+}
+
 func renderFDAlerts(m Model) string {
 	lines := []string{}
-	suspect := 0
 	for _, f := range m.FDs {
-		if f.Type == "file" && strings.Contains(f.Desc, "/tmp") && f.AgeMs > 600*1000 {
-			suspect++
+		if fdHeldInTmp(f) {
 			lines = append(lines, AmberStyle.Render(
-				fmt.Sprintf("⚠ fd=%d %s open for %s with no activity", f.FD, f.Type, fmtAgeMs(f.AgeMs)),
+				fmt.Sprintf("⚠ fd=%d /tmp file open %s", f.FD, fmtFDAge(f)),
 			))
 		}
 	}
@@ -269,7 +302,7 @@ func renderFDAlerts(m Model) string {
 		))
 	}
 	if len(lines) == 0 {
-		lines = append(lines, GreenStyle.Render("✓ no leaks detected"))
+		lines = append(lines, GreenStyle.Render("✓ nothing flagged"))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -310,18 +343,31 @@ func fmtFDOpen(open int, lim *collector.FDLimit) string {
 	}
 }
 
+// fmtFDActive is the Stats panel's "Active files" value: how many of the fds
+// with an offset moved it in the last poll, over how many have one. "—" when
+// none has: sockets and pipes have no offset to watch, and macOS exposes none.
+func fmtFDActive(fds []collector.FDEntry) string {
+	var active, known int
+	for _, f := range fds {
+		if f.PosKnown {
+			known++
+			if f.Active {
+				active++
+			}
+		}
+	}
+	if known == 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%d / %d", active, known)
+}
+
 func renderFDStats(m Model, w int) string {
 	counts := fdBreakdownCounts(m.FDs)
-	active := 0
-	var totalBytes uint64
-	var maxAge int64
+	var oldest collector.FDEntry
 	for _, f := range m.FDs {
-		if f.Active {
-			active++
-		}
-		totalBytes += f.Bytes
-		if f.AgeMs > maxAge {
-			maxAge = f.AgeMs
+		if f.AgeMs > oldest.AgeMs {
+			oldest = f
 		}
 	}
 
@@ -331,11 +377,10 @@ func renderFDStats(m Model, w int) string {
 		color lipgloss.Color
 	}{
 		{"Open / limit", fmtFDOpen(len(m.FDs), m.FDLimit), ColorTeal},
-		{"Active now", fmt.Sprintf("%d", active), ColorGreen},
+		{"Active files", fmtFDActive(m.FDs), ColorGreen},
 		{"Sockets", fmt.Sprintf("%d", counts["socket"]), ColorBlue},
 		{"Files", fmt.Sprintf("%d", counts["file"]), ColorCyan},
-		{"Oldest", fmtAgeMs(maxAge), ColorAmber},
-		{"Total I/O", fmtBytes(totalBytes), ColorMuted},
+		{"Oldest", fmtFDAge(oldest), ColorAmber},
 	}
 	lines := []string{}
 	for _, r := range rows {

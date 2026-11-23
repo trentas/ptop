@@ -39,6 +39,11 @@ func TestProcContextCollectorLive(t *testing.T) {
 		if pc.Timestamp.IsZero() {
 			t.Errorf("Timestamp is zero")
 		}
+		// The test binary started moments ago. btime has one-second
+		// resolution, so the reading may land up to a second early.
+		if age := time.Since(pc.StartTime); pc.StartTime.IsZero() || age < -2*time.Second || age > 5*time.Minute {
+			t.Errorf("StartTime = %v (%v ago), want this test process's start", pc.StartTime, age)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no ProcContext published within 2s")
 	}
