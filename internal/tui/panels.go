@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -13,11 +14,29 @@ import (
 
 // ─── CPU ─────────────────────────────────────────────────────────────────────
 
+// cpuScale is the CPU sparkline's ceiling: the peak of the last n samples
+// rounded up to whole cores, and never under one core.
+func cpuScale(history []float64, n int) float64 {
+	if n > 0 && len(history) > n {
+		history = history[len(history)-n:]
+	}
+	peak := 0.0
+	for _, v := range history {
+		peak = math.Max(peak, v)
+	}
+	return math.Max(100, math.Ceil(peak/100)*100)
+}
+
 // renderCPU draws a sparkline + current value on the right.
-// Uses a FIXED 0-100% scale — without this the sparkline would rescale every
-// tick and cause the "everything jumping" effect. known is false when the cpu
-// subsystem has no source and the panel is kept only for its hot functions:
-// the value then reads "—", not a 0% nobody measured (#149).
+//
+// The value is top-style, single-core percent: two busy cores read 200%. The
+// sparkline's ceiling is therefore whole cores (cpuScale), not the mockup's
+// fixed 100, which flattened a process using more than one core against the
+// top. It steps only when the drawn window's peak crosses a core boundary,
+// so it does not rescale every tick; the label names the ceiling once it is
+// above one core. known is false when the cpu subsystem has no source and
+// the panel is kept only for its hot functions: the value then reads "—",
+// not a 0% nobody measured (#149).
 func renderCPU(history []float64, sites cpuSiteSummary, known bool, w, h int) string {
 	if w < 12 {
 		return MutedStyle.Render("…")
@@ -38,14 +57,23 @@ func renderCPU(history []float64, sites cpuSiteSummary, known bool, w, h int) st
 	if !known {
 		val = DimStyle.Render("—")
 	}
-	lbl := MutedStyle.Render("cpu usage")
-
-	rightW := maxInt(lipgloss.Width(val), lipgloss.Width(lbl))
-	sparkW := w - rightW - 2
-	if sparkW < 4 {
-		sparkW = 4
+	// The scale is the peak of what the sparkline draws, and the label that
+	// names it can be wider than "cpu usage", which narrows the sparkline by
+	// a few cells: the scale is taken over the wider window, and those
+	// cells hold the oldest samples.
+	layout := func(lbl string) (rightW, sparkW int) {
+		rightW = maxInt(lipgloss.Width(val), lipgloss.Width(lbl))
+		return rightW, maxInt(4, w-rightW-2)
 	}
-	spark := SparklineWithMax(history, sparkW, 100, color)
+	_, widest := layout("cpu usage")
+	scale := cpuScale(history, widest*brailleSamplesPerCell)
+	lblText := "cpu usage"
+	if scale > 100 {
+		lblText = fmt.Sprintf("cpu · 0–%.0f%%", scale)
+	}
+	lbl := MutedStyle.Render(lblText)
+	rightW, sparkW := layout(lblText)
+	spark := SparklineWithMax(history, sparkW, scale, color)
 
 	right := lipgloss.JoinVertical(lipgloss.Right,
 		lipgloss.NewStyle().Width(rightW).Background(ColorPanel).Align(lipgloss.Right).Render(val),
@@ -428,17 +456,9 @@ func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 		gly := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Render(glyph)
 		name := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(nameW).Render(truncate(t.Name, nameW))
 
-		var bar string
-		if t.State == "running" {
-			bar = HorizontalBar(t.CPUPct, 100, barW, color)
-		} else {
-			bar = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW))
-		}
+		bar := threadCPUBar(t, barW)
 
-		cpuLabel := "--"
-		if t.CPUPct > 0 {
-			cpuLabel = fmt.Sprintf("%.0f%%", t.CPUPct)
-		}
+		cpuLabel := fmt.Sprintf("%.0f%%", t.CPUPct)
 		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
 
 		wait := ""
@@ -453,8 +473,27 @@ func renderThreadList(threads []collector.ThreadInfo, w, h int) string {
 	return strings.Join(lines, "\n")
 }
 
+// threadCPUBar draws a thread's CPU share over the window. It used to draw
+// only for a thread whose state was "running", but the state is one sample
+// taken at read time and the share covers the whole window: a thread at 60%
+// that happened to be asleep when read showed an empty bar beside "60%".
+func threadCPUBar(t collector.ThreadInfo, barW int) string {
+	if t.CPUPct <= 0 {
+		return lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW))
+	}
+	color := ColorGreen
+	if t.State != "running" {
+		color = ColorTeal // on a CPU in the window, not at the moment it was read
+	}
+	return HorizontalBar(t.CPUPct, 100, barW, color)
+}
+
 // renderThreadTable: full version for F4 (wider, with textual STATE).
-func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
+//
+// offKnown says the threads lane splits off-CPU time (the eBPF sched_switch
+// tracer): OFF% and RUNQ% are then readings, 0 included. The /proc and libproc
+// lanes never measure them, and they read "—" there.
+func renderThreadTable(threads []collector.ThreadInfo, offKnown bool, w, h int) string {
 	const nameW = 14
 	const stateW = 10
 	const cpuW = 5
@@ -489,25 +528,16 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 		name := lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Width(nameW).Render(truncate(t.Name, nameW))
 		state := lipgloss.NewStyle().Foreground(color).Background(ColorPanel).Width(stateW).Render(strings.ToUpper(t.State))
 
-		var bar string
-		if t.State == "running" {
-			bar = HorizontalBar(t.CPUPct, 100, barW, color)
-		} else {
-			bar = lipgloss.NewStyle().Foreground(ColorDim).Background(ColorPanel).Render(strings.Repeat("░", barW))
-		}
-		cpuLabel := "--"
-		if t.CPUPct > 0 {
-			cpuLabel = fmt.Sprintf("%.0f%%", t.CPUPct)
-		}
+		bar := threadCPUBar(t, barW)
+		cpuLabel := fmt.Sprintf("%.0f%%", t.CPUPct)
 		cpuStr := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(cpuW).Align(lipgloss.Right).Render(cpuLabel)
 
 		// off-CPU%: time blocked/waiting (not idle). High off-CPU on a blocked
 		// thread is the stall signal — flag it amber; otherwise stay muted so
 		// idle sleepers don't read as alarms.
-		offLabel := "--"
-		offColor := ColorMuted
-		if t.OffCpuPct > 0 {
-			offLabel = fmt.Sprintf("%.0f%%", t.OffCpuPct)
+		offLabel, offColor := "—", ColorDim
+		if offKnown {
+			offLabel, offColor = fmt.Sprintf("%.0f%%", t.OffCpuPct), ColorMuted
 			if t.State == "blocked" && t.OffCpuPct >= 50 {
 				offColor = ColorAmber
 			}
@@ -516,10 +546,9 @@ func renderThreadTable(threads []collector.ThreadInfo, w, h int) string {
 
 		// run-queue%: runnable but not on a CPU after a preemption (#150) —
 		// the thread had work and waited for a core, not for something else.
-		runqLabel := "--"
-		runqColor := ColorMuted
-		if t.RunqWaitPct > 0 {
-			runqLabel = fmt.Sprintf("%.0f%%", t.RunqWaitPct)
+		runqLabel, runqColor := "—", ColorDim
+		if offKnown {
+			runqLabel, runqColor = fmt.Sprintf("%.0f%%", t.RunqWaitPct), ColorMuted
 			if t.RunqWaitPct >= 25 {
 				runqColor = ColorAmber
 			}

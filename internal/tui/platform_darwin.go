@@ -19,6 +19,10 @@ const (
 	syscallsUnavailable = true
 	ioFilesUnavailable  = true
 	locksUnavailable    = true
+
+	// netErrorsUnavailable: libproc lists connections and nothing else, so
+	// refused, reset and retransmit (#56) have no source.
+	netErrorsUnavailable = true
 )
 
 // platformSourceLabel — no eBPF on macOS, so the footer must not claim it.

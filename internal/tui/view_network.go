@@ -78,10 +78,17 @@ func renderNetworkView(m Model, w, h int) string {
 // inventing anomalies.
 func renderNetAnomalies(m Model, w, h int) string {
 	if len(m.NetErrors) == 0 {
-		if m.usingMockNet {
+		// Refused, reset and retransmit come only from the eBPF network
+		// probe. Any other lane (the demo, macOS's libproc) watched for none,
+		// and an all-clear there would be a reading nobody took.
+		switch {
+		case m.netSource == "eBPF":
+			return GreenStyle.Render("✓ no network errors")
+		case netErrorsUnavailable:
+			return MutedStyle.Render("(network errors are not measured on macOS)")
+		default:
 			return MutedStyle.Render("(net errors need eBPF)")
 		}
-		return GreenStyle.Render("✓ no network errors")
 	}
 	lines := []string{}
 	for _, e := range m.NetErrors {
