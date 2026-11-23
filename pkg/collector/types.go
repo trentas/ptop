@@ -617,14 +617,28 @@ type FDEvent struct {
 	Message   string
 }
 
+// FDEntry is one open descriptor.
+//
+// Bytes and Active come from the fd's file offset, so they mean something only
+// where PosKnown says there is one: a regular file or a block device on Linux.
+// A socket's or a pipe's offset never moves, and macOS exposes none, so there
+// Bytes is 0 and Active false because nothing measured them.
 type FDEntry struct {
-	FD     int
-	Type   string // "file" | "socket" | "pipe" | "epoll" | "timer" | "event"
-	Desc   string // full path or remote address
-	Flags  string // "O_RDONLY" | "O_WRONLY" | "O_RDWR"
-	Bytes  uint64
+	FD    int
+	Type  string // "file" | "socket" | "pipe" | "epoll" | "timer" | "event" | "other"
+	Desc  string // full path or remote address
+	Flags string // "O_RDONLY" | "O_WRONLY" | "O_RDWR"
+	// Bytes is the file offset: how far reads and writes through this fd have
+	// moved it. pread, pwrite and mmap move nothing, so it is not a byte count.
+	Bytes uint64
+	// AgeMs is how long ptop has seen the fd open; for a Preexisting one, a
+	// lower bound on its age.
 	AgeMs  int64
-	Active bool // had activity in the last cycle
+	Active bool // the offset moved since the previous poll
+	// PosKnown says the fd has an offset, and Bytes and Active are readings.
+	PosKnown bool
+	// Preexisting marks an fd already open when the collector first looked.
+	Preexisting bool
 }
 
 // ─── Signals (#58) ─────────────────────────────────────────────────────────
@@ -674,6 +688,9 @@ type ProcContext struct {
 	CgroupID  uint64
 	Cgroup    string // cgroup path
 	Container string // derived container id; "" if none
+	// StartTime is when the process started: /proc/<pid>/stat's starttime
+	// past the host's boot. Zero when it could not be read.
+	StartTime time.Time
 }
 
 // ─── Exec lineage (#60) ──────────────────────────────────────────────────────

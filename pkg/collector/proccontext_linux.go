@@ -95,8 +95,32 @@ func (c *ProcContextCollector) sample() ProcContext {
 	pc.CgroupNS = c.nsInode("cgroup")
 	pc.IPCNS = c.nsInode("ipc")
 	pc.UTSNS = c.nsInode("uts")
+	pc.StartTime = processStartTime(c.pid)
 
 	return pc
+}
+
+// processStartTime is when pid started, or the zero time when it cannot be
+// read. starttime counts clock ticks from boot, and btime is the boot in wall
+// time, at one-second resolution.
+func processStartTime(pid int) time.Time {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return time.Time{}
+	}
+	ticks, ok := parseProcStartTicks(string(stat))
+	if !ok || clkTck <= 0 {
+		return time.Time{}
+	}
+	procStat, err := os.ReadFile("/proc/stat")
+	if err != nil {
+		return time.Time{}
+	}
+	btime, ok := parseBootTime(string(procStat))
+	if !ok {
+		return time.Time{}
+	}
+	return time.Unix(btime, 0).Add(time.Duration(float64(ticks) / clkTck * float64(time.Second)))
 }
 
 // nsInode resolves the inode of /proc/<pid>/ns/<kind> from its symlink target

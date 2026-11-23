@@ -215,3 +215,32 @@ func firstUint32(s string) uint32 {
 	}
 	return uint32(n)
 }
+
+// parseProcStartTicks reads starttime, field 22 of /proc/<pid>/stat: when the
+// process started, in clock ticks since boot. The fields are counted after the
+// last ')', since comm may itself hold spaces and parentheses.
+func parseProcStartTicks(stat string) (uint64, bool) {
+	end := strings.LastIndexByte(stat, ')')
+	if end < 0 {
+		return 0, false
+	}
+	f := strings.Fields(stat[end+1:])
+	// f[0] is field 3 (state), so field 22 is f[19].
+	if len(f) < 20 {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(f[19], 10, 64)
+	return n, err == nil
+}
+
+// parseBootTime reads btime from /proc/stat: when the host booted, in seconds
+// since the epoch.
+func parseBootTime(procStat string) (int64, bool) {
+	for _, line := range strings.Split(procStat, "\n") {
+		if rest, ok := strings.CutPrefix(line, "btime "); ok {
+			n, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+			return n, err == nil
+		}
+	}
+	return 0, false
+}

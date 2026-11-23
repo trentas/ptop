@@ -632,7 +632,9 @@ func renderIOLargeThroughput(io collector.IOStats, readH, writeH []float64, maxR
 
 // ─── FD breakdown / mini ─────────────────────────────────────────────────────
 
-var fdTypeOrder = []string{"file", "socket", "pipe", "epoll", "timer"}
+// fdTypeOrder is every type the fd collectors emit, in the order the filter
+// chips cycle through them.
+var fdTypeOrder = []string{"file", "socket", "pipe", "epoll", "timer", "event", "other"}
 
 func fdBreakdownCounts(fds []collector.FDEntry) map[string]int {
 	m := make(map[string]int, len(fdTypeOrder))
@@ -663,8 +665,19 @@ func renderFDMini(fds []collector.FDEntry, w int) string {
 	headerLine := MutedStyle.Render(padRight("open fds", w-6)) +
 		lipgloss.NewStyle().Foreground(ColorBright).Background(ColorPanel).Bold(true).Render(fmt.Sprintf("%4d", len(fds)))
 
-	lines := []string{headerLine}
+	// Busiest type first, and only types with an fd: the panel is a few rows
+	// tall, and a fixed order would cut whichever type came last, however
+	// many fds it held.
+	types := make([]string, 0, len(fdTypeOrder))
 	for _, t := range fdTypeOrder {
+		if counts[t] > 0 {
+			types = append(types, t)
+		}
+	}
+	sort.SliceStable(types, func(i, j int) bool { return counts[types[i]] > counts[types[j]] })
+
+	lines := []string{headerLine}
+	for _, t := range types {
 		c := counts[t]
 		color := FDTypeColor(t)
 		name := lipgloss.NewStyle().Foreground(ColorMuted).Background(ColorPanel).Width(nameW).Render(t)

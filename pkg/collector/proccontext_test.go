@@ -166,3 +166,26 @@ func TestParseStatusUIDGID(t *testing.T) {
 		t.Errorf("missing uid/gid = %d/%d, want 0/0", uid, gid)
 	}
 }
+
+func TestParseProcStartTicks(t *testing.T) {
+	// comm with a space and a ')' inside it: the fields count from the LAST ')'.
+	const stat = "4242 (my )proc) S 1 4242 4242 0 -1 4194560 1270 0 0 0 3 1 0 0 20 0 1 0 8812345 12345678 512 18446744073709551615 1 1 0 0 0 0 0 4096 0 0 0 0 17 3 0 0 0 0 0"
+	got, ok := parseProcStartTicks(stat)
+	if !ok || got != 8812345 {
+		t.Fatalf("parseProcStartTicks = %d, %v; want 8812345, true", got, ok)
+	}
+	if _, ok := parseProcStartTicks("4242 (short) S 1 2 3"); ok {
+		t.Fatal("a stat line cut short must not parse")
+	}
+}
+
+func TestParseBootTime(t *testing.T) {
+	const procStat = "cpu  10 0 10 100 0 0 0 0 0 0\nintr 12345\nctxt 999\nbtime 1763880000\nprocesses 4242\n"
+	got, ok := parseBootTime(procStat)
+	if !ok || got != 1763880000 {
+		t.Fatalf("parseBootTime = %d, %v; want 1763880000, true", got, ok)
+	}
+	if _, ok := parseBootTime("cpu  1 2 3\n"); ok {
+		t.Fatal("no btime line must not parse")
+	}
+}

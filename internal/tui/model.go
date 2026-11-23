@@ -147,8 +147,9 @@ type Model struct {
 	// Identification
 	ProcessName string
 	Runtime     string
-	State       string
-	StartedAt   time.Time
+	// StartedAt is when this TUI started, not the target: the export's
+	// uptime_ms. The header's uptime is the target's (ProcCtx.StartTime).
+	StartedAt time.Time
 
 	// Collected data
 	CPUHistory []float64
@@ -314,7 +315,6 @@ func NewModel(cfg Config) Model {
 		// detected from the executable (Go build info / interpreter basename).
 		// Empty when unknown — the header omits the badge rather than guess.
 		Runtime:       detectRuntime(cfg.PID),
-		State:         "RUNNING",
 		StartedAt:     time.Now(),
 		ActiveTab:     TabOverview,
 		FDFilter:      "all",
@@ -1009,6 +1009,12 @@ func (m *Model) seedMockData() {
 		{FD: 13, Type: "pipe", Desc: "[pipe:anon] worker→main", Flags: "O_RDWR", Bytes: 88200, AgeMs: 600 * 1000},
 		{FD: 14, Type: "file", Desc: "/proc/self/status", Flags: "O_RDONLY", Bytes: 512, AgeMs: 12 * 1000},
 	}
+	for i := range m.FDs {
+		// As the /proc collector reports them: a regular file has an offset,
+		// and everything open at the first look predates it.
+		m.FDs[i].PosKnown = m.FDs[i].Type == "file" && !strings.HasPrefix(m.FDs[i].Desc, "/proc/")
+		m.FDs[i].Preexisting = true
+	}
 	m.FDLimit = &collector.FDLimit{Soft: 1024, Hard: 524288}
 
 	// FD count history
@@ -1256,6 +1262,9 @@ func (m *Model) simulateFDs() {
 	for i := range m.FDs {
 		f := &m.FDs[i]
 		f.AgeMs += int64(time.Second / time.Duration(maxInt(m.cfg.FPS, 1)) / time.Millisecond)
+		if !f.PosKnown {
+			continue
+		}
 		if f.Active {
 			f.Bytes += uint64(r.Intn(4096))
 		}
@@ -1281,7 +1290,8 @@ func (m *Model) simulateFDs() {
 		}
 		m.FDs = append(m.FDs, collector.FDEntry{
 			FD: nextFD + 1, Type: types[idx], Desc: descs[idx],
-			Flags: "O_RDWR", AgeMs: 0, Active: true,
+			Flags: "O_RDWR", AgeMs: 0,
+			Active: types[idx] == "file", PosKnown: types[idx] == "file",
 		})
 	}
 

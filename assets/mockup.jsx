@@ -20,7 +20,7 @@ const INITIAL_FDS = [
   { fd:12, type:"socket", desc:"TCP 10.0.2.1:6379",        flags:"O_RDWR",   bytes:220000,   age:800,  active:true  },
   { fd:13, type:"pipe",   desc:"[pipe:anon] worker→main",  flags:"O_RDWR",   bytes:88200,    age:600,  active:false },
   { fd:14, type:"file",   desc:"/proc/self/status",        flags:"O_RDONLY", bytes:512,      age:12,   active:false },
-];
+].map(f=>({ ...f, pre:true })); // all open at the first look
 
 const COLORS = {
   bg:"#0e1014", bgPanel:"#13161c", border:"#2a2d35", dim:"#3a3d45",
@@ -632,18 +632,26 @@ function FDView({ data }) {
   const { fds, fdCountHistory, fdEvents } = data;
   const [filter, setFilter] = useState("all");
 
-  const typeColor = { file:COLORS.cyan, socket:COLORS.blue, pipe:COLORS.purple, epoll:COLORS.amber, timer:COLORS.green };
-  const typeIcon  = { file:"📄", socket:"🔌", pipe:"⇄", epoll:"⊙", timer:"⏱" };
+  const typeColor = { file:COLORS.cyan, socket:COLORS.blue, pipe:COLORS.purple, epoll:COLORS.amber, timer:COLORS.green, event:COLORS.orange, other:COLORS.pink };
+  const typeIcon  = { file:"📄", socket:"🔌", pipe:"⇄", epoll:"⊙", timer:"⏱", event:"⚑", other:"◌" };
 
-  const types = ["all","file","socket","pipe","epoll","timer"];
+  const fdTypes = ["file","socket","pipe","epoll","timer","event","other"];
+  const types = ["all", ...fdTypes];
   const filtered = filter==="all" ? fds : fds.filter(f=>f.type===filter);
 
-  // breakdown counts
-  const breakdown = Object.fromEntries(["file","socket","pipe","epoll","timer"].map(t=>[t, fds.filter(f=>f.type===t).length]));
+  // breakdown counts; the bars list the busiest type first and skip empty ones
+  const breakdown = Object.fromEntries(fdTypes.map(t=>[t, fds.filter(f=>f.type===t).length]));
   const maxBreakdown = Math.max(...Object.values(breakdown),1);
+  const breakdownBars = Object.entries(breakdown).filter(([,c])=>c>0).sort((a,b)=>b[1]-a[1]);
 
-  // suspicious: very old temp files, high-frequency short-lived fds
-  const suspicious = fds.filter(f=>(f.type==="file"&&f.path?.includes("/tmp")&&f.age>600)||(f.age<30&&!f.active));
+  // only an fd with a file offset (a regular file) has an OFFSET and an
+  // activity dot; the fds open at the first look have an age that is a lower bound
+  const hasPos = f => f.type==="file";
+  const fmtFdAge = f => (f.pre?"≥":"")+fmtAge(f.age);
+
+  // a /tmp file held open past ten minutes
+  const heldInTmp = f => f.type==="file"&&f.desc?.startsWith("/tmp/")&&f.age>600;
+  const suspicious = fds.filter(heldInTmp);
 
   // the target's soft RLIMIT_NOFILE (simulated); the alert compares with it
   const fdLimit = 1024;
@@ -664,7 +672,7 @@ function FDView({ data }) {
           </Box>
           <Box title="▸ Breakdown" flex={1}>
             <div style={{ padding:"6px 10px", display:"flex", flexDirection:"column", gap:4 }}>
-              {Object.entries(breakdown).map(([t,c])=>(
+              {breakdownBars.map(([t,c])=>(
                 <div key={t} style={{ display:"flex", alignItems:"center", gap:6 }}>
                   <span style={{ width:44, fontSize:9, color:COLORS.muted }}>{t}</span>
                   <div style={{ flex:1, height:7, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden" }}><div style={{ width:`${(c/maxBreakdown)*100}%`, height:"100%", backgroundColor:typeColor[t], opacity:0.85, transition:"width 0.4s" }}/></div>
@@ -690,13 +698,13 @@ function FDView({ data }) {
               <span style={{ width:44 }}>TYPE</span>
               <span style={{ flex:1 }}>DESCRIPTION</span>
               <span style={{ width:56 }}>FLAGS</span>
-              <span style={{ width:60, textAlign:"right" }}>BYTES</span>
+              <span style={{ width:60, textAlign:"right" }}>OFFSET</span>
               <span style={{ width:40, textAlign:"right" }}>AGE</span>
               <span style={{ width:14 }}> </span>
             </div>
             {filtered.map(f=>{
               const isOld = f.age > 3600;
-              const isSuspect = f.type==="file"&&f.desc?.includes("/tmp")&&f.age>600;
+              const isSuspect = heldInTmp(f);
               return (
                 <div key={f.fd} style={{ display:"flex", alignItems:"center", fontSize:9.5, padding:"3px 0", borderBottom:`1px solid ${COLORS.border}22`, backgroundColor:isSuspect?"#fbbf2408":"transparent" }}>
                   <span style={{ width:28, color:COLORS.muted, fontWeight:700 }}>{f.fd}</span>
@@ -705,10 +713,10 @@ function FDView({ data }) {
                   </span>
                   <span style={{ flex:1, color:f.active?COLORS.bright:COLORS.text, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{f.desc}</span>
                   <span style={{ width:56, fontSize:8, color:COLORS.dim }}>{f.flags}</span>
-                  <span style={{ width:60, textAlign:"right", color:COLORS.muted, fontSize:9 }}>{fmt(f.bytes)}</span>
-                  <span style={{ width:40, textAlign:"right", color:isOld?COLORS.amber:COLORS.dim, fontSize:9 }}>{fmtAge(f.age)}</span>
+                  <span style={{ width:60, textAlign:"right", color:hasPos(f)?COLORS.muted:COLORS.dim, fontSize:9 }}>{hasPos(f) ? fmt(f.bytes) : "—"}</span>
+                  <span style={{ width:40, textAlign:"right", color:isOld?COLORS.amber:COLORS.dim, fontSize:9 }}>{fmtFdAge(f)}</span>
                   <span style={{ width:14, textAlign:"center" }}>
-                    {f.active ? <span style={{ color:COLORS.green, fontSize:8 }}>●</span> : <span style={{ color:COLORS.dim, fontSize:8 }}>○</span>}
+                    {!hasPos(f) ? <span style={{ color:COLORS.dim, fontSize:8 }}>—</span> : f.active ? <span style={{ color:COLORS.green, fontSize:8 }}>●</span> : <span style={{ color:COLORS.dim, fontSize:8 }}>○</span>}
                   </span>
                 </div>
               );
@@ -723,12 +731,12 @@ function FDView({ data }) {
         {/* suspicious / leaks */}
         <Box title="▸ Alerts" flex={0.7}>
           <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:5 }}>
-            {suspicious.length===0 && (
-              <div style={{ fontSize:9.5, color:COLORS.green }}>✓ no leaks detected</div>
+            {suspicious.length===0 && !nearLimit && (
+              <div style={{ fontSize:9.5, color:COLORS.green }}>✓ nothing flagged</div>
             )}
             {suspicious.map((f,i)=>(
               <div key={i} style={{ fontSize:9.5, color:COLORS.amber }}>
-                ⚠ fd={f.fd} {f.type} open for {fmtAge(f.age)} with no activity
+                ⚠ fd={f.fd} /tmp file open {fmtFdAge(f)}
               </div>
             ))}
             {nearLimit && (
@@ -744,11 +752,10 @@ function FDView({ data }) {
           <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:5 }}>
             {[
               { label:"Open / limit",   value:`${fds.length} / ${fdLimit}`,                        color:COLORS.teal   },
-              { label:"Active now",     value:fds.filter(f=>f.active).length,                     color:COLORS.green  },
+              { label:"Active files",   value:`${fds.filter(f=>hasPos(f)&&f.active).length} / ${fds.filter(hasPos).length}`, color:COLORS.green },
               { label:"Sockets",        value:breakdown.socket,                                    color:COLORS.blue   },
               { label:"Files",          value:breakdown.file,                                      color:COLORS.cyan   },
-              { label:"Oldest",         value:fmtAge(Math.max(...fds.map(f=>f.age))),              color:COLORS.amber  },
-              { label:"Total I/O",      value:fmt(fds.reduce((s,f)=>s+f.bytes,0)),                color:COLORS.muted  },
+              { label:"Oldest",         value:fds.length ? fmtFdAge(fds.reduce((a,f)=>f.age>a.age?f:a)) : "—", color:COLORS.amber },
             ].map(({label,value,color})=>(
               <div key={label} style={{ display:"flex", justifyContent:"space-between", fontSize:10 }}>
                 <span style={{ color:COLORS.muted }}>{label}</span>
