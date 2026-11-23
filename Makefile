@@ -49,7 +49,20 @@ all: gen vet test-all build-ebpf
 # local build wants; the release sets it per target and compiles on a runner of
 # that architecture, since the asm/ headers have to match the macro (they are
 # what makes a MISmatch a compile error rather than a silent wrong answer).
-GOARCH ?= $(shell go env GOARCH)
+#
+# Read through $(GO), once. Under `sudo` there is often no `go` on PATH, and an
+# empty GOARCH points BPF_OBJS at `obj//`, so `sudo make install` — meant only
+# to copy the binary `make` already built — tried to recompile every object
+# with `-D__TARGET_ARCH_` and failed. Without a toolchain, the host's machine
+# name stands in: that is what `go env GOARCH` defaults to, and with no `go`
+# nothing can be compiled anyway, so the value only has to find the objects
+# already in the tree.
+ifeq ($(origin GOARCH),undefined)
+  GOARCH := $(shell $(GO) env GOARCH 2>/dev/null)
+endif
+ifeq ($(GOARCH),)
+  GOARCH := $(patsubst x86_64,amd64,$(patsubst aarch64,arm64,$(shell uname -m)))
+endif
 
 ifeq ($(GOARCH),amd64)
   BPF_ARCH   := x86
