@@ -28,6 +28,9 @@ import (
 //     totals, so there's nothing cumulative to put here. The F3 view does
 //     surface that occupancy as a backlog gauge (NetConn.Tx/RxBytes); the
 //     F6 Bytes column stays 0 to avoid mixing a gauge into a counter slot.
+//   - No FDLimit: macOS has no public API that reads another process's
+//     RLIMIT_NOFILE (getrlimit is self-only, and libproc does not carry it),
+//     so the limit stays unknown and F6 raises no "close to the limit" alert.
 
 type FDCollector struct {
 	pid  int

@@ -100,6 +100,7 @@ type Config struct {
 
 type TickMsg time.Time
 type FDMsg []collector.FDEntry
+type FDLimitMsg collector.FDLimit
 type CpuMsg collector.CpuSample
 type ThreadsMsg []collector.ThreadInfo
 type MemMsg collector.MemStats
@@ -171,6 +172,7 @@ type Model struct {
 	IOReadHist     []float64
 	IOWriteHist    []float64
 	FDs            []collector.FDEntry
+	FDLimit        *collector.FDLimit // the target's RLIMIT_NOFILE; nil while unknown (macOS, unreadable)
 	FDCountHistory []float64
 	FDEvents       []collector.FDEvent
 	Timeline       []collector.TimelineEvent
@@ -469,6 +471,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.FDs = []collector.FDEntry(v)
 		m.usingMockFDs = false
 		m.FDCountHistory = appendCapped(m.FDCountHistory, float64(len(m.FDs)), historyLen)
+		return m, m.waitBus()
+
+	case FDLimitMsg:
+		lim := collector.FDLimit(v)
+		m.FDLimit = &lim
 		return m, m.waitBus()
 
 	case TimelineMsg:
@@ -1002,6 +1009,7 @@ func (m *Model) seedMockData() {
 		{FD: 13, Type: "pipe", Desc: "[pipe:anon] worker→main", Flags: "O_RDWR", Bytes: 88200, AgeMs: 600 * 1000},
 		{FD: 14, Type: "file", Desc: "/proc/self/status", Flags: "O_RDONLY", Bytes: 512, AgeMs: 12 * 1000},
 	}
+	m.FDLimit = &collector.FDLimit{Soft: 1024, Hard: 524288}
 
 	// FD count history
 	m.FDCountHistory = make([]float64, historyLen)
@@ -1427,6 +1435,8 @@ func busMsg(v interface{}) tea.Msg {
 	switch t := v.(type) {
 	case []collector.FDEntry:
 		return FDMsg(t)
+	case collector.FDLimit:
+		return FDLimitMsg(t)
 	case collector.FDEvent:
 		return FDEventMsg(t)
 	case collector.TimelineEvent:

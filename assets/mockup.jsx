@@ -645,6 +645,10 @@ function FDView({ data }) {
   // suspicious: very old temp files, high-frequency short-lived fds
   const suspicious = fds.filter(f=>(f.type==="file"&&f.path?.includes("/tmp")&&f.age>600)||(f.age<30&&!f.active));
 
+  // the target's soft RLIMIT_NOFILE (simulated); the alert compares with it
+  const fdLimit = 1024;
+  const nearLimit = fds.length*100 >= fdLimit*80;
+
   const curCount = fdCountHistory[fdCountHistory.length-1];
 
   return (
@@ -727,9 +731,9 @@ function FDView({ data }) {
                 ⚠ fd={f.fd} {f.type} open for {fmtAge(f.age)} with no activity
               </div>
             ))}
-            {fds.length > 20 && (
+            {nearLimit && (
               <div style={{ fontSize:9.5, color:COLORS.red }}>
-                ⚠ {fds.length} fds open — near the limit
+                ⚠ {fds.length}/{fdLimit} fds open — {Math.floor(fds.length*100/fdLimit)}% of limit
               </div>
             )}
           </div>
@@ -739,7 +743,7 @@ function FDView({ data }) {
         <Box title="▸ Stats" flex={0.7}>
           <div style={{ padding:"6px 12px", display:"flex", flexDirection:"column", gap:5 }}>
             {[
-              { label:"Total open",     value:fds.length,                                          color:COLORS.teal   },
+              { label:"Open / limit",   value:`${fds.length} / ${fdLimit}`,                        color:COLORS.teal   },
               { label:"Active now",     value:fds.filter(f=>f.active).length,                     color:COLORS.green  },
               { label:"Sockets",        value:breakdown.socket,                                    color:COLORS.blue   },
               { label:"Files",          value:breakdown.file,                                      color:COLORS.cyan   },

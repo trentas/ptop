@@ -262,15 +262,52 @@ func renderFDAlerts(m Model) string {
 			))
 		}
 	}
-	if len(m.FDs) > 20 {
+	if lim := m.FDLimit; lim != nil && fdsNearLimit(len(m.FDs), lim.Soft) {
 		lines = append(lines, RedStyle.Render(
-			fmt.Sprintf("⚠ %d fds open — close to the limit", len(m.FDs)),
+			fmt.Sprintf("⚠ %d/%d fds open — %d%% of limit",
+				len(m.FDs), lim.Soft, fdLimitPct(len(m.FDs), lim.Soft)),
 		))
 	}
 	if len(lines) == 0 {
 		lines = append(lines, GreenStyle.Render("✓ no leaks detected"))
 	}
 	return strings.Join(lines, "\n")
+}
+
+// fdLimitAlertPct is where F6 starts calling the open count close to the
+// target's soft RLIMIT_NOFILE. Past the soft limit open and accept fail with
+// EMFILE, which a server usually meets as connections it can no longer take.
+const fdLimitAlertPct = 80
+
+// fdsNearLimit says whether open fds have reached fdLimitAlertPct of soft. An
+// unlimited soft limit is never near.
+func fdsNearLimit(open int, soft uint64) bool {
+	if soft == collector.FDLimitUnlimited {
+		return false
+	}
+	return uint64(open)*100 >= soft*fdLimitAlertPct
+}
+
+// fdLimitPct is open as a whole percentage of soft. A soft limit of 0 (no fd
+// may be opened at all) reads 100.
+func fdLimitPct(open int, soft uint64) uint64 {
+	if soft == 0 {
+		return 100
+	}
+	return uint64(open) * 100 / soft
+}
+
+// fmtFDOpen is the Stats panel's "Open / limit" value: the open count over
+// the soft limit, "—" where no collector reads the limit.
+func fmtFDOpen(open int, lim *collector.FDLimit) string {
+	switch {
+	case lim == nil:
+		return fmt.Sprintf("%d / —", open)
+	case lim.Soft == collector.FDLimitUnlimited:
+		return fmt.Sprintf("%d / unlimited", open)
+	default:
+		return fmt.Sprintf("%d / %d", open, lim.Soft)
+	}
 }
 
 func renderFDStats(m Model, w int) string {
@@ -293,7 +330,7 @@ func renderFDStats(m Model, w int) string {
 		value string
 		color lipgloss.Color
 	}{
-		{"Total open", fmt.Sprintf("%d", len(m.FDs)), ColorTeal},
+		{"Open / limit", fmtFDOpen(len(m.FDs), m.FDLimit), ColorTeal},
 		{"Active now", fmt.Sprintf("%d", active), ColorGreen},
 		{"Sockets", fmt.Sprintf("%d", counts["socket"]), ColorBlue},
 		{"Files", fmt.Sprintf("%d", counts["file"]), ColorCyan},

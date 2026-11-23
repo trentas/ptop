@@ -15,10 +15,12 @@ import (
 // FDCollector reads /proc/<pid>/fd and /proc/<pid>/fdinfo every 500ms.
 // Works without root, without eBPF — first collector implemented.
 //
-// Publishes three message types on the same channel (consumer does
+// Publishes four message types on the same channel (consumer does
 // type-switch):
 //
 //   - []FDEntry           — full snapshot of current state (every poll)
+//   - FDLimit             — the target's RLIMIT_NOFILE, read from /proc/<pid>/limits
+//     every poll (prlimit can change it at runtime); not sent when unreadable
 //   - TimelineEvent       — "openat fd=N <desc>" / "close fd=N" event for the global timeline
 //   - FDEvent             — compact version dedicated to the F6 ▸ FD Events panel
 type FDCollector struct {
@@ -94,7 +96,22 @@ func (c *FDCollector) collectAndEmit() {
 	for _, e := range events {
 		c.emit(e)
 	}
+	// The limit goes before the snapshot, so a consumer never holds a table
+	// it would judge against an older limit.
+	if lim, ok := readFDLimit(c.pid); ok {
+		c.emit(lim)
+	}
 	c.emit(fds)
+}
+
+// readFDLimit reads the target's RLIMIT_NOFILE. /proc/<pid>/limits is
+// world-readable, so this needs no privilege the fd listing did not.
+func readFDLimit(pid int) (FDLimit, bool) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/limits", pid))
+	if err != nil {
+		return FDLimit{}, false
+	}
+	return parseFDLimit(string(data))
 }
 
 func (c *FDCollector) emit(msg interface{}) {
