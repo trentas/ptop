@@ -25,6 +25,10 @@ const (
 	syscallsUnavailable = false
 	ioFilesUnavailable  = false
 	locksUnavailable    = false
+
+	// netErrorsUnavailable: the eBPF network probe sees refused, reset and
+	// retransmit (#56) when it runs.
+	netErrorsUnavailable = false
 )
 
 // platformSourceLabel is the footer's data-source descriptor on Linux: the

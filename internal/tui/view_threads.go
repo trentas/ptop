@@ -24,7 +24,7 @@ func renderThreadsView(m Model, w, h int) string {
 		lockH = 6
 	}
 	body := m.orNoSource(srcThreads, leftW-2, h-3-lockH, func() string {
-		return renderThreadTable(m.Threads, leftW-2, h-3-lockH)
+		return renderThreadTable(m.Threads, m.threadsSource == "eBPF", leftW-2, h-3-lockH)
 	}) +
 		"\n\n" +
 		renderLockGraph(m, leftW-2)

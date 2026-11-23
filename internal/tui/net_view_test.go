@@ -93,13 +93,22 @@ func TestNetErrorMessage(t *testing.T) {
 	}
 }
 
-// TestNetAnomaliesHonestSource confirms the panel never invents anomalies:
-// a real (non-mock) source with no errors reads healthy; a mock source says
-// the capability needs eBPF.
+// TestNetAnomaliesHonestSource confirms the panel never invents anomalies or
+// an all-clear: only the eBPF network probe watches for refused, reset and
+// retransmit, so only it can read healthy. macOS's libproc lane lists
+// connections and watches for none, and it used to say "✓ no network errors".
 func TestNetAnomaliesHonestSource(t *testing.T) {
-	real := Model{usingMockNet: false}
-	if got := renderNetAnomalies(real, 40, 5); !strings.Contains(got, "no network errors") {
-		t.Errorf("real source, no errors = %q, want healthy", got)
+	ebpf := Model{netSource: "eBPF"}
+	if got := renderNetAnomalies(ebpf, 40, 5); !strings.Contains(got, "no network errors") {
+		t.Errorf("eBPF source, no errors = %q, want healthy", got)
+	}
+	for _, m := range []Model{
+		{netSource: "libproc"},              // macOS: real connections, no error probe
+		{netSource: "", usingMockNet: true}, // the demo
+	} {
+		if got := renderNetAnomalies(m, 40, 5); strings.Contains(got, "no network errors") {
+			t.Errorf("source %q with no error probe = %q, an all-clear nobody measured", m.netSource, got)
+		}
 	}
 	mock := Model{usingMockNet: true}
 	if got := renderNetAnomalies(mock, 40, 5); !strings.Contains(got, "eBPF") {

@@ -373,7 +373,7 @@ function ThreadPanel({ threads }) {
         <div key={t.id} style={{ display:"flex", alignItems:"center", gap:6, fontSize:10 }}>
           <span style={{ color:sc(t.state), width:12 }}>{t.state==="running"?"▶":t.state==="blocked"?"■":"·"}</span>
           <span style={{ width:72, color:COLORS.bright }}>{t.name}</span>
-          <div style={{ flex:1, height:6, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden" }}><div style={{ width:`${t.cpu}%`, height:"100%", backgroundColor:t.state==="running"?COLORS.green:COLORS.dim, transition:"width 0.4s" }}/></div>
+          <div style={{ flex:1, height:6, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden" }}><div style={{ width:`${t.cpu}%`, height:"100%", backgroundColor:t.state==="running"?COLORS.green:COLORS.teal, transition:"width 0.4s" }}/></div>
           <span style={{ width:28, textAlign:"right", color:COLORS.muted, fontSize:9 }}>{t.cpu>0?`${t.cpu.toFixed(0)}%`:""}</span>
           {t.waiting&&<span style={{ fontSize:9, color:COLORS.amber, width:90, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>⏳ {t.waiting}</span>}
         </div>
@@ -545,8 +545,8 @@ function ThreadView({ data }) {
               <span style={{ width:80, color:COLORS.bright }}>{t.name}</span>
               <span style={{ width:70, color:sc(t.state), fontSize:9 }}>{t.state.toUpperCase()}</span>
               <div style={{ flex:1, display:"flex", alignItems:"center", gap:6 }}>
-                <div style={{ flex:1, height:8, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden" }}><div style={{ width:`${t.cpu}%`, height:"100%", backgroundColor:sc(t.state), transition:"width 0.4s" }}/></div>
-                <span style={{ fontSize:9, color:COLORS.muted, width:28, textAlign:"right" }}>{t.cpu>0?`${t.cpu.toFixed(0)}%`:"--"}</span>
+                <div style={{ flex:1, height:8, backgroundColor:COLORS.bg, borderRadius:1, overflow:"hidden" }}><div style={{ width:`${t.cpu}%`, height:"100%", backgroundColor:t.state==="running"?COLORS.green:COLORS.teal, transition:"width 0.4s" }}/></div>
+                <span style={{ fontSize:9, color:COLORS.muted, width:28, textAlign:"right" }}>{`${t.cpu.toFixed(0)}%`}</span>
               </div>
               <span style={{ width:100, fontSize:9, color:t.waiting?COLORS.amber:COLORS.dim }}>{t.waiting||"–"}</span>
             </div>
